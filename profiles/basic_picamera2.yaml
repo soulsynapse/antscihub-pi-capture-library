@@ -1,0 +1,13 @@
+name: "Basic PiCamera2 Capture"
+description: "Register CSI camera, configure 1080p, capture still, save PNG"
+mode: "capture"
+
+chain:
+  - step: "s01_register_hardware"
+    method: "picamera2"
+  - step: "s02_configure_hardware"
+    method: "picamera2_1080p"
+  - step: "s03_capture"
+    method: "picamera2_still"
+  - step: "s04_output"
+    method: "save_to_disk"

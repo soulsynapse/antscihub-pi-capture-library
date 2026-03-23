@@ -1,0 +1,9 @@
+venv/
+output/*.png
+output/*.jpg
+output/*.jpeg
+output/*.tiff
+__pycache__/
+*.pyc
+.write_test
+capture.sh

@@ -1,0 +1,13 @@
+name: "Mock Camera Test"
+description: "Test pipeline without real hardware"
+mode: "capture"
+
+chain:
+  - step: "s01_register_hardware"
+    method: "mock_camera"
+  - step: "s02_configure_hardware"
+    method: "picamera2_1080p"
+  - step: "s03_capture"
+    method: "picamera2_still"
+  - step: "s04_output"
+    method: "save_to_disk"

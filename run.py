@@ -302,13 +302,44 @@ def main() -> int:
         description="antscihub-pi-capture-library",
     )
     parser.add_argument(
-        "--profile", type=str,
-        help="Path to a YAML profile file",
-    )
-    parser.add_argument(
-        "--chain", type=str,
-        help='JSON array of {"step":"...","method":"..."} objects',
-    )
-    parser.add_argument(
         "--mode", type=str, default="capture",
-        choices=
+        choices=["preview", "capture"],
+        help="Pipeline mode (default: capture)",
+    )
+    parser.add_argument(
+        "--list-methods", action="store_true",
+        help="List all registered methods",
+    )
+    parser.add_argument(
+        "--list-profiles", action="store_true",
+        help="List available profiles",
+    )
+    parser.add_argument(
+        "--verify", action="store_true",
+        help="Run boot health check",
+    )
+
+    args = parser.parse_args()
+
+    if args.verify:
+        return cmd_verify()
+
+    if args.list_methods:
+        return cmd_list_methods()
+
+    if args.list_profiles:
+        return cmd_list_profiles()
+
+    if args.profile:
+        return cmd_run_profile(args.profile)
+
+    if args.chain:
+        return cmd_run_chain(args.chain, args.mode)
+
+    # No arguments — print help
+    parser.print_help()
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

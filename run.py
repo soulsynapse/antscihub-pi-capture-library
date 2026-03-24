@@ -318,6 +318,14 @@ def main() -> int:
         "--verify", action="store_true",
         help="Run boot health check",
     )
+    parser.add_argument(
+        "--profile", type=str,
+        help="Path to a YAML profile file",
+    )
+    parser.add_argument(
+        "--chain", type=str,
+        help='JSON array of [{"step":"...","method":"..."}] objects',
+    )
 
     args = parser.parse_args()
 

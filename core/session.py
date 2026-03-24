@@ -21,7 +21,7 @@ class CaptureSession:
 
     def release(self, key: str):
         resource = self._resources.pop(key, None)
-        if resource and hasattr(resource, "close"):
+        if resource is not None and hasattr(resource, "close"):
             resource.close()
 
     def release_all(self):

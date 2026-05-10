@@ -5,16 +5,22 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/path/to/upload_worker.sh
-WorkingDirectory=/home/pi
+ExecStart=/path/to/4-upload/upload_worker.sh
+WorkingDirectory=/path/to/repo
 User=pi
 Restart=on-failure
 RestartSec=10
+StandardOutput=journal
+StandardError=journal
 
 # rclone remote and path must be configured here or via environment
 # Example for Google Drive:
 # Environment="RCLONE_REMOTE=gdrive"
 # Environment="RCLONE_PATH=Videos"
+#
+# Or set via:
+# sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos
+# sudo systemctl start antscihub-upload.service
 
 [Install]
 WantedBy=multi-user.target

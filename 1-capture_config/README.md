@@ -9,9 +9,11 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
   - `CAMERA_PROFILE_MODE=dynamic` (default)
   - `CAMERA_PROFILE_MODE=auto`
   - `CAMERA_PROFILE_MODE=owlcam`
+  - `CAMERA_PROFILE_MODE=imx708`
 - In `dynamic` mode:
   - Uses auto-detect profile for non-Owl sensors
   - Uses manual OV64A40 profile for Owlcam
+  - Preserves existing manual camera overrides already present in base `config.txt`
   - If no camera is enumerated, tries Owlcam I2C chip probe
   - If still ambiguous, runs a single bounded Owlcam probe boot, then settles on auto if no camera is found (no endless probe loop)
 - Compares against managed firmware block in `config.txt`
@@ -25,6 +27,7 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 
 - **OV64A40** (Owlcam) -> `camera_auto_detect=0`, `dtoverlay=ov64a40`, `dtoverlay=cma`
 - **IMX708 family** (Arducam V3, Raspberry Pi Camera Module 3, Raspberry Pi Camera Module 3 NoIR) -> auto-detect profile (`camera_auto_detect=1`)
+- **IMX708 forced mode** (for stacks where autodetect is unreliable) -> `camera_auto_detect=0`, `dtoverlay=imx708`
 
 ## Detection Strategy
 
@@ -46,6 +49,7 @@ The service implements a reboot attempt counter to prevent infinite loops:
 
 - `apply_camera_config.sh` - The main detection and config script
 - `/etc/default/antscihub-capture-config` - Optional mode override (`dynamic|auto|owlcam`)
+- `/etc/default/antscihub-capture-config` - Optional mode override (`dynamic|auto|owlcam|imx708`)
 - Managed block markers in `config.txt`:
   - `# antscihub-capture-config BEGIN`
   - `# antscihub-capture-config END`

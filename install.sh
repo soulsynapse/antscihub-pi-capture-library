@@ -36,7 +36,7 @@ normalize_camera_profile_mode() {
     local raw="$1"
     raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
     case "$raw" in
-        dynamic|auto|owlcam)
+        dynamic|auto|owlcam|imx708)
             printf '%s\n' "$raw"
             ;;
         *)
@@ -94,6 +94,7 @@ ensure_capture_env_file() {
 # dynamic: auto mode for official sensors + Owlcam fallback logic
 # auto:    always force camera_auto_detect=1
 # owlcam:  always force OV64A40 manual profile
+# imx708:  always force manual IMX708 profile
 CAMERA_PROFILE_MODE="${DEFAULT_CAMERA_PROFILE_MODE}"
 EOF
         chmod 0644 "${CAPTURE_ENV_FILE}"
@@ -209,6 +210,18 @@ remove_legacy_units() {
             systemctl disable "$unit" >/dev/null 2>&1 || true
             rm -f "/etc/systemd/system/${unit}"
             rm -f "/etc/systemd/system/multi-user.target.wants/${unit}"
+        fi
+    done
+}
+
+ensure_units_unmasked() {
+    local unit
+    for unit in "${CONFIG_SERVICE_NAME}" "${UPLOAD_SERVICE_NAME}"; do
+        if systemctl is-enabled "$unit" 2>/dev/null | grep -qi '^masked'; then
+            log_info "Unmasking ${unit}"
+            if ! systemctl unmask "$unit" >/dev/null 2>&1; then
+                log_warn "Failed to unmask ${unit}; continuing"
+            fi
         fi
     done
 }
@@ -352,6 +365,7 @@ main() {
     fi
 
     remove_legacy_units
+    ensure_units_unmasked
 
     # Clear old manager-level overrides from older install flows.
     systemctl unset-environment RCLONE_REMOTE RCLONE_PATH UPLOAD_DIR >/dev/null 2>&1 || true

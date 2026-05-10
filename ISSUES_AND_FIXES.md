@@ -68,6 +68,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: dynamic switching could miss Owlcam on some stacks and behavior was hard to control fleet-wide
    - Fix: rewrote camera profile selection into explicit `CAMERA_PROFILE_MODE` (`dynamic|auto|owlcam`) with bounded no-camera probe state to avoid endless mode flapping
 
+17. Dynamic camera rewrite clobbered valid manual camera overlay configs
+   - Result: some Pis with working non-Owl camera setups regressed after installer updates
+   - Fix: preserve manual camera overrides outside the managed block, avoid global camera-line scrubbing, and add `CAMERA_PROFILE_MODE=imx708` for explicit Module 3 fallback
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

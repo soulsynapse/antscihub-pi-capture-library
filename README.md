@@ -41,6 +41,7 @@ Camera mode overrides:
 - `CAMERA_PROFILE_MODE=dynamic` (default): auto mode for standard sensors, manual Owlcam profile when detected, plus one bounded fallback probe when ambiguous.
 - `CAMERA_PROFILE_MODE=auto`: always force `camera_auto_detect=1`.
 - `CAMERA_PROFILE_MODE=owlcam`: always force manual OV64A40 profile.
+- `CAMERA_PROFILE_MODE=imx708`: always force manual IMX708 profile (`camera_auto_detect=0`, `dtoverlay=imx708`).
 
 ### Start upload service
 

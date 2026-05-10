@@ -21,6 +21,7 @@ CURRENT_BLOCK=""
 CURRENT_PROFILE="unknown"
 DESIRED_BLOCK=""
 DESIRED_PROFILE="unknown"
+MANUAL_CAMERA_OVERRIDE_PRESENT="false"
 
 mkdir -p "$STATE_DIR"
 mkdir -p "$(dirname "$LOG_FILE")"
@@ -35,7 +36,7 @@ normalize_profile_mode() {
     local raw="$1"
     raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
     case "$raw" in
-        dynamic|auto|owlcam)
+        dynamic|auto|owlcam|imx708)
             printf '%s\n' "$raw"
             ;;
         *)
@@ -63,6 +64,20 @@ EOF
 )
 }
 
+set_desired_imx708_profile() {
+    DESIRED_PROFILE="imx708"
+    DESIRED_BLOCK=$(cat <<'EOF'
+camera_auto_detect=0
+dtoverlay=imx708
+EOF
+)
+}
+
+set_desired_passthrough_profile() {
+    DESIRED_PROFILE="passthrough"
+    DESIRED_BLOCK=""
+}
+
 get_current_managed_block() {
     awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
         $0 == begin { in_block = 1; next }
@@ -71,8 +86,33 @@ get_current_managed_block() {
     ' "${CONFIG_FILE}"
 }
 
+config_without_managed_block() {
+    awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
+        $0 == begin { in_block = 1; next }
+        $0 == end { in_block = 0; next }
+        !in_block { print }
+    ' "${CONFIG_FILE}"
+}
+
+detect_manual_camera_override() {
+    local manual_pattern
+    manual_pattern='^[[:space:]]*dtoverlay=(ov5647|imx219|imx477|imx296|imx708|imx290|imx378|ov9281|imx327|imx519|arducam-64mp|ov64a40|tc358743|adv728x-m|irs1125)([[:space:]]|,|$)'
+
+    if config_without_managed_block | grep -qiE '^[[:space:]]*camera_auto_detect[[:space:]]*=[[:space:]]*0([[:space:]]|$)'; then
+        return 0
+    fi
+    if config_without_managed_block | grep -qiE "${manual_pattern}"; then
+        return 0
+    fi
+    return 1
+}
+
 classify_block_profile() {
     local block="$1"
+    if [[ -z "${block//[[:space:]]/}" ]]; then
+        printf '%s\n' "passthrough"
+        return
+    fi
     if echo "$block" | grep -qE '^[[:space:]]*camera_auto_detect=0([[:space:]]|$)'; then
         printf '%s\n' "owlcam"
         return
@@ -194,6 +234,14 @@ select_dynamic_profile() {
             return 0
             ;;
         camera_present|unknown)
+            if [[ "${MANUAL_CAMERA_OVERRIDE_PRESENT}" == "true" ]]; then
+                log "INFO" "Detected camera with manual camera overrides present; preserving base config"
+                clear_probe_state
+                write_last_detected "camera_present_manual_override"
+                set_desired_passthrough_profile
+                return 0
+            fi
+
             log "INFO" "Detected non-Owl camera from ${CAMERA_LIST_TOOL}; using auto-detect profile"
             clear_probe_state
             write_last_detected "camera_present"
@@ -206,6 +254,14 @@ select_dynamic_profile() {
                 clear_probe_state
                 write_last_detected "owlcam"
                 set_desired_owlcam_profile
+                return 0
+            fi
+
+            if [[ "${MANUAL_CAMERA_OVERRIDE_PRESENT}" == "true" ]]; then
+                log "WARN" "No camera detected, but manual camera overrides exist; preserving base config"
+                clear_probe_state
+                write_last_detected "no_camera_manual_override"
+                set_desired_passthrough_profile
                 return 0
             fi
 
@@ -276,6 +332,12 @@ apply_desired_by_mode() {
             write_last_detected "forced_owlcam"
             set_desired_owlcam_profile
             ;;
+        imx708)
+            log "INFO" "CAMERA_PROFILE_MODE=imx708; forcing manual IMX708 profile"
+            clear_probe_state
+            write_last_detected "forced_imx708"
+            set_desired_imx708_profile
+            ;;
         dynamic)
             select_dynamic_profile "$detected_class"
             ;;
@@ -288,23 +350,10 @@ apply_desired_by_mode() {
     esac
 }
 
-remove_legacy_camera_lines_and_managed_block() {
+remove_managed_block_only() {
     local src="$1"
     local dst="$2"
     awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
-        /^[[:space:]]*camera_auto_detect[[:space:]]*=/ { next }
-        /^[[:space:]]*dtoverlay=ov64a40([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=arducam-64mp([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx708([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx219([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx477([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx296([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=ov5647([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=ov9281([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx290([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=imx378([[:space:]]|,|$)/ { next }
-        /^[[:space:]]*dtoverlay=cma([[:space:]]|,|$)/ { next }
-
         $0 == begin { in_block = 1; next }
         $0 == end { in_block = 0; next }
         !in_block { print }
@@ -344,6 +393,11 @@ CURRENT_BLOCK="$(get_current_managed_block)"
 CURRENT_PROFILE="$(classify_block_profile "$CURRENT_BLOCK")"
 log "INFO" "Current managed profile: ${CURRENT_PROFILE}"
 
+if detect_manual_camera_override; then
+    MANUAL_CAMERA_OVERRIDE_PRESENT="true"
+fi
+log "INFO" "Manual camera override present: ${MANUAL_CAMERA_OVERRIDE_PRESENT}"
+
 if detect_camera_list_output; then
     DETECTED_CLASS="$(camera_list_class "$CAMERA_LIST_OUTPUT")"
 else
@@ -354,7 +408,7 @@ log "INFO" "Detected class: ${DETECTED_CLASS}"
 
 apply_desired_by_mode "$DETECTED_CLASS"
 
-if [[ -z "${DESIRED_BLOCK}" ]]; then
+if [[ "${DESIRED_PROFILE}" == "unknown" ]]; then
     set_desired_auto_profile
 fi
 
@@ -385,13 +439,15 @@ log "INFO" "Backup saved to ${BACKUP_FILE}"
 TMP_FILE="$(mktemp)"
 trap 'rm -f "${TMP_FILE}"' EXIT
 
-remove_legacy_camera_lines_and_managed_block "${CONFIG_FILE}" "${TMP_FILE}"
+remove_managed_block_only "${CONFIG_FILE}" "${TMP_FILE}"
 
-{
-    printf '%s\n' "${BEGIN_MARKER}"
-    printf '%s\n' "${DESIRED_BLOCK}"
-    printf '%s\n' "${END_MARKER}"
-} >> "${TMP_FILE}"
+if [[ -n "${DESIRED_BLOCK}" ]]; then
+    {
+        printf '%s\n' "${BEGIN_MARKER}"
+        printf '%s\n' "${DESIRED_BLOCK}"
+        printf '%s\n' "${END_MARKER}"
+    } >> "${TMP_FILE}"
+fi
 
 install -m 0644 "${TMP_FILE}" "${CONFIG_FILE}"
 sync

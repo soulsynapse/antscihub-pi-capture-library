@@ -29,9 +29,7 @@ This installs two systemd services:
 ### Configure Upload Service
 
 ```bash
-# Set your rclone remote and path
-sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos
-
+# Upload destination is preset to gdrive_personal:5-UPLOAD
 # Start the upload service
 sudo systemctl start antscihub-upload.service
 ```
@@ -112,7 +110,7 @@ tail -f /var/log/antscihub-upload.log
 **Verify rclone is configured:**
 ```bash
 rclone listremotes
-rclone ls gdrive:  # or your remote name
+rclone ls gdrive_personal:  # or your remote name
 ```
 
 **Check processed files:**

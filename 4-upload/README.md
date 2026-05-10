@@ -47,17 +47,21 @@ Process lock in `/var/run/antscihub-upload.lock` - ensures only one instance run
 
 ## Installation
 
-The `install.sh` script installs the upload service. To configure it:
-
-### Option 1: Set environment variables (recommended)
+The `install.sh` script installs the upload service with these defaults:
 
 ```bash
-sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos
+RCLONE_REMOTE=gdrive_personal
+RCLONE_PATH=5-UPLOAD
+```
+
+Start and enable the service:
+
+```bash
 sudo systemctl start antscihub-upload.service
 sudo systemctl enable antscihub-upload.service
 ```
 
-### Option 2: Edit the service file
+### Override destination (optional)
 
 ```bash
 sudo systemctl edit antscihub-upload.service
@@ -65,8 +69,8 @@ sudo systemctl edit antscihub-upload.service
 
 Add these lines in the `[Service]` section:
 ```ini
-Environment="RCLONE_REMOTE=gdrive"
-Environment="RCLONE_PATH=Videos"
+Environment="RCLONE_REMOTE=gdrive_personal"
+Environment="RCLONE_PATH=5-UPLOAD"
 ```
 
 Then:
@@ -93,8 +97,8 @@ rclone listremotes
 
 ### Environment Variables
 
-- `RCLONE_REMOTE` - The rclone remote name (e.g., `gdrive`, `b2`, `s3`)
-- `RCLONE_PATH` - The path on the remote (e.g., `Videos`, `backup/pi-videos`)
+- `RCLONE_REMOTE` - The rclone remote name (e.g., `gdrive_personal`, `b2`, `s3`)
+- `RCLONE_PATH` - The path on the remote (e.g., `5-UPLOAD`, `backup/pi-videos`)
 
 ### Tuning Parameters
 
@@ -179,7 +183,7 @@ After a successful upload, a `.uploaded` reference file is created:
 ```text
 # Upload successful
 # Original file: myvideo.mp4
-# Moved to: gdrive:Videos/myvideo.mp4
+# Moved to: gdrive_personal:5-UPLOAD/myvideo.mp4
 # Date: 2026-05-09T14:30:45Z
 ```
 

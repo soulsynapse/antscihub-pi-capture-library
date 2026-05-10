@@ -8,19 +8,15 @@ Type=simple
 ExecStart=/path/to/4-upload/upload_worker.sh
 WorkingDirectory=/path/to/repo
 User=pi
+Environment="RCLONE_REMOTE=gdrive_personal"
+Environment="RCLONE_PATH=5-UPLOAD"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
-# rclone remote and path must be configured here or via environment
-# Example for Google Drive:
-# Environment="RCLONE_REMOTE=gdrive"
-# Environment="RCLONE_PATH=Videos"
-#
-# Or set via:
-# sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos
-# sudo systemctl start antscihub-upload.service
+# Override in a drop-in if needed:
+# sudo systemctl edit antscihub-upload.service
 
 [Install]
 WantedBy=multi-user.target

@@ -81,19 +81,15 @@ Type=simple
 ExecStart=${UPLOAD_SCRIPT}
 WorkingDirectory=${SCRIPT_DIR}
 User=pi
+Environment="RCLONE_REMOTE=gdrive_personal"
+Environment="RCLONE_PATH=5-UPLOAD"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 
-# Configure rclone remote and path here:
-# Example for Google Drive:
-# Environment="RCLONE_REMOTE=gdrive"
-# Environment="RCLONE_PATH=Videos"
-# 
-# You can also set these via:
-# sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos
-# Or edit this file after installation
+# Override in a drop-in if needed:
+# sudo systemctl edit ${UPLOAD_SERVICE_NAME}
 
 [Install]
 WantedBy=multi-user.target
@@ -131,13 +127,14 @@ log_info "Installation complete!"
 log_info ""
 log_info "Services installed:"
 log_info "  • ${CONFIG_SERVICE_NAME} - Camera auto-detection and config (enabled, running)"
-log_info "  • ${UPLOAD_SERVICE_NAME} - Upload worker (enabled, but requires rclone config)"
+log_info "  • ${UPLOAD_SERVICE_NAME} - Upload worker (enabled, using gdrive_personal:5-UPLOAD)"
 log_info ""
-log_info "To configure upload service, set environment variables:"
-log_info "  sudo systemctl set-environment RCLONE_REMOTE=gdrive RCLONE_PATH=Videos"
+log_info "Upload destination is preset to:"
+log_info "  gdrive_personal:5-UPLOAD"
+log_info "Start upload service with:"
 log_info "  sudo systemctl start ${UPLOAD_SERVICE_NAME}"
 log_info ""
-log_info "Or edit: ${UPLOAD_SERVICE_PATH}"
+log_info "To override destination, edit: ${UPLOAD_SERVICE_PATH}"
 log_info ""
 log_info "Check service status:"
 log_info "  systemctl status ${CONFIG_SERVICE_NAME}"

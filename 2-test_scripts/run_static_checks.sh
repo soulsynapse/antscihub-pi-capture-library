@@ -30,6 +30,8 @@ echo "[static-checks] OK upload worker checks"
 echo "[static-checks] Checking camera detection coverage"
 grep -qi 'imx708' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
 grep -qi 'module[[:space:]]*3[[:space:]]*noir' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
+grep -q 'camera_auto_detect' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
+grep -q 'dtoverlay=ov64a40' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
 echo "[static-checks] OK camera detection checks"
 
 echo "[static-checks] Checking install defaults"

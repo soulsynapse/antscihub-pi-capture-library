@@ -8,6 +8,7 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 - If no camera is attached, exits cleanly without modifying config
 - Compares with the existing managed firmware block in `config.txt`
 - Writes the correct boot overlays only when the config actually differs
+- Removes stale camera overlay lines before writing its managed block
 - Reboots **only when the config changes** (not on every boot)
 - Prevents infinite reboot loops with attempt counter
 - Logs all activity to `/var/log/antscihub-capture-config.log`

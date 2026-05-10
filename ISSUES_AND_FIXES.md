@@ -56,6 +56,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: Module 3 NoIR support depended on generic IMX708 match and was not explicit
    - Fix: added explicit Module 3/NoIR detection keywords under IMX708 family handling
 
+14. Legacy manual camera config lines override managed output
+   - Result: old `camera_auto_detect`/`dtoverlay` lines could remain active and prevent correct detection/config updates
+   - Fix: scrub known camera directives before writing the managed camera block
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

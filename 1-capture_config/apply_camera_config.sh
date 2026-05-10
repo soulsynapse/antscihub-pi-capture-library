@@ -166,6 +166,19 @@ trap 'rm -f "${TMP_FILE}"' EXIT
 
 # Remove old managed block and write new one
 awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
+    # Strip old camera directives so stale manual/legacy config cannot override managed output.
+    /^[[:space:]]*camera_auto_detect[[:space:]]*=/ { next }
+    /^[[:space:]]*dtoverlay=ov64a40([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx708([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx219([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx477([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx296([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=ov5647([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=ov9281([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx290([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=imx378([[:space:]]|,|$)/ { next }
+    /^[[:space:]]*dtoverlay=cma([[:space:]]|,|$)/ { next }
+
     $0 == begin { in_block = 1; next }
     $0 == end { in_block = 0; next }
     !in_block { print }

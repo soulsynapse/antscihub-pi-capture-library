@@ -4,13 +4,11 @@ set -euo pipefail
 # State and logging directories
 STATE_DIR="/var/lib/antscihub-capture-config"
 LOG_FILE="/var/log/antscihub-capture-config.log"
-LAST_CONFIG="${STATE_DIR}/last-config"
 ATTEMPT_COUNT="${STATE_DIR}/attempt-count"
 LOCK_FILE="${STATE_DIR}/apply.lock"
 
 # Reboot guards
 MAX_ATTEMPTS=3
-ATTEMPT_WINDOW_HOURS=24
 
 # Ensure directories exist
 mkdir -p "$STATE_DIR"
@@ -110,6 +108,7 @@ EOF
 CAMERA_LIST_OUTPUT=""
 if ! detect_camera; then
     exit 1
+fi
 
 # Extract current managed block from config
 BEGIN_MARKER="# antscihub-capture-config BEGIN"
@@ -174,4 +173,3 @@ echo "$attempt_count" > "$ATTEMPT_COUNT"
 
 log "INFO" "Rebooting to apply firmware changes (attempt $attempt_count/$MAX_ATTEMPTS)"
 systemctl reboot --no-block
-

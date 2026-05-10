@@ -7,6 +7,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=/path/to/4-upload/upload_worker.sh
 WorkingDirectory=/path/to/repo
+# Set to the account that owns Desktop/5-UPLOAD and rclone config.
 User=pi
 Environment="RCLONE_REMOTE=gdrive_personal"
 Environment="RCLONE_PATH=5-UPLOAD"

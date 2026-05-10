@@ -14,6 +14,20 @@ UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
 UPLOAD_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.sh"
 
+determine_upload_user() {
+    if [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]]; then
+        echo "${SUDO_USER}"
+        return 0
+    fi
+
+    if id -u 1000 >/dev/null 2>&1; then
+        id -un 1000
+        return 0
+    fi
+
+    echo "pi"
+}
+
 log_info() {
     echo "[antscihub-install] $*"
 }
@@ -21,6 +35,11 @@ log_info() {
 log_error() {
     echo "[antscihub-install] ERROR: $*" >&2
 }
+
+if [[ "$(id -u)" -ne 0 ]]; then
+    log_error "Please run as root (for example: sudo bash install.sh)"
+    exit 1
+fi
 
 # Validate scripts exist
 if [[ ! -f "$CONFIG_SCRIPT" ]]; then
@@ -30,6 +49,12 @@ fi
 
 if [[ ! -f "$UPLOAD_SCRIPT" ]]; then
     log_error "Missing upload script: $UPLOAD_SCRIPT"
+    exit 1
+fi
+
+UPLOAD_SERVICE_USER="$(determine_upload_user)"
+if ! id "${UPLOAD_SERVICE_USER}" >/dev/null 2>&1; then
+    log_error "Upload service user does not exist: ${UPLOAD_SERVICE_USER}"
     exit 1
 fi
 
@@ -80,7 +105,7 @@ Wants=network-online.target
 Type=simple
 ExecStart=${UPLOAD_SCRIPT}
 WorkingDirectory=${SCRIPT_DIR}
-User=pi
+User=${UPLOAD_SERVICE_USER}
 Environment="RCLONE_REMOTE=gdrive_personal"
 Environment="RCLONE_PATH=5-UPLOAD"
 Restart=on-failure
@@ -103,7 +128,7 @@ systemctl daemon-reload
 log_info "Enabling ${CONFIG_SERVICE_NAME}"
 systemctl enable "${CONFIG_SERVICE_NAME}"
 
-# Enable upload service (but don't start yet - requires rclone config)
+# Enable upload service for boot-time monitoring
 log_info "Enabling ${UPLOAD_SERVICE_NAME}"
 systemctl enable "${UPLOAD_SERVICE_NAME}"
 
@@ -126,8 +151,8 @@ log_info ""
 log_info "Installation complete!"
 log_info ""
 log_info "Services installed:"
-log_info "  • ${CONFIG_SERVICE_NAME} - Camera auto-detection and config (enabled, running)"
-log_info "  • ${UPLOAD_SERVICE_NAME} - Upload worker (enabled, using gdrive_personal:5-UPLOAD)"
+log_info "  - ${CONFIG_SERVICE_NAME} - Camera auto-detection and config (enabled, running)"
+log_info "  - ${UPLOAD_SERVICE_NAME} - Upload worker (enabled, user=${UPLOAD_SERVICE_USER}, destination=gdrive_personal:5-UPLOAD)"
 log_info ""
 log_info "Upload destination is preset to:"
 log_info "  gdrive_personal:5-UPLOAD"

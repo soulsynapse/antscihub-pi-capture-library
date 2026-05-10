@@ -12,6 +12,7 @@ Location: `1-capture_config/apply_camera_config.sh`
 Purpose:
 
 - Detect supported camera model at boot
+- Treat "no camera attached" as a safe no-op (no reboot/config rewrite)
 - Write a managed config block in `/boot/firmware/config.txt` (or `/boot/config.txt`)
 - Reboot only when configuration changes
 - Prevent reboot loops with attempt counter and lock file
@@ -24,6 +25,7 @@ Purpose:
 
 - Resolve Desktop for the configured service user and watch `<desktop>/5-UPLOAD`
 - Upload stable files recursively with preserved relative paths
+- Rename uploads with machine suffix when remote path conflicts exist
 - Create `<filename>.MOVED` reference files on success
 - Track processed files using file identity
 - Retry failures with exponential backoff and per-file schedules

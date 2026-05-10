@@ -9,6 +9,7 @@ The installed service uses:
 - `RCLONE_REMOTE=gdrive_personal`
 - `RCLONE_PATH=` (empty by default, meaning remote root)
 - `UPLOAD_DIR=<detected desktop>/5-UPLOAD` (set by `install.sh` per device user)
+- `MACHINE_SUFFIX=<hostname>` by default (override with service env var if needed)
 
 Override via:
 
@@ -50,6 +51,8 @@ Remote behavior:
 - Atomic processed-state updates
 - Retry counters and exponential backoff scheduling
 - File identity tracking (basename + inode + size + mtime), not basename-only
+- Remote conflict handling: if target path already exists, upload is renamed with machine suffix
+- `rclone moveto --immutable` prevents overwrite-on-conflict races
 - `.MOVED` reference files are written beside each moved file with destination/timestamp metadata
 
 ## Service Data Locations

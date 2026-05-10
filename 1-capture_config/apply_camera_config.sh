@@ -50,9 +50,6 @@ fi
 
 # Detect camera with robust fallback strategy
 detect_camera() {
-    local camera_name=""
-    local desired_block=""
-    
     # Try libcamera-hello first (more stable)
     if command -v libcamera-hello >/dev/null 2>&1; then
         log "DEBUG" "Trying libcamera-hello for camera detection"
@@ -77,6 +74,12 @@ detect_camera() {
         fi
     fi
     
+    # No camera attached is a valid runtime state: skip config writes/reboots.
+    if [[ -z "$CAMERA_LIST_OUTPUT" ]] || echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'no cameras? available|no cameras? detected|camera not found|cannot find camera'; then
+        log "WARN" "No camera detected. Leaving existing camera config unchanged."
+        return 2
+    fi
+
     # Pattern matching for supported cameras
     if echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'ov64a40|owlcam'; then
         log "INFO" "Detected: OV64A40 (Owlcam)"
@@ -106,7 +109,14 @@ EOF
 
 # Call detection function
 CAMERA_LIST_OUTPUT=""
-if ! detect_camera; then
+if detect_camera; then
+    :
+else
+    detection_result=$?
+    if [[ $detection_result -eq 2 ]]; then
+        rm -f "$ATTEMPT_COUNT"
+        exit 0
+    fi
     exit 1
 fi
 

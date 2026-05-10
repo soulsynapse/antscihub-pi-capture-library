@@ -61,7 +61,8 @@ The upload worker:
 4. Uploads files recursively with `rclone moveto`, preserving relative subfolders
 5. Writes `<filename>.MOVED` next to each moved file with destination and metadata
 6. Retries failures with real exponential backoff (up to max retries)
-7. Tracks processed files by file identity (not just basename), so same-name files are handled safely
+7. On remote path conflicts, renames the uploaded file with a machine suffix instead of overwriting
+8. Tracks processed files by file identity (not just basename), so same-name files are handled safely
 
 ## State and Logs
 

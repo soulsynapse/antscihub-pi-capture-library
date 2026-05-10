@@ -5,6 +5,7 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 ## Behavior
 
 - Detects the attached camera on every boot
+- If no camera is attached, exits cleanly without modifying config
 - Compares with the existing managed firmware block in `config.txt`
 - Writes the correct boot overlays only when the config actually differs
 - Reboots **only when the config changes** (not on every boot)

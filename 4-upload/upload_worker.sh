@@ -70,6 +70,38 @@ if [[ "${RCLONE_PATH}" == "." ]]; then
     RCLONE_PATH=""
 fi
 
+sanitize_machine_suffix() {
+    local raw="$1"
+    local normalized
+    normalized="${raw//[^[:alnum:]._-]/_}"
+    normalized="${normalized//__/_}"
+    normalized="${normalized##_}"
+    normalized="${normalized%%_}"
+    if [[ -z "$normalized" ]]; then
+        normalized="unknown-machine"
+    fi
+    printf '%s' "$normalized"
+}
+
+detect_machine_suffix() {
+    if [[ -n "${MACHINE_SUFFIX:-}" ]]; then
+        sanitize_machine_suffix "${MACHINE_SUFFIX}"
+        return 0
+    fi
+
+    local raw=""
+    raw="$(hostname 2>/dev/null || true)"
+    if [[ -z "$raw" && -f /etc/hostname ]]; then
+        raw="$(head -n 1 /etc/hostname 2>/dev/null || true)"
+    fi
+    if [[ -z "$raw" && -f /etc/machine-id ]]; then
+        raw="$(head -n 1 /etc/machine-id 2>/dev/null || true)"
+    fi
+    sanitize_machine_suffix "$raw"
+}
+
+MACHINE_SUFFIX="$(detect_machine_suffix)"
+
 # Tuning
 FILE_STABILITY_CHECK_INTERVAL=10  # Check size stability every 10 seconds
 MIN_FILE_AGE=30                   # Wait at least 30 seconds before uploading
@@ -243,6 +275,84 @@ is_file_stable() {
     [[ "$initial_size" -eq "$final_size" ]]
 }
 
+build_remote_target() {
+    local relative_path="$1"
+    if [[ -n "${RCLONE_PATH}" ]]; then
+        printf '%s:%s/%s' "${RCLONE_REMOTE}" "${RCLONE_PATH}" "${relative_path}"
+    else
+        printf '%s:%s' "${RCLONE_REMOTE}" "${relative_path}"
+    fi
+}
+
+remote_path_exists() {
+    local remote_target="$1"
+    local listing
+    listing="$(rclone lsf --files-only --max-depth 1 "$remote_target" 2>/dev/null || true)"
+    [[ -n "${listing//[[:space:]]/}" ]]
+}
+
+build_conflict_relative_path() {
+    local relative_path="$1"
+    local attempt="$2"
+    local dir_part=""
+    local file_part="$relative_path"
+    local stem="$file_part"
+    local ext=""
+    local suffix="__${MACHINE_SUFFIX}"
+
+    if (( attempt > 1 )); then
+        suffix="${suffix}-${attempt}"
+    fi
+
+    if [[ "$relative_path" == */* ]]; then
+        dir_part="${relative_path%/*}"
+        file_part="${relative_path##*/}"
+    fi
+
+    stem="$file_part"
+    if [[ "$file_part" == *.* && "$file_part" != .* ]]; then
+        stem="${file_part%.*}"
+        ext=".${file_part##*.}"
+    fi
+
+    if [[ -n "$dir_part" ]]; then
+        printf '%s/%s%s%s' "$dir_part" "$stem" "$suffix" "$ext"
+    else
+        printf '%s%s%s' "$stem" "$suffix" "$ext"
+    fi
+}
+
+resolve_remote_target() {
+    local relative_path="$1"
+    local selected_relative="$relative_path"
+    local selected_target
+    selected_target="$(build_remote_target "$selected_relative")"
+
+    if ! remote_path_exists "$selected_target"; then
+        printf '%s|%s' "$selected_relative" "$selected_target"
+        return 0
+    fi
+
+    local attempt=1
+    while true; do
+        selected_relative="$(build_conflict_relative_path "$relative_path" "$attempt")"
+        selected_target="$(build_remote_target "$selected_relative")"
+        if ! remote_path_exists "$selected_target"; then
+            printf '%s|%s' "$selected_relative" "$selected_target"
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        if (( attempt > 50 )); then
+            # Extremely unlikely fallback
+            selected_relative="$(build_conflict_relative_path "${relative_path}" "${attempt}")"
+            selected_relative="${selected_relative}.$(date +%s)"
+            selected_target="$(build_remote_target "$selected_relative")"
+            printf '%s|%s' "$selected_relative" "$selected_target"
+            return 0
+        fi
+    done
+}
+
 # Exponential backoff for retries
 calculate_backoff() {
     local attempt="$1"
@@ -263,22 +373,27 @@ do_upload() {
     local file_identity="$3"
     local file_key="$4"
     local basename
+    local selected_relative_path
+    local selection
     local remote_target
     local file_size
     local file_mtime
     basename=$(basename "$file")
-    if [[ -n "${RCLONE_PATH}" ]]; then
-        remote_target="${RCLONE_REMOTE}:${RCLONE_PATH}/${relative_path}"
-    else
-        remote_target="${RCLONE_REMOTE}:${relative_path}"
-    fi
+    selection="$(resolve_remote_target "$relative_path")"
+    selected_relative_path="${selection%%|*}"
+    remote_target="${selection#*|}"
     file_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
     file_mtime=$(stat -c %y "$file" 2>/dev/null || echo "unknown")
+
+    if [[ "$selected_relative_path" != "$relative_path" ]]; then
+        log "WARN" "Remote conflict detected for ${relative_path}; uploading as ${selected_relative_path}"
+    fi
 
     log "INFO" "Starting upload: ${relative_path}"
 
     # Move this single file to its exact remote path to preserve folder structure.
     if rclone moveto "$file" "$remote_target" \
+        --immutable \
         --progress --stats=0 2>&1 | tee -a "$LOG_FILE"; then
 
         log "INFO" "Upload successful: ${relative_path}"
@@ -290,6 +405,7 @@ do_upload() {
         cat > "$tmpref" <<EOF
 # File moved to remote storage
 # Original file: ${relative_path}
+# Final remote relative path: ${selected_relative_path}
 # Moved to: ${remote_target}
 # Size bytes: ${file_size}
 # Source mtime: ${file_mtime}
@@ -318,6 +434,7 @@ if [[ -n "${RCLONE_PATH}" ]]; then
 else
     log "INFO" "Remote: ${RCLONE_REMOTE}: (root)"
 fi
+log "INFO" "Machine suffix for conflict handling: ${MACHINE_SUFFIX}"
 log "INFO" "State dir: $STATE_DIR"
 log "INFO" "Log file: $LOG_FILE"
 

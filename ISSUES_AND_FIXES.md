@@ -44,6 +44,14 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: `5-UPLOAD` was used as both local source name and forced remote destination path
    - Fix: keep local watch path at `<desktop>/5-UPLOAD`, but allow empty `RCLONE_PATH` (remote root) and set that as default
 
+11. Cross-machine remote filename conflicts
+   - Result: same remote path from multiple Pis could overwrite each other
+   - Fix: on conflict, upload worker renames new upload with machine suffix and keeps both files
+
+12. No-camera startup behavior
+   - Result: no camera attached caused service failure even though no config change was needed
+   - Fix: treat no-camera detection as a clean no-op and keep current config unchanged
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

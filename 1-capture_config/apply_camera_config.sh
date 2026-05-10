@@ -50,32 +50,36 @@ fi
 
 # Detect camera with robust fallback strategy
 detect_camera() {
+    local no_camera_patterns='no cameras? available|no cameras? detected|camera not found|cannot find camera|failed to register camera'
+    local output=""
+
     # Try libcamera-hello first (more stable)
     if command -v libcamera-hello >/dev/null 2>&1; then
         log "DEBUG" "Trying libcamera-hello for camera detection"
-        local output
         output=$(libcamera-hello --list-cameras 2>&1 || true)
         log "DEBUG" "libcamera-hello output: $output"
-        
         if [[ -n "$output" ]]; then
             CAMERA_LIST_OUTPUT="$output"
         fi
     fi
-    
+
     # If libcamera-hello didn't work, try rpicam-hello
-    if [[ -z "$CAMERA_LIST_OUTPUT" ]] && command -v rpicam-hello >/dev/null 2>&1; then
+    if [[ -z "${CAMERA_LIST_OUTPUT:-}" ]] && command -v rpicam-hello >/dev/null 2>&1; then
         log "DEBUG" "Trying rpicam-hello for camera detection"
-        local output
         output=$(rpicam-hello --list-cameras 2>&1 || true)
         log "DEBUG" "rpicam-hello output: $output"
-        
         if [[ -n "$output" ]]; then
             CAMERA_LIST_OUTPUT="$output"
         fi
     fi
-    
+
+    if [[ -z "${CAMERA_LIST_OUTPUT:-}" ]]; then
+        log "ERROR" "No camera tools found or no camera list output returned"
+        return 1
+    fi
+
     # No camera attached is a valid runtime state: skip config writes/reboots.
-    if [[ -z "$CAMERA_LIST_OUTPUT" ]] || echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'no cameras? available|no cameras? detected|camera not found|cannot find camera'; then
+    if echo "$CAMERA_LIST_OUTPUT" | grep -qiE "$no_camera_patterns"; then
         log "WARN" "No camera detected. Leaving existing camera config unchanged."
         return 2
     fi
@@ -90,7 +94,7 @@ dtoverlay=ov64a40,link-frequency=360000000
 dtoverlay=cma,cma-256
 EOF
 )
-    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
+    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|imx708_noir|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
         log "INFO" "Detected: IMX708 family (Arducam V3 / Raspberry Pi Camera Module 3 / Module 3 NoIR)"
         CAMERA_NAME="imx708_family"
         DESIRED_BLOCK=$(cat <<'EOF'

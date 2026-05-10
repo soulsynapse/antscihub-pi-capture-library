@@ -146,11 +146,14 @@ detect_camera() {
         return 0
     fi
 
-    # Pattern matching for supported cameras
+    # Pattern matching for camera profiles
     if echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'ov64a40|owlcam'; then
         log "INFO" "Detected: OV64A40 (Owlcam)"
         set_desired_owlcam_profile
-    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|imx708_noir|imx219|imx477|imx296|ov5647|ov9281|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
+    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE '^[[:space:]]*[0-9]+[[:space:]]*:'; then
+        log "INFO" "Detected: camera enumerated by libcamera/rpicam; using auto-detect profile"
+        set_desired_auto_profile
+    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|imx708_noir|imx219|imx477|imx296|ov5647|ov9281|imx500|imx519|imx327|imx290|imx378|ov7251|ov9281|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
         log "INFO" "Detected: supported non-Owlcam sensor; using auto-detect profile"
         set_desired_auto_profile
     else

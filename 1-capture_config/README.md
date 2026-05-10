@@ -4,16 +4,22 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 
 ## Behavior
 
-- Detects the attached camera on every boot
-- Uses `camera_auto_detect=1` profile for standard/official cameras
-- Uses manual Owlcam profile (`camera_auto_detect=0` + OV64A40 overlay) only when Owlcam is detected
-- If no camera is detected, reverts to auto-detect profile so the next attached camera can be discovered
-- Compares with the existing managed firmware block in `config.txt`
-- Writes the correct boot overlays only when the config actually differs
-- Removes stale camera overlay lines before writing its managed block
-- Reboots **only when the config changes** (not on every boot)
-- Prevents infinite reboot loops with attempt counter
-- Logs all activity to `/var/log/antscihub-capture-config.log`
+- Detects camera state on every boot
+- Supports explicit profile modes through `/etc/default/antscihub-capture-config`:
+  - `CAMERA_PROFILE_MODE=dynamic` (default)
+  - `CAMERA_PROFILE_MODE=auto`
+  - `CAMERA_PROFILE_MODE=owlcam`
+- In `dynamic` mode:
+  - Uses auto-detect profile for non-Owl sensors
+  - Uses manual OV64A40 profile for Owlcam
+  - If no camera is enumerated, tries Owlcam I2C chip probe
+  - If still ambiguous, runs a single bounded Owlcam probe boot, then settles on auto if no camera is found (no endless probe loop)
+- Compares against managed firmware block in `config.txt`
+- Writes only when configuration actually changes
+- Removes stale camera overlay lines before writing the managed block
+- Reboots only on configuration changes
+- Uses reboot-attempt guard to avoid loops
+- Logs to `/var/log/antscihub-capture-config.log`
 
 ## Supported Cameras
 
@@ -22,23 +28,24 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 
 ## Detection Strategy
 
-1. Try `libcamera-hello --list-cameras` (primary)
-2. Fall back to `rpicam-hello --list-cameras` if needed
-3. If camera tools report no camera, probe Owlcam chip ID via `i2ctransfer` (best effort)
-4. Pattern match on camera model names
-5. Log detailed output for debugging
+1. Try `rpicam-hello --list-cameras` (primary on Bookworm/Trixie), then fall back to `libcamera-hello`, `rpicam-still`, and `libcamera-still`
+2. Pattern-match Owlcam signatures (`ov64a40`, `owlsight`, `arducam_64mp`, etc.)
+3. If no camera is enumerated, probe OV64A40 chip ID (`0x566441`) via `i2ctransfer` (best effort)
+4. Apply profile selection rules from `CAMERA_PROFILE_MODE`
+5. Write config and reboot only when needed
 
 ## Reboot Guard
 
 The service implements a reboot attempt counter to prevent infinite loops:
 - Tracks attempt count in `/var/lib/antscihub-capture-config/attempt-count`
 - Max 3 reboot attempts before failing and halting
-- Counter resets when a successful config is applied
+- Counter resets when no config change is needed
 - Logs failures to `/var/log/antscihub-capture-config.log`
 
 ## Files
 
 - `apply_camera_config.sh` - The main detection and config script
+- `/etc/default/antscihub-capture-config` - Optional mode override (`dynamic|auto|owlcam`)
 - Managed block markers in `config.txt`:
   - `# antscihub-capture-config BEGIN`
   - `# antscihub-capture-config END`

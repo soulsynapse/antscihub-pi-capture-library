@@ -64,6 +64,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: third-party Owlcam can fail `--list-cameras` under auto-detect mode and never switch to required manual overlay
    - Fix: added optional hardware fallback probe via `i2ctransfer` for OV64A40 chip ID, plus installer dependency check for `i2c-tools`
 
+16. Camera profile selection was too brittle under ambiguous "No cameras available" boots
+   - Result: dynamic switching could miss Owlcam on some stacks and behavior was hard to control fleet-wide
+   - Fix: rewrote camera profile selection into explicit `CAMERA_PROFILE_MODE` (`dynamic|auto|owlcam`) with bounded no-camera probe state to avoid endless mode flapping
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

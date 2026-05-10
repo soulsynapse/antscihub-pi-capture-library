@@ -25,6 +25,7 @@ This installs:
 - `antscihub-capture-config.service`
 - `antscihub-upload.service`
 - `i2c-tools` (if missing) to enable Owlcam fallback hardware detection
+- `/etc/default/antscihub-capture-config` with `CAMERA_PROFILE_MODE=dynamic` (default)
 
 The upload service is configured by default to upload to:
 
@@ -34,6 +35,12 @@ The upload service is configured by default to upload to:
 Local source remains `<desktop>/5-UPLOAD`; that name is local-only and is not added to the remote path unless you explicitly set `RCLONE_PATH=5-UPLOAD`.
 
 `install.sh` is standalone and safe to re-run on update pulls. It rewrites current units, removes known legacy units, clears old manager-level env overrides, and re-detects the upload user's Desktop path for `5-UPLOAD`.
+
+Camera mode overrides:
+
+- `CAMERA_PROFILE_MODE=dynamic` (default): auto mode for standard sensors, manual Owlcam profile when detected, plus one bounded fallback probe when ambiguous.
+- `CAMERA_PROFILE_MODE=auto`: always force `camera_auto_detect=1`.
+- `CAMERA_PROFILE_MODE=owlcam`: always force manual OV64A40 profile.
 
 ### Start upload service
 

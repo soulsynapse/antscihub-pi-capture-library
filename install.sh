@@ -6,6 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_SERVICE_NAME="antscihub-capture-config.service"
 CONFIG_SERVICE_PATH="/etc/systemd/system/${CONFIG_SERVICE_NAME}"
 CONFIG_SCRIPT="${SCRIPT_DIR}/1-capture_config/apply_camera_config.sh"
+CAPTURE_ENV_FILE="/etc/default/antscihub-capture-config"
+DEFAULT_CAMERA_PROFILE_MODE="dynamic"
 
 UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
@@ -28,6 +30,19 @@ log_warn() {
 
 log_error() {
     echo "[antscihub-install] ERROR: $*" >&2
+}
+
+normalize_camera_profile_mode() {
+    local raw="$1"
+    raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+    case "$raw" in
+        dynamic|auto|owlcam)
+            printf '%s\n' "$raw"
+            ;;
+        *)
+            printf '%s\n' ""
+            ;;
+    esac
 }
 
 require_root() {
@@ -67,6 +82,45 @@ ensure_i2c_tools() {
     if ! apt-get install -y -qq i2c-tools >/dev/null 2>&1; then
         log_warn "Failed to install i2c-tools; Owlcam fallback probe will be unavailable"
         return 0
+    fi
+}
+
+ensure_capture_env_file() {
+    local mode_line mode_value normalized
+
+    if [[ ! -f "${CAPTURE_ENV_FILE}" ]]; then
+        cat > "${CAPTURE_ENV_FILE}" <<EOF
+# AntSciHub capture profile mode
+# dynamic: auto mode for official sensors + Owlcam fallback logic
+# auto:    always force camera_auto_detect=1
+# owlcam:  always force OV64A40 manual profile
+CAMERA_PROFILE_MODE="${DEFAULT_CAMERA_PROFILE_MODE}"
+EOF
+        chmod 0644 "${CAPTURE_ENV_FILE}"
+        log_info "Created ${CAPTURE_ENV_FILE} with CAMERA_PROFILE_MODE=${DEFAULT_CAMERA_PROFILE_MODE}"
+        return 0
+    fi
+
+    mode_line="$(grep -E '^[[:space:]]*CAMERA_PROFILE_MODE=' "${CAPTURE_ENV_FILE}" | tail -n 1 || true)"
+    if [[ -z "${mode_line}" ]]; then
+        {
+            echo ""
+            echo "CAMERA_PROFILE_MODE=\"${DEFAULT_CAMERA_PROFILE_MODE}\""
+        } >> "${CAPTURE_ENV_FILE}"
+        log_info "Added missing CAMERA_PROFILE_MODE to ${CAPTURE_ENV_FILE}"
+        return 0
+    fi
+
+    mode_value="${mode_line#*=}"
+    mode_value="${mode_value%\"}"
+    mode_value="${mode_value#\"}"
+    mode_value="${mode_value%\'}"
+    mode_value="${mode_value#\'}"
+    normalized="$(normalize_camera_profile_mode "${mode_value}")"
+
+    if [[ -z "${normalized}" ]]; then
+        sed -i -E 's|^[[:space:]]*CAMERA_PROFILE_MODE=.*$|CAMERA_PROFILE_MODE="dynamic"|' "${CAPTURE_ENV_FILE}"
+        log_warn "Invalid CAMERA_PROFILE_MODE in ${CAPTURE_ENV_FILE}; reset to dynamic"
     fi
 }
 
@@ -168,6 +222,7 @@ ConditionPathExists=${CONFIG_SCRIPT}
 
 [Service]
 Type=oneshot
+EnvironmentFile=-${CAPTURE_ENV_FILE}
 ExecStart=${CONFIG_SCRIPT}
 WorkingDirectory=${SCRIPT_DIR}
 User=root
@@ -261,6 +316,7 @@ main() {
     require_root
     require_inputs
     ensure_i2c_tools
+    ensure_capture_env_file
 
     log_info "Starting installation/update"
 
@@ -324,6 +380,7 @@ main() {
     fi
 
     log_info "Installation/update complete"
+    log_info "Capture mode file: ${CAPTURE_ENV_FILE}"
     log_info "Upload service user: ${upload_user}"
     log_info "Upload source dir: ${upload_dir}"
     log_info "Upload destination: ${upload_destination}"

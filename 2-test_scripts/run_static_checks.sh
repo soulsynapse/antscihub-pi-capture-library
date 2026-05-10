@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 SCRIPTS=(
     "${REPO_ROOT}/install.sh"
+    "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
     "${REPO_ROOT}/1-capture_config/antscam"
     "${REPO_ROOT}/4-upload/upload_worker.sh"
 )

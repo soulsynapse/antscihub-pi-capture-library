@@ -72,6 +72,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: some Pis with working non-Owl camera setups regressed after installer updates
    - Fix: preserve manual camera overrides outside the managed block, avoid global camera-line scrubbing, and add `CAMERA_PROFILE_MODE=imx708` for explicit Module 3 fallback
 
+18. Dynamic boot-time camera logic was too operationally fragile for mixed fleets
+   - Result: automatic profile switching could still produce surprising outcomes across different Pi/image/camera combinations
+   - Fix: replaced dynamic service-first flow with explicit operator-driven camera profile CLI (`antscam list/current/show/apply`) and disabled the old boot-time camera service by default
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

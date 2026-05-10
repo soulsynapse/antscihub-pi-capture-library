@@ -3,11 +3,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-CONFIG_SERVICE_NAME="antscihub-capture-config.service"
-CONFIG_SERVICE_PATH="/etc/systemd/system/${CONFIG_SERVICE_NAME}"
-CONFIG_SCRIPT="${SCRIPT_DIR}/1-capture_config/apply_camera_config.sh"
-CAPTURE_ENV_FILE="/etc/default/antscihub-capture-config"
-DEFAULT_CAMERA_PROFILE_MODE="dynamic"
+CAMERA_SERVICE_NAME="antscihub-capture-config.service"
+CAMERA_SERVICE_PATH="/etc/systemd/system/${CAMERA_SERVICE_NAME}"
+
+CAMERA_CLI_SOURCE="${SCRIPT_DIR}/1-capture_config/antscam"
+CAMERA_CLI_TARGET="/usr/local/bin/antscam"
+CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
+CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
 
 UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
@@ -18,6 +20,7 @@ DEFAULT_REMOTE_PATH=""
 
 LEGACY_UNITS=(
     "antscihub-capture.service"
+    "${CAMERA_SERVICE_NAME}"
 )
 
 log_info() {
@@ -32,19 +35,6 @@ log_error() {
     echo "[antscihub-install] ERROR: $*" >&2
 }
 
-normalize_camera_profile_mode() {
-    local raw="$1"
-    raw="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    case "$raw" in
-        dynamic|auto|owlcam|imx708)
-            printf '%s\n' "$raw"
-            ;;
-        *)
-            printf '%s\n' ""
-            ;;
-    esac
-}
-
 require_root() {
     if [[ "$(id -u)" -ne 0 ]]; then
         log_error "Please run as root (example: sudo bash install.sh)"
@@ -53,75 +43,19 @@ require_root() {
 }
 
 require_inputs() {
-    if [[ ! -f "$CONFIG_SCRIPT" ]]; then
-        log_error "Missing capture config script: $CONFIG_SCRIPT"
+    if [[ ! -f "$CAMERA_CLI_SOURCE" ]]; then
+        log_error "Missing camera CLI: $CAMERA_CLI_SOURCE"
+        exit 1
+    fi
+
+    if [[ ! -d "$CAMERA_PROFILE_SOURCE_DIR" ]]; then
+        log_error "Missing camera profile directory: $CAMERA_PROFILE_SOURCE_DIR"
         exit 1
     fi
 
     if [[ ! -f "$UPLOAD_SCRIPT" ]]; then
         log_error "Missing upload worker script: $UPLOAD_SCRIPT"
         exit 1
-    fi
-}
-
-ensure_i2c_tools() {
-    if command -v i2ctransfer >/dev/null 2>&1; then
-        return 0
-    fi
-
-    if ! command -v apt-get >/dev/null 2>&1; then
-        log_warn "apt-get not found; cannot auto-install i2c-tools (Owlcam fallback probe will be unavailable)"
-        return 0
-    fi
-
-    log_info "Installing i2c-tools for Owlcam fallback detection"
-    if ! apt-get update -qq >/dev/null 2>&1; then
-        log_warn "apt-get update failed; skipping i2c-tools install"
-        return 0
-    fi
-    if ! apt-get install -y -qq i2c-tools >/dev/null 2>&1; then
-        log_warn "Failed to install i2c-tools; Owlcam fallback probe will be unavailable"
-        return 0
-    fi
-}
-
-ensure_capture_env_file() {
-    local mode_line mode_value normalized
-
-    if [[ ! -f "${CAPTURE_ENV_FILE}" ]]; then
-        cat > "${CAPTURE_ENV_FILE}" <<EOF
-# AntSciHub capture profile mode
-# dynamic: auto mode for official sensors + Owlcam fallback logic
-# auto:    always force camera_auto_detect=1
-# owlcam:  always force OV64A40 manual profile
-# imx708:  always force manual IMX708 profile
-CAMERA_PROFILE_MODE="${DEFAULT_CAMERA_PROFILE_MODE}"
-EOF
-        chmod 0644 "${CAPTURE_ENV_FILE}"
-        log_info "Created ${CAPTURE_ENV_FILE} with CAMERA_PROFILE_MODE=${DEFAULT_CAMERA_PROFILE_MODE}"
-        return 0
-    fi
-
-    mode_line="$(grep -E '^[[:space:]]*CAMERA_PROFILE_MODE=' "${CAPTURE_ENV_FILE}" | tail -n 1 || true)"
-    if [[ -z "${mode_line}" ]]; then
-        {
-            echo ""
-            echo "CAMERA_PROFILE_MODE=\"${DEFAULT_CAMERA_PROFILE_MODE}\""
-        } >> "${CAPTURE_ENV_FILE}"
-        log_info "Added missing CAMERA_PROFILE_MODE to ${CAPTURE_ENV_FILE}"
-        return 0
-    fi
-
-    mode_value="${mode_line#*=}"
-    mode_value="${mode_value%\"}"
-    mode_value="${mode_value#\"}"
-    mode_value="${mode_value%\'}"
-    mode_value="${mode_value#\'}"
-    normalized="$(normalize_camera_profile_mode "${mode_value}")"
-
-    if [[ -z "${normalized}" ]]; then
-        sed -i -E 's|^[[:space:]]*CAMERA_PROFILE_MODE=.*$|CAMERA_PROFILE_MODE="dynamic"|' "${CAPTURE_ENV_FILE}"
-        log_warn "Invalid CAMERA_PROFILE_MODE in ${CAPTURE_ENV_FILE}; reset to dynamic"
     fi
 }
 
@@ -214,38 +148,26 @@ remove_legacy_units() {
     done
 }
 
-ensure_units_unmasked() {
-    local unit
-    for unit in "${CONFIG_SERVICE_NAME}" "${UPLOAD_SERVICE_NAME}"; do
-        if systemctl is-enabled "$unit" 2>/dev/null | grep -qi '^masked'; then
-            log_info "Unmasking ${unit}"
-            if ! systemctl unmask "$unit" >/dev/null 2>&1; then
-                log_warn "Failed to unmask ${unit}; continuing"
-            fi
-        fi
-    done
+disable_dynamic_camera_service() {
+    log_info "Disabling boot-time dynamic camera service"
+    systemctl stop "${CAMERA_SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl disable "${CAMERA_SERVICE_NAME}" >/dev/null 2>&1 || true
+    if systemctl is-enabled "${CAMERA_SERVICE_NAME}" 2>/dev/null | grep -qi '^masked'; then
+        systemctl unmask "${CAMERA_SERVICE_NAME}" >/dev/null 2>&1 || true
+    fi
+    rm -f "${CAMERA_SERVICE_PATH}"
+    rm -f "/etc/systemd/system/multi-user.target.wants/${CAMERA_SERVICE_NAME}"
 }
 
-write_capture_unit() {
-    cat > "${CONFIG_SERVICE_PATH}" <<EOF
-[Unit]
-Description=AntSciHub Camera Auto-Config
-After=local-fs.target
-ConditionPathExists=${CONFIG_SCRIPT}
+install_camera_cli() {
+    log_info "Installing camera profiles to ${CAMERA_PROFILE_TARGET_DIR}"
+    mkdir -p "${CAMERA_PROFILE_TARGET_DIR}"
+    rm -f "${CAMERA_PROFILE_TARGET_DIR}"/*.conf
+    cp -a "${CAMERA_PROFILE_SOURCE_DIR}/." "${CAMERA_PROFILE_TARGET_DIR}/"
+    find "${CAMERA_PROFILE_TARGET_DIR}" -type f -name '*.conf' -exec chmod 0644 {} +
 
-[Service]
-Type=oneshot
-EnvironmentFile=-${CAPTURE_ENV_FILE}
-ExecStart=${CONFIG_SCRIPT}
-WorkingDirectory=${SCRIPT_DIR}
-User=root
-RemainAfterExit=yes
-StandardOutput=journal
-StandardError=journal
-
-[Install]
-WantedBy=multi-user.target
-EOF
+    log_info "Installing antscam CLI to ${CAMERA_CLI_TARGET}"
+    install -m 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
 }
 
 write_upload_unit() {
@@ -281,27 +203,14 @@ WantedBy=multi-user.target
 EOF
 }
 
-start_capture_service() {
-    log_info "Starting ${CONFIG_SERVICE_NAME}"
-    systemctl start "${CONFIG_SERVICE_NAME}"
-
-    sleep 2
-    if systemctl is-active "${CONFIG_SERVICE_NAME}" >/dev/null 2>&1; then
-        log_info "${CONFIG_SERVICE_NAME} is active"
-        return 0
-    fi
-    if systemctl show "${CONFIG_SERVICE_NAME}" -p Result 2>/dev/null | grep -q "Result=success"; then
-        log_info "${CONFIG_SERVICE_NAME} completed successfully"
-        return 0
-    fi
-
-    log_error "Failed to start ${CONFIG_SERVICE_NAME}. Check: journalctl -u ${CONFIG_SERVICE_NAME} -n 100"
-    return 1
-}
-
 sync_upload_service() {
     local was_enabled="$1"
     local was_active="$2"
+
+    if systemctl is-enabled "${UPLOAD_SERVICE_NAME}" 2>/dev/null | grep -qi '^masked'; then
+        log_info "Unmasking ${UPLOAD_SERVICE_NAME}"
+        systemctl unmask "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
+    fi
 
     if [[ "$was_enabled" == "true" ]]; then
         log_info "Restarting ${UPLOAD_SERVICE_NAME} (was enabled before install)"
@@ -328,12 +237,10 @@ sync_upload_service() {
 main() {
     require_root
     require_inputs
-    ensure_i2c_tools
-    ensure_capture_env_file
 
     log_info "Starting installation/update"
 
-    chmod +x "$CONFIG_SCRIPT" "$UPLOAD_SCRIPT"
+    chmod +x "${UPLOAD_SCRIPT}" "${CAMERA_CLI_SOURCE}"
 
     local upload_user
     if ! upload_user="$(determine_upload_user)"; then
@@ -365,13 +272,11 @@ main() {
     fi
 
     remove_legacy_units
-    ensure_units_unmasked
+    disable_dynamic_camera_service
+    install_camera_cli
 
     # Clear old manager-level overrides from older install flows.
     systemctl unset-environment RCLONE_REMOTE RCLONE_PATH UPLOAD_DIR >/dev/null 2>&1 || true
-
-    log_info "Writing ${CONFIG_SERVICE_NAME}"
-    write_capture_unit
 
     log_info "Writing ${UPLOAD_SERVICE_NAME}"
     write_upload_unit "$upload_user" "$upload_home" "$upload_dir"
@@ -379,13 +284,9 @@ main() {
     log_info "Reloading systemd daemon"
     systemctl daemon-reload
 
-    log_info "Enabling ${CONFIG_SERVICE_NAME}"
-    systemctl enable "${CONFIG_SERVICE_NAME}" >/dev/null
-
     log_info "Enabling ${UPLOAD_SERVICE_NAME}"
     systemctl enable "${UPLOAD_SERVICE_NAME}" >/dev/null
 
-    start_capture_service
     sync_upload_service "$upload_was_enabled" "$upload_was_active"
 
     local upload_destination="${DEFAULT_REMOTE}:"
@@ -394,15 +295,18 @@ main() {
     fi
 
     log_info "Installation/update complete"
-    log_info "Capture mode file: ${CAPTURE_ENV_FILE}"
+    log_info "Camera profiles dir: ${CAMERA_PROFILE_TARGET_DIR}"
+    log_info "Camera CLI: ${CAMERA_CLI_TARGET}"
+    log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"
     log_info "Upload service user: ${upload_user}"
     log_info "Upload source dir: ${upload_dir}"
     log_info "Upload destination: ${upload_destination}"
-    log_info "Status checks:"
-    log_info "  systemctl status ${CONFIG_SERVICE_NAME}"
+    log_info "Camera commands:"
+    log_info "  sudo antscam list"
+    log_info "  sudo antscam current"
+    log_info "  sudo antscam apply imx708"
+    log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"
-    log_info "Logs:"
-    log_info "  journalctl -u ${CONFIG_SERVICE_NAME} -n 100"
     log_info "  journalctl -u ${UPLOAD_SERVICE_NAME} -n 100"
 }
 

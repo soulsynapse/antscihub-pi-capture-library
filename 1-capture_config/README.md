@@ -1,82 +1,48 @@
-# Capture Config
+# Camera Profiles (`antscam`)
 
-Boot-time camera detection and Raspberry Pi firmware configuration service.
+Camera config is now manual and profile-driven.
 
-## Behavior
+This module no longer relies on a boot-time dynamic camera detection service.  
+Instead, you apply a known camera profile explicitly with `antscam`.
 
-- Detects camera state on every boot
-- Supports explicit profile modes through `/etc/default/antscihub-capture-config`:
-  - `CAMERA_PROFILE_MODE=dynamic` (default)
-  - `CAMERA_PROFILE_MODE=auto`
-  - `CAMERA_PROFILE_MODE=owlcam`
-  - `CAMERA_PROFILE_MODE=imx708`
-- In `dynamic` mode:
-  - Uses auto-detect profile for non-Owl sensors
-  - Uses manual OV64A40 profile for Owlcam
-  - Preserves existing manual camera overrides already present in base `config.txt`
-  - If no camera is enumerated, tries Owlcam I2C chip probe
-  - If still ambiguous, runs a single bounded Owlcam probe boot, then settles on auto if no camera is found (no endless probe loop)
-- Compares against managed firmware block in `config.txt`
-- Writes only when configuration actually changes
-- Removes stale camera overlay lines before writing the managed block
-- Reboots only on configuration changes
-- Uses reboot-attempt guard to avoid loops
-- Logs to `/var/log/antscihub-capture-config.log`
+## Commands
 
-## Supported Cameras
-
-- **OV64A40** (Owlcam) -> `camera_auto_detect=0`, `dtoverlay=ov64a40`, `dtoverlay=cma`
-- **IMX708 family** (Arducam V3, Raspberry Pi Camera Module 3, Raspberry Pi Camera Module 3 NoIR) -> auto-detect profile (`camera_auto_detect=1`)
-- **IMX708 forced mode** (for stacks where autodetect is unreliable) -> `camera_auto_detect=0`, `dtoverlay=imx708`
-
-## Detection Strategy
-
-1. Try `rpicam-hello --list-cameras` (primary on Bookworm/Trixie), then fall back to `libcamera-hello`, `rpicam-still`, and `libcamera-still`
-2. Pattern-match Owlcam signatures (`ov64a40`, `owlsight`, `arducam_64mp`, etc.)
-3. If no camera is enumerated, probe OV64A40 chip ID (`0x566441`) via `i2ctransfer` (best effort)
-4. Apply profile selection rules from `CAMERA_PROFILE_MODE`
-5. Write config and reboot only when needed
-
-## Reboot Guard
-
-The service implements a reboot attempt counter to prevent infinite loops:
-- Tracks attempt count in `/var/lib/antscihub-capture-config/attempt-count`
-- Max 3 reboot attempts before failing and halting
-- Counter resets when no config change is needed
-- Logs failures to `/var/log/antscihub-capture-config.log`
-
-## Files
-
-- `apply_camera_config.sh` - The main detection and config script
-- `/etc/default/antscihub-capture-config` - Optional mode override (`dynamic|auto|owlcam`)
-- `/etc/default/antscihub-capture-config` - Optional mode override (`dynamic|auto|owlcam|imx708`)
-- Managed block markers in `config.txt`:
-  - `# antscihub-capture-config BEGIN`
-  - `# antscihub-capture-config END`
-
-## Logs
-
-View logs:
 ```bash
-sudo journalctl -u antscihub-capture-config.service -f
-tail -f /var/log/antscihub-capture-config.log
+sudo antscam list
+sudo antscam current
+sudo antscam show <profile>
+sudo antscam apply <profile>
+sudo antscam apply <profile> --dry-run
+sudo antscam apply <profile> --no-reboot
 ```
 
-## Troubleshooting
+## Profiles
 
-**Service won't start:**
-```bash
-systemctl status antscihub-capture-config.service
-journalctl -u antscihub-capture-config.service -n 50
+Profiles are installed to:
+
+```text
+/etc/antscihub/camera-profiles
 ```
 
-**Config not being applied:**
-- Check `/var/log/antscihub-capture-config.log`
-- Verify camera is detected: run `libcamera-hello --list-cameras` manually
-- If using Owlcam and auto-detect cannot enumerate it, install `i2c-tools` for fallback probing (`i2ctransfer`)
-- Check `/var/lib/antscihub-capture-config/attempt-count` for retry state
+Current bundled profiles:
 
-**Stuck in reboot loop:**
-- This should not happen with the reboot guard
-- If it does, check logs and manually set `attempt-count` to 0 or higher
-- Edit `/boot/firmware/config.txt` manually to fix the config
+- `auto` -> `camera_auto_detect=1`
+- `imx708` -> `camera_auto_detect=0`, `dtoverlay=imx708`
+- `owlcam` -> `camera_auto_detect=0`, `dtoverlay=ov64a40,...`, `dtoverlay=cma,cma-256`
+
+## How `apply` works
+
+1. Finds active `config.txt` (`/boot/firmware/config.txt` or `/boot/config.txt`)
+2. Backs it up (`.antscam.bak.<timestamp>`)
+3. Removes previous managed block
+4. Removes known conflicting camera lines
+5. Writes selected profile in the managed block:
+   - `# antscihub-capture-config BEGIN`
+   - `# antscihub-capture-config END`
+6. Reboots (unless `--no-reboot`)
+
+## Notes
+
+- `antscam apply` requires `sudo` (except `--dry-run`)
+- You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
+- `install.sh` installs/updates the CLI and profile files

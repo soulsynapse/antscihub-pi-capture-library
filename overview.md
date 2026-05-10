@@ -1,29 +1,39 @@
 # Repository Overview
 
-This repository provides two Raspberry Pi services:
+This repository provides:
 
-1. `antscihub-capture-config.service`
-2. `antscihub-upload.service`
+1. Manual camera profile CLI: `antscam`
+2. Upload service: `antscihub-upload.service`
 
-## 1. Camera Config Service
+## 1. Camera Profiles (`antscam`)
 
-Location: `1-capture_config/apply_camera_config.sh`
+Source:
+
+- `1-capture_config/antscam`
+- `1-capture_config/profiles/*.conf`
 
 Purpose:
 
-- Detect supported camera model at boot
-- Treat "no camera attached" as a safe no-op (no reboot/config rewrite)
-- Write a managed config block in `/boot/firmware/config.txt` (or `/boot/config.txt`)
-- Reboot only when configuration changes
-- Prevent reboot loops with attempt counter and lock file
+- Apply explicit camera boot configs on demand (`auto`, `imx708`, `owlcam`)
+- Keep profile selection operator-controlled, not dynamic at boot
+- Write a managed block in `/boot/firmware/config.txt` (or `/boot/config.txt`)
+- Reboot only when a profile is applied (unless `--no-reboot`)
+- Keep backups of previous config before writes
+
+Install target:
+
+- CLI: `/usr/local/bin/antscam`
+- Profiles: `/etc/antscihub/camera-profiles`
 
 ## 2. Upload Service
 
-Location: `4-upload/upload_worker.sh`
+Source:
+
+- `4-upload/upload_worker.sh`
 
 Purpose:
 
-- Resolve Desktop for the configured service user and watch `<desktop>/5-UPLOAD`
+- Resolve Desktop for the service user and watch `<desktop>/5-UPLOAD`
 - Upload stable files recursively with preserved relative paths
 - Rename uploads with machine suffix when remote path conflicts exist
 - Create `<filename>.MOVED` reference files on success
@@ -34,19 +44,19 @@ Purpose:
 
 - Remote: `gdrive_personal`
 - Remote path: empty (remote root)
-- Upload service user: installer chooses the invoking non-root user when possible
+- Upload service user: installer chooses invoking non-root user when possible
 
 ## State Paths
-
-Capture config:
-
-- `/var/lib/antscihub-capture-config/`
-- `/var/log/antscihub-capture-config.log`
 
 Upload worker (user-scoped):
 
 - `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/`
 - `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/antscihub-upload.log`
+
+Legacy camera state/log paths from previous dynamic service may still exist:
+
+- `/var/lib/antscihub-capture-config/`
+- `/var/log/antscihub-capture-config.log`
 
 ## Validation
 

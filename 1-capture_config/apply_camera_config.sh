@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Legacy script retained for backward compatibility.
+# Active camera configuration flow is now manual via `antscam`.
+
 STATE_DIR="/var/lib/antscihub-capture-config"
 LOG_FILE="/var/log/antscihub-capture-config.log"
 ATTEMPT_COUNT="${STATE_DIR}/attempt-count"

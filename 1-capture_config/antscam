@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BEGIN_MARKER="# antscihub-capture-config BEGIN"
+END_MARKER="# antscihub-capture-config END"
+
+DEFAULT_PROFILE_DIR="/etc/antscihub/camera-profiles"
+PROFILE_DIR="${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}"
+
+CONFIG_CANDIDATES=(
+    /boot/firmware/config.txt
+    /boot/config.txt
+)
+
+usage() {
+    cat <<'EOF'
+Usage:
+  sudo antscam list
+  sudo antscam current
+  sudo antscam show <profile>
+  sudo antscam apply <profile> [--dry-run] [--no-reboot]
+
+Profiles are loaded from:
+  /etc/antscihub/camera-profiles
+
+Examples:
+  sudo antscam list
+  sudo antscam show imx708
+  sudo antscam apply imx708
+  sudo antscam apply auto --dry-run
+EOF
+}
+
+die() {
+    echo "antscam: $*" >&2
+    exit 1
+}
+
+require_profile_dir() {
+    [[ -d "${PROFILE_DIR}" ]] || die "profile directory not found: ${PROFILE_DIR}"
+}
+
+resolve_config_file() {
+    local candidate
+    for candidate in "${CONFIG_CANDIDATES[@]}"; do
+        if [[ -f "${candidate}" ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+sanitize_profile_name() {
+    local name="$1"
+    [[ "${name}" =~ ^[a-zA-Z0-9._-]+$ ]] || die "invalid profile name: ${name}"
+}
+
+profile_path() {
+    local profile="$1"
+    sanitize_profile_name "${profile}"
+    local path="${PROFILE_DIR}/${profile}.conf"
+    [[ -f "${path}" ]] || die "profile not found: ${profile}"
+    printf '%s\n' "${path}"
+}
+
+normalize_lines() {
+    awk '
+        {
+            sub(/\r$/, "", $0)
+        }
+        /^[[:space:]]*#/ { next }
+        /^[[:space:]]*$/ { next }
+        {
+            gsub(/[[:space:]]+$/, "", $0)
+            print
+        }
+    '
+}
+
+render_profile_block() {
+    local profile="$1"
+    local path
+    path="$(profile_path "${profile}")"
+    normalize_lines < "${path}"
+}
+
+get_current_managed_block() {
+    local config_file="$1"
+    awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
+        $0 == begin { in_block = 1; next }
+        $0 == end { in_block = 0; next }
+        in_block { print }
+    ' "${config_file}" | normalize_lines
+}
+
+list_profiles() {
+    require_profile_dir
+    local file name desc
+    shopt -s nullglob
+    local files=("${PROFILE_DIR}"/*.conf)
+    shopt -u nullglob
+
+    if (( ${#files[@]} == 0 )); then
+        die "no profiles found in ${PROFILE_DIR}"
+    fi
+
+    for file in "${files[@]}"; do
+        name="$(basename "${file}" .conf)"
+        desc="$(grep -E '^[[:space:]]*#' "${file}" | head -n 1 | sed -E 's/^[[:space:]]*#[[:space:]]*//')"
+        if [[ -n "${desc}" ]]; then
+            printf '%s - %s\n' "${name}" "${desc}"
+        else
+            printf '%s\n' "${name}"
+        fi
+    done | sort
+}
+
+current_profile_name() {
+    require_profile_dir
+    local config_file
+    config_file="$(resolve_config_file)" || die "could not locate Raspberry Pi config.txt"
+
+    local current_block
+    current_block="$(get_current_managed_block "${config_file}")"
+    if [[ -z "${current_block//[[:space:]]/}" ]]; then
+        echo "unmanaged"
+        return 0
+    fi
+
+    local file name profile_block
+    shopt -s nullglob
+    for file in "${PROFILE_DIR}"/*.conf; do
+        name="$(basename "${file}" .conf)"
+        profile_block="$(render_profile_block "${name}")"
+        if [[ "${current_block}" == "${profile_block}" ]]; then
+            echo "${name}"
+            return 0
+        fi
+    done
+    shopt -u nullglob
+
+    echo "custom-managed"
+}
+
+show_profile() {
+    local profile="$1"
+    render_profile_block "${profile}"
+}
+
+remove_old_managed_block() {
+    local config_file="$1"
+    local out_file="$2"
+    awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
+        $0 == begin { in_block = 1; next }
+        $0 == end { in_block = 0; next }
+        !in_block { print }
+    ' "${config_file}" > "${out_file}"
+}
+
+remove_conflicting_camera_lines() {
+    local in_file="$1"
+    local out_file="$2"
+    awk '
+        /^[[:space:]]*camera_auto_detect[[:space:]]*=/ { next }
+        /^[[:space:]]*dtoverlay=ov5647([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx219([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx477([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx296([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx708([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=ov64a40([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=arducam-64mp([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx290([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx378([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=ov9281([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx327([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=imx519([[:space:]]|,|$)/ { next }
+        /^[[:space:]]*dtoverlay=cma([[:space:]]|,|$)/ { next }
+        { print }
+    ' "${in_file}" > "${out_file}"
+}
+
+apply_profile() {
+    local profile="$1"
+    shift || true
+
+    local dry_run="false"
+    local no_reboot="false"
+    while (($# > 0)); do
+        case "$1" in
+            --dry-run)
+                dry_run="true"
+                ;;
+            --no-reboot)
+                no_reboot="true"
+                ;;
+            *)
+                die "unknown option for apply: $1"
+                ;;
+        esac
+        shift
+    done
+
+    local config_file
+    config_file="$(resolve_config_file)" || die "could not locate Raspberry Pi config.txt"
+
+    local profile_block
+    profile_block="$(render_profile_block "${profile}")"
+    [[ -n "${profile_block//[[:space:]]/}" ]] || die "profile '${profile}' is empty"
+
+    local current_block
+    current_block="$(get_current_managed_block "${config_file}")"
+    if [[ "${current_block}" == "${profile_block}" ]]; then
+        echo "already configured: ${profile}"
+        return 0
+    fi
+
+    if [[ "${dry_run}" != "true" && "$(id -u)" -ne 0 ]]; then
+        die "apply requires root (use sudo)"
+    fi
+
+    local tmp_without_block tmp_cleaned
+    tmp_without_block="$(mktemp)"
+    tmp_cleaned="$(mktemp)"
+    trap 'rm -f "${tmp_without_block}" "${tmp_cleaned}"' EXIT
+
+    remove_old_managed_block "${config_file}" "${tmp_without_block}"
+    remove_conflicting_camera_lines "${tmp_without_block}" "${tmp_cleaned}"
+
+    {
+        cat "${tmp_cleaned}"
+        printf '%s\n' "${BEGIN_MARKER}"
+        printf '%s\n' "${profile_block}"
+        printf '%s\n' "${END_MARKER}"
+    } > "${tmp_without_block}"
+
+    if [[ "${dry_run}" == "true" ]]; then
+        echo "dry-run: would apply profile '${profile}' to ${config_file}"
+        echo "----- managed block -----"
+        printf '%s\n' "${BEGIN_MARKER}"
+        printf '%s\n' "${profile_block}"
+        printf '%s\n' "${END_MARKER}"
+        return 0
+    fi
+
+    local backup_file="${config_file}.antscam.bak.$(date +%Y%m%d-%H%M%S)"
+    cp "${config_file}" "${backup_file}"
+    install -m 0644 "${tmp_without_block}" "${config_file}"
+    sync
+
+    echo "applied profile: ${profile}"
+    echo "config: ${config_file}"
+    echo "backup: ${backup_file}"
+
+    if [[ "${no_reboot}" == "true" ]]; then
+        echo "no reboot requested. reboot manually to apply firmware changes."
+        return 0
+    fi
+
+    echo "rebooting to apply firmware changes..."
+    systemctl reboot --no-block
+}
+
+main() {
+    local cmd="${1:-}"
+    case "${cmd}" in
+        list)
+            shift
+            [[ $# -eq 0 ]] || die "list takes no arguments"
+            list_profiles
+            ;;
+        current)
+            shift
+            [[ $# -eq 0 ]] || die "current takes no arguments"
+            current_profile_name
+            ;;
+        show)
+            shift
+            [[ $# -eq 1 ]] || die "usage: antscam show <profile>"
+            show_profile "$1"
+            ;;
+        apply)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antscam apply <profile> [--dry-run] [--no-reboot]"
+            local profile="$1"
+            shift
+            apply_profile "${profile}" "$@"
+            ;;
+        help|-h|--help|"")
+            usage
+            ;;
+        *)
+            die "unknown command: ${cmd}"
+            ;;
+    esac
+}
+
+main "$@"

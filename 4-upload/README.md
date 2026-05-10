@@ -8,6 +8,7 @@ The installed service uses:
 
 - `RCLONE_REMOTE=gdrive_personal`
 - `RCLONE_PATH=5-UPLOAD`
+- `UPLOAD_DIR=<detected desktop>/5-UPLOAD` (set by `install.sh` per device user)
 
 Override via:
 

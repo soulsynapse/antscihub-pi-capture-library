@@ -8,9 +8,12 @@ Type=simple
 ExecStart=/path/to/4-upload/upload_worker.sh
 WorkingDirectory=/path/to/repo
 # Set to the account that owns Desktop/5-UPLOAD and rclone config.
-User=pi
+# install.sh writes this automatically based on the real device user.
+User=REPLACE_WITH_REAL_USER
+Environment="HOME=/home/REPLACE_WITH_REAL_USER"
 Environment="RCLONE_REMOTE=gdrive_personal"
 Environment="RCLONE_PATH=5-UPLOAD"
+Environment="UPLOAD_DIR=/home/REPLACE_WITH_REAL_USER/Desktop/5-UPLOAD"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

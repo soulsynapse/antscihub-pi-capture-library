@@ -12,7 +12,8 @@ WorkingDirectory=/path/to/repo
 User=REPLACE_WITH_REAL_USER
 Environment="HOME=/home/REPLACE_WITH_REAL_USER"
 Environment="RCLONE_REMOTE=gdrive_personal"
-Environment="RCLONE_PATH=5-UPLOAD"
+# Empty means remote root.
+Environment="RCLONE_PATH="
 Environment="UPLOAD_DIR=/home/REPLACE_WITH_REAL_USER/Desktop/5-UPLOAD"
 Restart=on-failure
 RestartSec=10

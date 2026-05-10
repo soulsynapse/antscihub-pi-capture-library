@@ -40,6 +40,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: hardcoding `~/Desktop` can fail across users/locales
    - Fix: infer Desktop path via XDG helpers/config, then watch `<desktop>/5-UPLOAD`
 
+10. Local-vs-remote path coupling
+   - Result: `5-UPLOAD` was used as both local source name and forced remote destination path
+   - Fix: keep local watch path at `<desktop>/5-UPLOAD`, but allow empty `RCLONE_PATH` (remote root) and set that as default
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

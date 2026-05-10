@@ -7,7 +7,7 @@
 The installed service uses:
 
 - `RCLONE_REMOTE=gdrive_personal`
-- `RCLONE_PATH=5-UPLOAD`
+- `RCLONE_PATH=` (empty by default, meaning remote root)
 - `UPLOAD_DIR=<detected desktop>/5-UPLOAD` (set by `install.sh` per device user)
 
 Override via:
@@ -38,8 +38,9 @@ sudo systemctl restart antscihub-upload.service
 
 Remote behavior:
 
-- Destination root is `RCLONE_REMOTE:RCLONE_PATH` (default: `gdrive_personal:5-UPLOAD`)
-- Each file is moved to `RCLONE_PATH/<relative path from local 5-UPLOAD>`
+- Destination root is `RCLONE_REMOTE:RCLONE_PATH` (default: `gdrive_personal:` root)
+- If `RCLONE_PATH` is set, each file is moved to `RCLONE_PATH/<relative path from local 5-UPLOAD>`
+- If `RCLONE_PATH` is empty, files are moved directly under remote root with preserved relative paths
 - No extra nested `5-UPLOAD/5-UPLOAD` level is created
 
 ## Safety/Resilience

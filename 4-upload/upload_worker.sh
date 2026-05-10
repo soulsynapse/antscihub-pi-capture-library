@@ -64,6 +64,11 @@ LOCK_FILE="${RUNTIME_DIR}/antscihub-upload.lock"
 
 RCLONE_REMOTE="${RCLONE_REMOTE:-}"
 RCLONE_PATH="${RCLONE_PATH:-}"
+RCLONE_PATH="${RCLONE_PATH#/}"
+RCLONE_PATH="${RCLONE_PATH%/}"
+if [[ "${RCLONE_PATH}" == "." ]]; then
+    RCLONE_PATH=""
+fi
 
 # Tuning
 FILE_STABILITY_CHECK_INTERVAL=10  # Check size stability every 10 seconds
@@ -71,8 +76,8 @@ MIN_FILE_AGE=30                   # Wait at least 30 seconds before uploading
 MAX_RETRIES=5                     # Max retry attempts per file
 SCAN_INTERVAL=10                  # Scan for new files every 10 seconds
 
-if [[ -z "${RCLONE_REMOTE}" ]] || [[ -z "${RCLONE_PATH}" ]]; then
-    echo "[upload-worker] Error: RCLONE_REMOTE and RCLONE_PATH must be set" >&2
+if [[ -z "${RCLONE_REMOTE}" ]]; then
+    echo "[upload-worker] Error: RCLONE_REMOTE must be set" >&2
     exit 1
 fi
 
@@ -262,7 +267,11 @@ do_upload() {
     local file_size
     local file_mtime
     basename=$(basename "$file")
-    remote_target="${RCLONE_REMOTE}:${RCLONE_PATH}/${relative_path}"
+    if [[ -n "${RCLONE_PATH}" ]]; then
+        remote_target="${RCLONE_REMOTE}:${RCLONE_PATH}/${relative_path}"
+    else
+        remote_target="${RCLONE_REMOTE}:${relative_path}"
+    fi
     file_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
     file_mtime=$(stat -c %y "$file" 2>/dev/null || echo "unknown")
 
@@ -304,7 +313,11 @@ acquire_lock
 
 log "INFO" "Upload worker starting"
 log "INFO" "Watching: $UPLOAD_DIR"
-log "INFO" "Remote: ${RCLONE_REMOTE}:${RCLONE_PATH}"
+if [[ -n "${RCLONE_PATH}" ]]; then
+    log "INFO" "Remote: ${RCLONE_REMOTE}:${RCLONE_PATH}"
+else
+    log "INFO" "Remote: ${RCLONE_REMOTE}: (root)"
+fi
 log "INFO" "State dir: $STATE_DIR"
 log "INFO" "Log file: $LOG_FILE"
 

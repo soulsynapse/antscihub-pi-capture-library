@@ -26,7 +26,7 @@ echo "[static-checks] OK upload worker checks"
 
 echo "[static-checks] Checking install defaults"
 grep -q 'Environment="RCLONE_REMOTE=gdrive_personal"' "${REPO_ROOT}/install.sh"
-grep -q 'Environment="RCLONE_PATH=5-UPLOAD"' "${REPO_ROOT}/install.sh"
+grep -q 'Environment="RCLONE_PATH="' "${REPO_ROOT}/install.sh"
 grep -q 'Environment="UPLOAD_DIR=${upload_dir}"' "${REPO_ROOT}/install.sh"
 echo "[static-checks] OK install defaults"
 

@@ -28,7 +28,9 @@ This installs:
 The upload service is configured by default to upload to:
 
 - `RCLONE_REMOTE=gdrive_personal`
-- `RCLONE_PATH=5-UPLOAD`
+- `RCLONE_PATH=` (empty, so uploads go to remote root)
+
+Local source remains `<desktop>/5-UPLOAD`; that name is local-only and is not added to the remote path unless you explicitly set `RCLONE_PATH=5-UPLOAD`.
 
 `install.sh` is standalone and safe to re-run on update pulls. It rewrites current units, removes known legacy units, clears old manager-level env overrides, and re-detects the upload user's Desktop path for `5-UPLOAD`.
 

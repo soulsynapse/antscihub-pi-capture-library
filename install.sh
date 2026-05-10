@@ -12,7 +12,7 @@ UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
 UPLOAD_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.sh"
 
 DEFAULT_REMOTE="gdrive_personal"
-DEFAULT_REMOTE_PATH="5-UPLOAD"
+DEFAULT_REMOTE_PATH=""
 
 LEGACY_UNITS=(
     "antscihub-capture.service"
@@ -296,10 +296,15 @@ main() {
     start_capture_service
     sync_upload_service "$upload_was_enabled" "$upload_was_active"
 
+    local upload_destination="${DEFAULT_REMOTE}:"
+    if [[ -n "${DEFAULT_REMOTE_PATH}" ]]; then
+        upload_destination="${DEFAULT_REMOTE}:${DEFAULT_REMOTE_PATH}"
+    fi
+
     log_info "Installation/update complete"
     log_info "Upload service user: ${upload_user}"
     log_info "Upload source dir: ${upload_dir}"
-    log_info "Upload destination: ${DEFAULT_REMOTE}:${DEFAULT_REMOTE_PATH}"
+    log_info "Upload destination: ${upload_destination}"
     log_info "Status checks:"
     log_info "  systemctl status ${CONFIG_SERVICE_NAME}"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"

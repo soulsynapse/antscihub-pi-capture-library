@@ -31,7 +31,7 @@ Purpose:
 ## Operational Defaults
 
 - Remote: `gdrive_personal`
-- Remote path: `5-UPLOAD`
+- Remote path: empty (remote root)
 - Upload service user: installer chooses the invoking non-root user when possible
 
 ## State Paths

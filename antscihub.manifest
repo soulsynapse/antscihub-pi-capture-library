@@ -1,4 +1,4 @@
-SERVICE_NAME=antscihub-capture.service
+SERVICE_NAME=antscihub-capture-config.service
 GIT_REMOTE=https://github.com/soulsynapse/antscihub-pi-capture-library.git
 INSTALL_CMD=bash install.sh
 STARTUP_GRACE=10

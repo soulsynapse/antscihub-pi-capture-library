@@ -1,0 +1,20 @@
+[Unit]
+Description=AntSciHub Upload Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/path/to/upload_worker.sh
+WorkingDirectory=/home/pi
+User=pi
+Restart=on-failure
+RestartSec=10
+
+# rclone remote and path must be configured here or via environment
+# Example for Google Drive:
+# Environment="RCLONE_REMOTE=gdrive"
+# Environment="RCLONE_PATH=Videos"
+
+[Install]
+WantedBy=multi-user.target

@@ -107,7 +107,7 @@ list_profiles() {
 
     for file in "${files[@]}"; do
         name="$(basename "${file}" .conf)"
-        desc="$(grep -E '^[[:space:]]*#' "${file}" | head -n 1 | sed -E 's/^[[:space:]]*#[[:space:]]*//')"
+        desc="$(awk '/^[[:space:]]*#/ { sub(/^[[:space:]]*#[[:space:]]*/, "", $0); print; exit }' "${file}")"
         if [[ -n "${desc}" ]]; then
             printf '%s - %s\n' "${name}" "${desc}"
         else
@@ -130,7 +130,10 @@ current_profile_name() {
 
     local file name profile_block
     shopt -s nullglob
-    for file in "${PROFILE_DIR}"/*.conf; do
+    local files=("${PROFILE_DIR}"/*.conf)
+    shopt -u nullglob
+
+    for file in "${files[@]}"; do
         name="$(basename "${file}" .conf)"
         profile_block="$(render_profile_block "${name}")"
         if [[ "${current_block}" == "${profile_block}" ]]; then
@@ -138,7 +141,6 @@ current_profile_name() {
             return 0
         fi
     done
-    shopt -u nullglob
 
     echo "custom-managed"
 }

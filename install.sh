@@ -49,6 +49,27 @@ require_inputs() {
     fi
 }
 
+ensure_i2c_tools() {
+    if command -v i2ctransfer >/dev/null 2>&1; then
+        return 0
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_warn "apt-get not found; cannot auto-install i2c-tools (Owlcam fallback probe will be unavailable)"
+        return 0
+    fi
+
+    log_info "Installing i2c-tools for Owlcam fallback detection"
+    if ! apt-get update -qq >/dev/null 2>&1; then
+        log_warn "apt-get update failed; skipping i2c-tools install"
+        return 0
+    fi
+    if ! apt-get install -y -qq i2c-tools >/dev/null 2>&1; then
+        log_warn "Failed to install i2c-tools; Owlcam fallback probe will be unavailable"
+        return 0
+    fi
+}
+
 determine_upload_user() {
     if [[ -n "${SUDO_USER:-}" ]] && [[ "${SUDO_USER}" != "root" ]] && id "${SUDO_USER}" >/dev/null 2>&1; then
         printf '%s\n' "${SUDO_USER}"
@@ -239,6 +260,7 @@ sync_upload_service() {
 main() {
     require_root
     require_inputs
+    ensure_i2c_tools
 
     log_info "Starting installation/update"
 

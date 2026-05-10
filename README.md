@@ -24,6 +24,7 @@ This installs:
 
 - `antscihub-capture-config.service`
 - `antscihub-upload.service`
+- `i2c-tools` (if missing) to enable Owlcam fallback hardware detection
 
 The upload service is configured by default to upload to:
 
@@ -93,3 +94,4 @@ bash 2-test_scripts/run_static_checks.sh
 
 - Upload requires `rclone` installed and configured for `gdrive_personal`.
 - Camera detection requires `libcamera-hello` or `rpicam-hello` and supports OV64A40 plus IMX708-family sensors (including Raspberry Pi Camera Module 3 NoIR).
+- For best Owlcam fallback detection when auto-detect cannot enumerate third-party sensors, install `i2c-tools` (`i2ctransfer`).

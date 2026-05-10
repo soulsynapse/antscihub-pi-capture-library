@@ -49,8 +49,8 @@ This file tracks key issues that were found and fixed in this repo.
    - Fix: on conflict, upload worker renames new upload with machine suffix and keeps both files
 
 12. No-camera startup behavior
-   - Result: no camera attached caused service failure even though no config change was needed
-   - Fix: treat no-camera detection as a clean no-op and keep current config unchanged
+   - Result: no camera attached could leave stale manual camera settings active
+   - Fix: treat no-camera detection as a clean auto-profile fallback (`camera_auto_detect=1`) so future camera attachment can be discovered
 
 13. Raspberry Pi Camera Module 3 NoIR explicit detection
    - Result: Module 3 NoIR support depended on generic IMX708 match and was not explicit
@@ -59,6 +59,10 @@ This file tracks key issues that were found and fixed in this repo.
 14. Legacy manual camera config lines override managed output
    - Result: old `camera_auto_detect`/`dtoverlay` lines could remain active and prevent correct detection/config updates
    - Fix: scrub known camera directives before writing the managed camera block
+
+15. Owlcam detection when auto-detect reports no camera
+   - Result: third-party Owlcam can fail `--list-cameras` under auto-detect mode and never switch to required manual overlay
+   - Fix: added optional hardware fallback probe via `i2ctransfer` for OV64A40 chip ID, plus installer dependency check for `i2c-tools`
 
 ## Validation Added
 

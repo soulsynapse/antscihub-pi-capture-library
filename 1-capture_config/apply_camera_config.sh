@@ -48,6 +48,61 @@ if [[ -z "${CONFIG_FILE}" ]]; then
     exit 1
 fi
 
+DESIRED_BLOCK=""
+CAMERA_NAME="unknown"
+
+set_desired_auto_profile() {
+    CAMERA_NAME="auto_detect"
+    DESIRED_BLOCK=$(cat <<'EOF'
+camera_auto_detect=1
+EOF
+)
+}
+
+set_desired_owlcam_profile() {
+    CAMERA_NAME="owlcam"
+    DESIRED_BLOCK=$(cat <<'EOF'
+camera_auto_detect=0
+dtoverlay=ov64a40,link-frequency=360000000
+dtoverlay=cma,cma-256
+EOF
+)
+}
+
+list_i2c_buses() {
+    local dev bus
+    for dev in /dev/i2c-*; do
+        [[ -e "$dev" ]] || continue
+        bus="${dev##*/i2c-}"
+        [[ "$bus" =~ ^[0-9]+$ ]] || continue
+        printf '%s\n' "$bus"
+    done | sort -n | uniq
+}
+
+# Best-effort Owlcam hardware probe for cases where camera_auto_detect=1
+# cannot enumerate third-party sensors.
+detect_owlcam_via_i2c() {
+    local bus raw normalized
+
+    if ! command -v i2ctransfer >/dev/null 2>&1; then
+        return 1
+    fi
+
+    while IFS= read -r bus; do
+        [[ -n "$bus" ]] || continue
+        raw="$(i2ctransfer -f -y "$bus" w2@0x36 0x30 0x0A r3 2>/dev/null || true)"
+        [[ -n "$raw" ]] || continue
+
+        normalized="$(echo "$raw" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+        if [[ "$normalized" == "0x560x640x41" ]]; then
+            log "INFO" "Detected Owlcam via I2C probe on bus ${bus} (chip ID 0x566441)"
+            return 0
+        fi
+    done < <(list_i2c_buses)
+
+    return 1
+}
+
 # Detect camera with robust fallback strategy
 detect_camera() {
     local no_camera_patterns='no cameras? available|no cameras? detected|camera not found|cannot find camera|failed to register camera'
@@ -78,30 +133,26 @@ detect_camera() {
         return 1
     fi
 
-    # No camera attached is a valid runtime state: skip config writes/reboots.
+    # If no camera is detected, default to the auto-detect profile.
     if echo "$CAMERA_LIST_OUTPUT" | grep -qiE "$no_camera_patterns"; then
-        log "WARN" "No camera detected. Leaving existing camera config unchanged."
-        return 2
+        if detect_owlcam_via_i2c; then
+            log "INFO" "Switching to Owlcam manual profile (camera_auto_detect=0)."
+            set_desired_owlcam_profile
+            return 0
+        fi
+
+        log "WARN" "No camera detected. Falling back to auto-detect profile."
+        set_desired_auto_profile
+        return 0
     fi
 
     # Pattern matching for supported cameras
     if echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'ov64a40|owlcam'; then
         log "INFO" "Detected: OV64A40 (Owlcam)"
-        CAMERA_NAME="owlcam"
-        DESIRED_BLOCK=$(cat <<'EOF'
-camera_auto_detect=0
-dtoverlay=ov64a40,link-frequency=360000000
-dtoverlay=cma,cma-256
-EOF
-)
-    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|imx708_noir|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
-        log "INFO" "Detected: IMX708 family (Arducam V3 / Raspberry Pi Camera Module 3 / Module 3 NoIR)"
-        CAMERA_NAME="imx708_family"
-        DESIRED_BLOCK=$(cat <<'EOF'
-camera_auto_detect=0
-dtoverlay=imx708
-EOF
-)
+        set_desired_owlcam_profile
+    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|imx708_noir|imx219|imx477|imx296|ov5647|ov9281|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
+        log "INFO" "Detected: supported non-Owlcam sensor; using auto-detect profile"
+        set_desired_auto_profile
     else
         log "ERROR" "Unsupported or undetected camera"
         log "ERROR" "Camera detection output: $CAMERA_LIST_OUTPUT"
@@ -113,14 +164,7 @@ EOF
 
 # Call detection function
 CAMERA_LIST_OUTPUT=""
-if detect_camera; then
-    :
-else
-    detection_result=$?
-    if [[ $detection_result -eq 2 ]]; then
-        rm -f "$ATTEMPT_COUNT"
-        exit 0
-    fi
+if ! detect_camera; then
     exit 1
 fi
 
@@ -132,6 +176,11 @@ CURRENT_BLOCK=$(awk -v begin="${BEGIN_MARKER}" -v end="${END_MARKER}" '
     $0 == end { in_block = 0; next }
     in_block { print }
 ' "${CONFIG_FILE}")
+
+# Seed defaults only if detection did not choose a profile.
+if [[ -z "${DESIRED_BLOCK}" ]]; then
+    set_desired_auto_profile
+fi
 
 # Check if config is already correct
 if [[ "${CURRENT_BLOCK}" == "${DESIRED_BLOCK}" ]]; then

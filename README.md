@@ -92,4 +92,4 @@ bash 2-test_scripts/run_static_checks.sh
 ## Notes
 
 - Upload requires `rclone` installed and configured for `gdrive_personal`.
-- Camera detection requires `libcamera-hello` or `rpicam-hello`.
+- Camera detection requires `libcamera-hello` or `rpicam-hello` and supports OV64A40 plus IMX708-family sensors (including Raspberry Pi Camera Module 3 NoIR).

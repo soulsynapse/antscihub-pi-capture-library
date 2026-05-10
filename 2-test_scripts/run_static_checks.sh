@@ -27,6 +27,11 @@ grep -q 'build_conflict_relative_path' "${REPO_ROOT}/4-upload/upload_worker.sh"
 grep -q 'MACHINE_SUFFIX' "${REPO_ROOT}/4-upload/upload_worker.sh"
 echo "[static-checks] OK upload worker checks"
 
+echo "[static-checks] Checking camera detection coverage"
+grep -qi 'imx708' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
+grep -qi 'module[[:space:]]*3[[:space:]]*noir' "${REPO_ROOT}/1-capture_config/apply_camera_config.sh"
+echo "[static-checks] OK camera detection checks"
+
 echo "[static-checks] Checking install defaults"
 grep -q 'Environment="RCLONE_REMOTE=gdrive_personal"' "${REPO_ROOT}/install.sh"
 grep -q 'Environment="RCLONE_PATH="' "${REPO_ROOT}/install.sh"

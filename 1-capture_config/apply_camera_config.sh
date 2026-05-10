@@ -90,9 +90,9 @@ dtoverlay=ov64a40,link-frequency=360000000
 dtoverlay=cma,cma-256
 EOF
 )
-    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|arducam'; then
-        log "INFO" "Detected: IMX708 (Arducam V3)"
-        CAMERA_NAME="arducam_v3"
+    elif echo "$CAMERA_LIST_OUTPUT" | grep -qiE 'imx708|arducam|camera[[:space:]]*module[[:space:]]*3|module[[:space:]]*3[[:space:]]*noir'; then
+        log "INFO" "Detected: IMX708 family (Arducam V3 / Raspberry Pi Camera Module 3 / Module 3 NoIR)"
+        CAMERA_NAME="imx708_family"
         DESIRED_BLOCK=$(cat <<'EOF'
 camera_auto_detect=0
 dtoverlay=imx708

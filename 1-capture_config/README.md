@@ -14,8 +14,8 @@ Boot-time camera detection and Raspberry Pi firmware configuration service.
 
 ## Supported Cameras
 
-- **OV64A40** (Owlcam) → `camera_auto_detect=0`, `dtoverlay=ov64a40`, `dtoverlay=cma`
-- **IMX708** (Arducam V3) → `camera_auto_detect=0`, `dtoverlay=imx708`
+- **OV64A40** (Owlcam) -> `camera_auto_detect=0`, `dtoverlay=ov64a40`, `dtoverlay=cma`
+- **IMX708 family** (Arducam V3, Raspberry Pi Camera Module 3, Raspberry Pi Camera Module 3 NoIR) -> `camera_auto_detect=0`, `dtoverlay=imx708`
 
 ## Detection Strategy
 

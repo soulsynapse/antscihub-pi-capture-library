@@ -52,6 +52,10 @@ This file tracks key issues that were found and fixed in this repo.
    - Result: no camera attached caused service failure even though no config change was needed
    - Fix: treat no-camera detection as a clean no-op and keep current config unchanged
 
+13. Raspberry Pi Camera Module 3 NoIR explicit detection
+   - Result: Module 3 NoIR support depended on generic IMX708 match and was not explicit
+   - Fix: added explicit Module 3/NoIR detection keywords under IMX708 family handling
+
 ## Validation Added
 
 - `2-test_scripts/run_static_checks.sh` for shell syntax and key config sanity checks

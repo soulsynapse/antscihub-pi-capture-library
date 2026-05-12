@@ -102,15 +102,13 @@ detect_machine_suffix() {
 
 MACHINE_SUFFIX="$(detect_machine_suffix)"
 
-FLEET_SCHEMA="fleet.service-manager.v1"
 UPLOAD_SERVICE_NAME="${UPLOAD_SERVICE_NAME:-antscihub-upload.service}"
+FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
 MQTT_EVENT_ENABLED="${MQTT_EVENT_ENABLED:-true}"
 DEVICE_ID_CACHE=""
 DEVICE_ID_CACHE_READY="false"
-FLEET_PUBLISH_MODE=""
-FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-m"
 DEVICE_ID_WARNING_EMITTED="false"
 MQTT_PUBLISH_WARNING_EMITTED="false"
 declare -A SEEN_FILE_DETECTIONS=()
@@ -153,35 +151,6 @@ normalize_device_id() {
     printf '%s' "${input}"
 }
 
-detect_fleet_publish_mode() {
-    if [[ -n "${FLEET_PUBLISH_MODE}" ]]; then
-        return 0
-    fi
-
-    if ! command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1; then
-        FLEET_PUBLISH_MODE="unavailable"
-        return 1
-    fi
-
-    local help_output=""
-    help_output="$("${FLEET_PUBLISH_BIN}" --help 2>&1 || true)"
-
-    if grep -q -- '--topic' <<<"${help_output}" && grep -q -- '--payload' <<<"${help_output}"; then
-        FLEET_PUBLISH_MODE="long_topic_payload"
-    elif grep -q -- '--topic' <<<"${help_output}" && grep -q -- '--message' <<<"${help_output}"; then
-        FLEET_PUBLISH_MODE="long_topic_message"
-    elif grep -Eq -- '(^|[[:space:],])-t([[:space:],]|$)' <<<"${help_output}" && grep -Eq -- '(^|[[:space:],])-(m|p)([[:space:],]|$)' <<<"${help_output}"; then
-        if grep -Eq -- '(^|[[:space:],])-m([[:space:],]|$)' <<<"${help_output}"; then
-            FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-m"
-        else
-            FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-p"
-        fi
-        FLEET_PUBLISH_MODE="short_topic_message"
-    else
-        FLEET_PUBLISH_MODE="positional"
-    fi
-}
-
 resolve_device_id() {
     if [[ "${DEVICE_ID_CACHE_READY}" == "true" ]]; then
         printf '%s' "${DEVICE_ID_CACHE}"
@@ -211,6 +180,18 @@ resolve_device_id() {
                 candidate="$(normalize_device_id "${candidate}")"
             fi
         fi
+    fi
+
+    if [[ -z "${candidate}" ]] && command -v python3 >/dev/null 2>&1; then
+        candidate="$(python3 - <<'PY' 2>/dev/null || true
+try:
+    from mqtt_client import DEVICE_ID
+    print((DEVICE_ID or "").strip())
+except Exception:
+    pass
+PY
+)"
+        candidate="$(normalize_device_id "${candidate}")"
     fi
 
     if [[ -z "${candidate}" ]]; then
@@ -245,24 +226,18 @@ publish_with_fleet_publish() {
     local topic="$1"
     local payload="$2"
 
-    detect_fleet_publish_mode || return 1
-    case "${FLEET_PUBLISH_MODE}" in
-        long_topic_payload)
-            "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" >/dev/null 2>&1
-            ;;
-        long_topic_message)
-            "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" >/dev/null 2>&1
-            ;;
-        short_topic_message)
-            "${FLEET_PUBLISH_BIN}" -t "${topic}" "${FLEET_PUBLISH_SHORT_PAYLOAD_FLAG}" "${payload}" >/dev/null 2>&1
-            ;;
-        positional)
-            "${FLEET_PUBLISH_BIN}" "${topic}" "${payload}" >/dev/null 2>&1
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1 || return 1
+
+    # Preferred format from fleet messaging guide.
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+
+    # Compatibility fallbacks for older publisher variants.
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+
+    return 1
 }
 
 publish_with_fleet_mqtt_python() {
@@ -307,14 +282,21 @@ for method_name in ("publish_json", "publish", "send"):
     try:
         if method_name == "publish_json":
             if isinstance(payload_obj, str):
-                method(topic, json.loads(payload_obj))
+                parsed_payload = json.loads(payload_obj)
             else:
-                method(topic, payload_obj)
+                parsed_payload = payload_obj
+            try:
+                method(topic, parsed_payload, encrypt=False)
+            except TypeError:
+                method(topic, parsed_payload)
         else:
             try:
-                method(topic, payload_obj)
+                method(topic, payload_obj, encrypt=False)
             except TypeError:
-                method(topic, payload_raw)
+                try:
+                    method(topic, payload_obj)
+                except TypeError:
+                    method(topic, payload_raw)
         published = True
         break
     except Exception:
@@ -343,7 +325,20 @@ publish_with_mqtt_report_cli() {
     "${MQTT_REPORT_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1
 }
 
-upload_status_to_event_name() {
+build_fleet_event_topic() {
+    local device_id="$1"
+    local template="${FLEET_EVENT_TOPIC_TEMPLATE}"
+    local topic
+
+    topic="${template//\{DEVICE_ID\}/${device_id}}"
+    if [[ -z "${topic}" ]]; then
+        topic="fleet/report/${device_id}"
+    fi
+
+    printf '%s' "${topic}"
+}
+
+upload_status_to_report_name() {
     local status="$1"
     case "${status}" in
         start)
@@ -371,7 +366,7 @@ upload_status_to_severity() {
     local status="$1"
     case "${status}" in
         start)
-            printf '%s' "ROUTINE"
+            printf '%s' "ATTENTION"
             ;;
         success)
             printf '%s' "INFO"
@@ -423,8 +418,8 @@ publish_upload_mqtt_event() {
         return 1
     fi
 
-    local event_name severity success_bool
-    event_name="$(upload_status_to_event_name "${status}")"
+    local report_name severity success_bool
+    report_name="$(upload_status_to_report_name "${status}")"
     severity="$(upload_status_to_severity "${status}")"
     success_bool="$(upload_status_to_success "${status}")"
 
@@ -449,15 +444,15 @@ publish_upload_mqtt_event() {
 
     local timestamp topic folder
     timestamp="$(date +%s)"
-    topic="fleet/response/${device_id}"
+    topic="$(build_fleet_event_topic "${device_id}")"
     folder="."
     if [[ "${relative_path}" == */* ]]; then
         folder="${relative_path%/*}"
     fi
 
     local -a pairs=()
-    pairs+=("\"schema\":\"$(json_escape "${FLEET_SCHEMA}")\"")
-    pairs+=("\"event\":\"$(json_escape "${event_name}")\"")
+    pairs+=("\"event\":\"report\"")
+    pairs+=("\"report\":\"$(json_escape "${report_name}")\"")
     pairs+=("\"device_id\":\"$(json_escape "${device_id}")\"")
     pairs+=("\"timestamp\":${timestamp}")
     pairs+=("\"service\":\"$(json_escape "${UPLOAD_SERVICE_NAME}")\"")
@@ -497,19 +492,22 @@ publish_upload_mqtt_event() {
     payload+="}"
 
     if publish_with_fleet_publish "${topic}" "${payload}"; then
+        log "DEBUG" "Published Fleet event via ${FLEET_PUBLISH_BIN}: event=report report=${report_name} topic=${topic}"
         return 0
     fi
 
     if publish_with_mqtt_report_cli "${topic}" "${payload}"; then
+        log "DEBUG" "Published Fleet event via ${MQTT_REPORT_BIN}: event=report report=${report_name} topic=${topic}"
         return 0
     fi
 
     if publish_with_fleet_mqtt_python "${topic}" "${payload}"; then
+        log "DEBUG" "Published Fleet event via python mqtt_client.FleetMQTT: event=report report=${report_name} topic=${topic}"
         return 0
     fi
 
     if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
-        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN}, ${MQTT_REPORT_BIN}, and python mqtt_client.FleetMQTT."
+        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN} (--no-encrypt), ${MQTT_REPORT_BIN}, and python mqtt_client.FleetMQTT."
         MQTT_PUBLISH_WARNING_EMITTED="true"
     fi
     return 1

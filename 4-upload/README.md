@@ -77,18 +77,18 @@ UPLOAD_EVENT status=failed ts=<utc-iso8601> file=<shell-escaped-path> remote=<sh
 
 ## MQTT Upload Events (Orchestrator)
 
-The uploader also publishes encrypted MQTT events to the fleet orchestrator.
+The uploader publishes plain JSON report events to Fleet.
 
-- Topic: `fleet/response/{DEVICE_ID}`
-- Schema: `fleet.service-manager.v1`
-- Preferred transport: `fleet-publish` CLI
+- Default topic: `fleet/report/{DEVICE_ID}`
+- Topic override: `FLEET_EVENT_TOPIC_TEMPLATE` (supports `{DEVICE_ID}` placeholder)
+- Preferred transport: `fleet-publish --topic ... --json ... --no-encrypt`
 - Also supported: `mqtt_report.py --topic ... --json ...`
 - Fallback transport: `mqtt_client.FleetMQTT` (python module from fleet setup)
 
-Each payload includes required fields:
+Each payload includes core fields:
 
-- `schema`
-- `event`
+- `event` (`report` for uploader messages)
+- `report` (uploader report name, for example `upload_start`)
 - `device_id`
 - `timestamp` (unix seconds)
 
@@ -107,7 +107,7 @@ Additional context fields are included when available:
 - `reason`
 - `exit_code`
 
-Uploader event names:
+Uploader `report` values:
 
 - `upload_start`
 - `upload_success`
@@ -120,8 +120,9 @@ Device ID resolution order:
 1. `DEVICE_ID` env var
 2. `FLEET_DEVICE_ID` env var
 3. Fleet client probes (`fleet-publish`)
-4. Known fleet device-id files
-5. Fallback: machine suffix (hostname-derived)
+4. `mqtt_client.DEVICE_ID` (python)
+5. Known fleet device-id files
+6. Fallback: machine suffix (hostname-derived)
 
 Optional service overrides (if needed):
 
@@ -129,6 +130,7 @@ Optional service overrides (if needed):
 [Service]
 Environment="DEVICE_ID=pi-0123"
 Environment="FLEET_DEVICE_ID=pi-0123"
+Environment="FLEET_EVENT_TOPIC_TEMPLATE=fleet/report/{DEVICE_ID}"
 Environment="FLEET_PUBLISH_BIN=fleet-publish"
 Environment="MQTT_REPORT_BIN=mqtt_report.py"
 Environment="MQTT_EVENT_ENABLED=true"

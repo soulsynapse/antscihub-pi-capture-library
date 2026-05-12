@@ -199,6 +199,7 @@ Environment="UPLOAD_DIR=${upload_dir}"
 # Optional overrides for orchestrator event publishing:
 # Environment="DEVICE_ID=pi-0123"
 # Environment="FLEET_DEVICE_ID=pi-0123"
+# Environment="FLEET_EVENT_TOPIC_TEMPLATE=fleet/report/{DEVICE_ID}"
 # Environment="FLEET_PUBLISH_BIN=fleet-publish"
 # Environment="MQTT_REPORT_BIN=mqtt_report.py"
 # Environment="MQTT_EVENT_ENABLED=true"

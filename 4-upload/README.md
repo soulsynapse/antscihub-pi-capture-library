@@ -82,6 +82,7 @@ The uploader also publishes encrypted MQTT events to the fleet orchestrator.
 - Topic: `fleet/response/{DEVICE_ID}`
 - Schema: `fleet.service-manager.v1`
 - Preferred transport: `fleet-publish` CLI
+- Also supported: `mqtt_report.py --topic ... --json ...`
 - Fallback transport: `mqtt_client.FleetMQTT` (python module from fleet setup)
 
 Each payload includes required fields:
@@ -129,6 +130,7 @@ Optional service overrides (if needed):
 Environment="DEVICE_ID=pi-0123"
 Environment="FLEET_DEVICE_ID=pi-0123"
 Environment="FLEET_PUBLISH_BIN=fleet-publish"
+Environment="MQTT_REPORT_BIN=mqtt_report.py"
 Environment="MQTT_EVENT_ENABLED=true"
 ```
 

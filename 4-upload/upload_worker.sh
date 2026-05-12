@@ -105,6 +105,7 @@ MACHINE_SUFFIX="$(detect_machine_suffix)"
 FLEET_SCHEMA="fleet.service-manager.v1"
 UPLOAD_SERVICE_NAME="${UPLOAD_SERVICE_NAME:-antscihub-upload.service}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
+MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
 MQTT_EVENT_ENABLED="${MQTT_EVENT_ENABLED:-true}"
 DEVICE_ID_CACHE=""
 DEVICE_ID_CACHE_READY="false"
@@ -331,6 +332,17 @@ sys.exit(0 if published else 4)
 PY
 }
 
+publish_with_mqtt_report_cli() {
+    local topic="$1"
+    local payload="$2"
+
+    if ! command -v "${MQTT_REPORT_BIN}" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    "${MQTT_REPORT_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1
+}
+
 upload_status_to_event_name() {
     local status="$1"
     case "${status}" in
@@ -488,12 +500,16 @@ publish_upload_mqtt_event() {
         return 0
     fi
 
+    if publish_with_mqtt_report_cli "${topic}" "${payload}"; then
+        return 0
+    fi
+
     if publish_with_fleet_mqtt_python "${topic}" "${payload}"; then
         return 0
     fi
 
     if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
-        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN} and python mqtt_client.FleetMQTT."
+        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN}, ${MQTT_REPORT_BIN}, and python mqtt_client.FleetMQTT."
         MQTT_PUBLISH_WARNING_EMITTED="true"
     fi
     return 1

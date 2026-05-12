@@ -200,6 +200,7 @@ Environment="UPLOAD_DIR=${upload_dir}"
 # Environment="DEVICE_ID=pi-0123"
 # Environment="FLEET_DEVICE_ID=pi-0123"
 # Environment="FLEET_PUBLISH_BIN=fleet-publish"
+# Environment="MQTT_REPORT_BIN=mqtt_report.py"
 # Environment="MQTT_EVENT_ENABLED=true"
 Restart=on-failure
 RestartSec=10

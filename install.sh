@@ -196,6 +196,11 @@ Environment="HOME=${upload_home}"
 Environment="RCLONE_REMOTE=${DEFAULT_REMOTE}"
 Environment="RCLONE_PATH=${DEFAULT_REMOTE_PATH}"
 Environment="UPLOAD_DIR=${upload_dir}"
+# Optional overrides for orchestrator event publishing:
+# Environment="DEVICE_ID=pi-0123"
+# Environment="FLEET_DEVICE_ID=pi-0123"
+# Environment="FLEET_PUBLISH_BIN=fleet-publish"
+# Environment="MQTT_EVENT_ENABLED=true"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

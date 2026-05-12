@@ -102,6 +102,18 @@ detect_machine_suffix() {
 
 MACHINE_SUFFIX="$(detect_machine_suffix)"
 
+FLEET_SCHEMA="fleet.service-manager.v1"
+UPLOAD_SERVICE_NAME="${UPLOAD_SERVICE_NAME:-antscihub-upload.service}"
+FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
+MQTT_EVENT_ENABLED="${MQTT_EVENT_ENABLED:-true}"
+DEVICE_ID_CACHE=""
+DEVICE_ID_CACHE_READY="false"
+FLEET_PUBLISH_MODE=""
+FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-m"
+DEVICE_ID_WARNING_EMITTED="false"
+MQTT_PUBLISH_WARNING_EMITTED="false"
+declare -A SEEN_FILE_DETECTIONS=()
+
 # Tuning
 MIN_FILE_AGE_DEFAULT=30                      # Default wait before upload (seconds)
 MIN_FILE_AGE_STILL_IMAGE=3                   # Faster path for still images (seconds)
@@ -121,16 +133,386 @@ log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [$level] $*" | tee -a "$LOG_FILE"
 }
 
+json_escape() {
+    local input="${1:-}"
+    input="${input//\\/\\\\}"
+    input="${input//\"/\\\"}"
+    input="${input//$'\n'/\\n}"
+    input="${input//$'\r'/\\r}"
+    input="${input//$'\t'/\\t}"
+    printf '%s' "${input}"
+}
+
+normalize_device_id() {
+    local input="${1:-}"
+    input="${input//$'\r'/}"
+    input="${input//$'\n'/}"
+    input="${input//$'\t'/}"
+    input="${input// /}"
+    printf '%s' "${input}"
+}
+
+detect_fleet_publish_mode() {
+    if [[ -n "${FLEET_PUBLISH_MODE}" ]]; then
+        return 0
+    fi
+
+    if ! command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1; then
+        FLEET_PUBLISH_MODE="unavailable"
+        return 1
+    fi
+
+    local help_output=""
+    help_output="$("${FLEET_PUBLISH_BIN}" --help 2>&1 || true)"
+
+    if grep -q -- '--topic' <<<"${help_output}" && grep -q -- '--payload' <<<"${help_output}"; then
+        FLEET_PUBLISH_MODE="long_topic_payload"
+    elif grep -q -- '--topic' <<<"${help_output}" && grep -q -- '--message' <<<"${help_output}"; then
+        FLEET_PUBLISH_MODE="long_topic_message"
+    elif grep -Eq -- '(^|[[:space:],])-t([[:space:],]|$)' <<<"${help_output}" && grep -Eq -- '(^|[[:space:],])-(m|p)([[:space:],]|$)' <<<"${help_output}"; then
+        if grep -Eq -- '(^|[[:space:],])-m([[:space:],]|$)' <<<"${help_output}"; then
+            FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-m"
+        else
+            FLEET_PUBLISH_SHORT_PAYLOAD_FLAG="-p"
+        fi
+        FLEET_PUBLISH_MODE="short_topic_message"
+    else
+        FLEET_PUBLISH_MODE="positional"
+    fi
+}
+
+resolve_device_id() {
+    if [[ "${DEVICE_ID_CACHE_READY}" == "true" ]]; then
+        printf '%s' "${DEVICE_ID_CACHE}"
+        return 0
+    fi
+
+    local candidate=""
+    if [[ -n "${DEVICE_ID:-}" ]]; then
+        candidate="$(normalize_device_id "${DEVICE_ID}")"
+    elif [[ -n "${FLEET_DEVICE_ID:-}" ]]; then
+        candidate="$(normalize_device_id "${FLEET_DEVICE_ID}")"
+    fi
+
+    if [[ -z "${candidate}" ]] && command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1; then
+        candidate="$("${FLEET_PUBLISH_BIN}" --device-id 2>/dev/null | head -n 1 || true)"
+        candidate="$(normalize_device_id "${candidate}")"
+        if [[ "${candidate}" == *=* ]]; then
+            candidate="${candidate##*=}"
+            candidate="$(normalize_device_id "${candidate}")"
+        fi
+
+        if [[ -z "${candidate}" ]]; then
+            candidate="$("${FLEET_PUBLISH_BIN}" device-id 2>/dev/null | head -n 1 || true)"
+            candidate="$(normalize_device_id "${candidate}")"
+            if [[ "${candidate}" == *=* ]]; then
+                candidate="${candidate##*=}"
+                candidate="$(normalize_device_id "${candidate}")"
+            fi
+        fi
+    fi
+
+    if [[ -z "${candidate}" ]]; then
+        local file_candidate
+        for file_candidate in \
+            "/etc/fleet/device_id" \
+            "/var/lib/fleet/device_id" \
+            "${XDG_CONFIG_HOME:-${HOME}/.config}/fleet/device_id" \
+            "/etc/antscihub/device_id"; do
+            if [[ -f "${file_candidate}" ]]; then
+                candidate="$(head -n 1 "${file_candidate}" 2>/dev/null || true)"
+                candidate="$(normalize_device_id "${candidate}")"
+                [[ -n "${candidate}" ]] && break
+            fi
+        done
+    fi
+
+    if [[ -z "${candidate}" ]]; then
+        candidate="${MACHINE_SUFFIX}"
+        if [[ "${DEVICE_ID_WARNING_EMITTED}" != "true" ]]; then
+            log "WARN" "Device ID not found from fleet client; falling back to MACHINE_SUFFIX=${MACHINE_SUFFIX}"
+            DEVICE_ID_WARNING_EMITTED="true"
+        fi
+    fi
+
+    DEVICE_ID_CACHE="${candidate}"
+    DEVICE_ID_CACHE_READY="true"
+    printf '%s' "${DEVICE_ID_CACHE}"
+}
+
+publish_with_fleet_publish() {
+    local topic="$1"
+    local payload="$2"
+
+    detect_fleet_publish_mode || return 1
+    case "${FLEET_PUBLISH_MODE}" in
+        long_topic_payload)
+            "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" >/dev/null 2>&1
+            ;;
+        long_topic_message)
+            "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" >/dev/null 2>&1
+            ;;
+        short_topic_message)
+            "${FLEET_PUBLISH_BIN}" -t "${topic}" "${FLEET_PUBLISH_SHORT_PAYLOAD_FLAG}" "${payload}" >/dev/null 2>&1
+            ;;
+        positional)
+            "${FLEET_PUBLISH_BIN}" "${topic}" "${payload}" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+publish_with_fleet_mqtt_python() {
+    local topic="$1"
+    local payload="$2"
+
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    python3 - "${topic}" "${payload}" >/dev/null 2>&1 <<'PY'
+import json
+import sys
+
+topic = sys.argv[1]
+payload_raw = sys.argv[2]
+
+try:
+    payload_obj = json.loads(payload_raw)
+except Exception:
+    payload_obj = payload_raw
+
+try:
+    from mqtt_client import FleetMQTT
+except Exception:
+    sys.exit(2)
+
+client = None
+for ctor in (lambda: FleetMQTT(), lambda: FleetMQTT("antscihub-upload")):
+    try:
+        client = ctor()
+        break
+    except Exception:
+        continue
+
+if client is None:
+    sys.exit(3)
+
+published = False
+for method_name in ("publish_json", "publish", "send"):
+    method = getattr(client, method_name, None)
+    if not callable(method):
+        continue
+    try:
+        if method_name == "publish_json":
+            if isinstance(payload_obj, str):
+                method(topic, json.loads(payload_obj))
+            else:
+                method(topic, payload_obj)
+        else:
+            try:
+                method(topic, payload_obj)
+            except TypeError:
+                method(topic, payload_raw)
+        published = True
+        break
+    except Exception:
+        continue
+
+for close_name in ("close", "disconnect", "stop"):
+    close_method = getattr(client, close_name, None)
+    if callable(close_method):
+        try:
+            close_method()
+        except Exception:
+            pass
+
+sys.exit(0 if published else 4)
+PY
+}
+
+upload_status_to_event_name() {
+    local status="$1"
+    case "${status}" in
+        start)
+            printf '%s' "upload_start"
+            ;;
+        success)
+            printf '%s' "upload_success"
+            ;;
+        failed)
+            printf '%s' "upload_failed"
+            ;;
+        retry)
+            printf '%s' "upload_retry_scheduled"
+            ;;
+        gave_up)
+            printf '%s' "upload_gave_up"
+            ;;
+        *)
+            printf '%s' "upload_status"
+            ;;
+    esac
+}
+
+upload_status_to_severity() {
+    local status="$1"
+    case "${status}" in
+        start)
+            printf '%s' "ROUTINE"
+            ;;
+        success)
+            printf '%s' "INFO"
+            ;;
+        retry)
+            printf '%s' "WARNING"
+            ;;
+        failed|gave_up)
+            printf '%s' "ERROR"
+            ;;
+        *)
+            printf '%s' "INFO"
+            ;;
+    esac
+}
+
+upload_status_to_success() {
+    local status="$1"
+    case "${status}" in
+        success|start)
+            printf '%s' "true"
+            ;;
+        *)
+            printf '%s' "false"
+            ;;
+    esac
+}
+
+publish_upload_mqtt_event() {
+    local status="$1"
+    local relative_path="$2"
+    local remote_target="$3"
+    local size_bytes="$4"
+    local attempt="${5:-}"
+    local reason="${6:-}"
+    local exit_code="${7:-}"
+
+    if [[ "${MQTT_EVENT_ENABLED,,}" != "true" ]]; then
+        return 0
+    fi
+
+    local device_id
+    device_id="$(resolve_device_id)"
+    if [[ -z "${device_id}" ]]; then
+        if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
+            log "WARN" "Skipping MQTT upload event publish: no device_id available"
+            MQTT_PUBLISH_WARNING_EMITTED="true"
+        fi
+        return 1
+    fi
+
+    local event_name severity success_bool
+    event_name="$(upload_status_to_event_name "${status}")"
+    severity="$(upload_status_to_severity "${status}")"
+    success_bool="$(upload_status_to_success "${status}")"
+
+    local message="Upload event: ${status}"
+    case "${status}" in
+        start)
+            message="Upload started"
+            ;;
+        success)
+            message="Upload completed"
+            ;;
+        failed)
+            message="Upload failed"
+            ;;
+        retry)
+            message="Upload retry scheduled"
+            ;;
+        gave_up)
+            message="Upload retries exhausted"
+            ;;
+    esac
+
+    local timestamp topic folder
+    timestamp="$(date +%s)"
+    topic="fleet/response/${device_id}"
+    folder="."
+    if [[ "${relative_path}" == */* ]]; then
+        folder="${relative_path%/*}"
+    fi
+
+    local -a pairs=()
+    pairs+=("\"schema\":\"$(json_escape "${FLEET_SCHEMA}")\"")
+    pairs+=("\"event\":\"$(json_escape "${event_name}")\"")
+    pairs+=("\"device_id\":\"$(json_escape "${device_id}")\"")
+    pairs+=("\"timestamp\":${timestamp}")
+    pairs+=("\"service\":\"$(json_escape "${UPLOAD_SERVICE_NAME}")\"")
+    pairs+=("\"success\":${success_bool}")
+    pairs+=("\"severity\":\"$(json_escape "${severity}")\"")
+    pairs+=("\"message\":\"$(json_escape "${message}")\"")
+    pairs+=("\"folder\":\"$(json_escape "${folder}")\"")
+    pairs+=("\"file\":\"$(json_escape "${relative_path}")\"")
+    pairs+=("\"cmd\":\"$(json_escape "rclone moveto")\"")
+    if [[ -n "${remote_target}" ]]; then
+        pairs+=("\"remote\":\"$(json_escape "${remote_target}")\"")
+    fi
+    if [[ -n "${size_bytes}" ]]; then
+        pairs+=("\"size_bytes\":\"$(json_escape "${size_bytes}")\"")
+    fi
+    if [[ -n "${attempt}" ]]; then
+        pairs+=("\"attempt\":\"$(json_escape "${attempt}")\"")
+    fi
+    if [[ -n "${reason}" ]]; then
+        pairs+=("\"reason\":\"$(json_escape "${reason}")\"")
+    fi
+    if [[ -n "${exit_code}" ]]; then
+        pairs+=("\"exit_code\":\"$(json_escape "${exit_code}")\"")
+    fi
+
+    local payload="{"
+    local pair
+    local first="true"
+    for pair in "${pairs[@]}"; do
+        if [[ "${first}" == "true" ]]; then
+            payload+="${pair}"
+            first="false"
+        else
+            payload+=",${pair}"
+        fi
+    done
+    payload+="}"
+
+    if publish_with_fleet_publish "${topic}" "${payload}"; then
+        return 0
+    fi
+
+    if publish_with_fleet_mqtt_python "${topic}" "${payload}"; then
+        return 0
+    fi
+
+    if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
+        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN} and python mqtt_client.FleetMQTT."
+        MQTT_PUBLISH_WARNING_EMITTED="true"
+    fi
+    return 1
+}
+
 emit_upload_event() {
     local status="$1"
     local relative_path="$2"
     local remote_target="$3"
     local size_bytes="${4:-unknown}"
+    local attempt="${5:-}"
+    local reason="${6:-}"
+    local exit_code="${7:-}"
     local ts
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Explicit stdout event line for orchestrators that tail process output.
     printf 'UPLOAD_EVENT status=%s ts=%s file=%q remote=%q size_bytes=%s\n' \
         "$status" "$ts" "$relative_path" "$remote_target" "$size_bytes"
+    publish_upload_mqtt_event "${status}" "${relative_path}" "${remote_target}" "${size_bytes}" "${attempt}" "${reason}" "${exit_code}" || true
 }
 
 # Ensure directories exist
@@ -170,6 +552,31 @@ make_file_identity() {
     local stat_fields
     stat_fields=$(stat -c '%i:%s:%Y' "$file" 2>/dev/null || echo "0:0:0")
     printf '%s|%s' "$relative_path" "$stat_fields"
+}
+
+# Build a per-file-instance detection key (stable while file is being written).
+make_file_detection_key() {
+    local file="$1"
+    local relative_path="$2"
+    local inode
+    inode=$(stat -c %i "$file" 2>/dev/null || echo 0)
+    printf '%s|%s' "$relative_path" "$inode"
+}
+
+log_file_detected_once() {
+    local file="$1"
+    local relative_path="$2"
+    local detection_key
+    local file_size
+
+    detection_key="$(make_file_detection_key "$file" "$relative_path")"
+    if [[ -n "${SEEN_FILE_DETECTIONS["$detection_key"]+x}" ]]; then
+        return 0
+    fi
+
+    file_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
+    log "INFO" "Detected file: ${relative_path} (size=${file_size} bytes)"
+    SEEN_FILE_DETECTIONS["$detection_key"]="1"
 }
 
 retry_count_file() {
@@ -432,13 +839,15 @@ do_upload() {
     file_mtime=$(stat -c %y "$file" 2>/dev/null || echo "unknown")
 
     if [[ "$selected_relative_path" != "$relative_path" ]]; then
-        log "WARN" "Remote conflict detected for ${relative_path}; uploading as ${selected_relative_path}"
+        log "WARN" "Remote conflict detected for ${relative_path}"
+        log "INFO" "Renaming remote upload target: ${relative_path} -> ${selected_relative_path}"
     fi
 
     log "INFO" "Starting upload: ${relative_path}"
     emit_upload_event "start" "${relative_path}" "${remote_target}" "${file_size}"
 
     # Move this single file to its exact remote path to preserve folder structure.
+    local rclone_exit_code=0
     if rclone moveto "$file" "$remote_target" \
         --immutable \
         --progress --stats=0 2>&1 | tee -a "$LOG_FILE"; then
@@ -468,8 +877,9 @@ EOF
 
         return 0
     else
+        rclone_exit_code="${PIPESTATUS[0]:-1}"
         log "ERROR" "Upload failed: ${relative_path}"
-        emit_upload_event "failed" "${relative_path}" "${remote_target}" "${file_size}"
+        emit_upload_event "failed" "${relative_path}" "${remote_target}" "${file_size}" "" "rclone_failed" "${rclone_exit_code}"
         return 1
     fi
 }
@@ -508,6 +918,8 @@ while true; do
             continue
         fi
 
+        log_file_detected_once "$file" "$relative_path"
+
         # Validation: file age (avoid uploading files still being written)
         mtime=$(stat -c %Y "$file" 2>/dev/null || echo 0)
         now=$(date +%s)
@@ -538,6 +950,7 @@ while true; do
         # Skip if exceeds retry limit
         if exceeds_retry_limit "$file_key"; then
             log "WARN" "Exceeded max retries ($MAX_RETRIES) for: $basename"
+            emit_upload_event "gave_up" "${relative_path}" "" "unknown" "${MAX_RETRIES}" "max_retries_exceeded" ""
             continue
         fi
 
@@ -555,7 +968,8 @@ while true; do
             if [[ $current_retries -lt $MAX_RETRIES ]]; then
                 backoff=$(calculate_backoff "$current_retries")
                 schedule_next_retry "$file_key" "$backoff"
-                log "WARN" "Retry $current_retries/$MAX_RETRIES for $basename (backoff: ${backoff}s)"
+                log "WARN" "Retry scheduled for ${relative_path}: attempt ${current_retries}/${MAX_RETRIES} (backoff: ${backoff}s)"
+                emit_upload_event "retry" "${relative_path}" "" "unknown" "${current_retries}" "retry_backoff_${backoff}s" ""
             fi
         fi
     done < <(find "$UPLOAD_DIR" -type f -print0 2>/dev/null)

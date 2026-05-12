@@ -75,6 +75,63 @@ UPLOAD_EVENT status=success ts=<utc-iso8601> file=<shell-escaped-path> remote=<s
 UPLOAD_EVENT status=failed ts=<utc-iso8601> file=<shell-escaped-path> remote=<shell-escaped-remote> size_bytes=<n>
 ```
 
+## MQTT Upload Events (Orchestrator)
+
+The uploader also publishes encrypted MQTT events to the fleet orchestrator.
+
+- Topic: `fleet/response/{DEVICE_ID}`
+- Schema: `fleet.service-manager.v1`
+- Preferred transport: `fleet-publish` CLI
+- Fallback transport: `mqtt_client.FleetMQTT` (python module from fleet setup)
+
+Each payload includes required fields:
+
+- `schema`
+- `event`
+- `device_id`
+- `timestamp` (unix seconds)
+
+Additional context fields are included when available:
+
+- `service` (`antscihub-upload.service` by default)
+- `success`
+- `severity` (`ROUTINE`, `INFO`, `WARNING`, `ERROR`)
+- `message`
+- `folder`
+- `file`
+- `remote`
+- `size_bytes`
+- `cmd`
+- `attempt`
+- `reason`
+- `exit_code`
+
+Uploader event names:
+
+- `upload_start`
+- `upload_success`
+- `upload_failed`
+- `upload_retry_scheduled`
+- `upload_gave_up`
+
+Device ID resolution order:
+
+1. `DEVICE_ID` env var
+2. `FLEET_DEVICE_ID` env var
+3. Fleet client probes (`fleet-publish`)
+4. Known fleet device-id files
+5. Fallback: machine suffix (hostname-derived)
+
+Optional service overrides (if needed):
+
+```ini
+[Service]
+Environment="DEVICE_ID=pi-0123"
+Environment="FLEET_DEVICE_ID=pi-0123"
+Environment="FLEET_PUBLISH_BIN=fleet-publish"
+Environment="MQTT_EVENT_ENABLED=true"
+```
+
 ## Troubleshooting
 
 ```bash

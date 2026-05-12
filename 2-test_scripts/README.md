@@ -11,5 +11,5 @@ Checks include:
 - Bash syntax for core scripts
 - `antcam` command surface (including `antcam start` and `antcam test`)
 - Recording trigger docs presence
-- Presence of key upload-worker safety functions
+- Presence of key upload-worker safety functions and MQTT event emitter hooks
 - Install defaults for `gdrive_personal:5-UPLOAD`

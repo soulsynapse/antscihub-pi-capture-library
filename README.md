@@ -115,6 +115,7 @@ The upload worker:
 6. Retries failures with exponential backoff
 7. Adds machine suffix on remote-name conflicts
 8. Tracks processed files by file identity
+9. Emits upload status events to stdout and MQTT (`fleet/response/{DEVICE_ID}` with schema `fleet.service-manager.v1`)
 
 ## State Paths
 

@@ -121,6 +121,18 @@ log() {
     echo "[$(date +'%Y-%m-%d %H:%M:%S')] [$level] $*" | tee -a "$LOG_FILE"
 }
 
+emit_upload_event() {
+    local status="$1"
+    local relative_path="$2"
+    local remote_target="$3"
+    local size_bytes="${4:-unknown}"
+    local ts
+    ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    # Explicit stdout event line for orchestrators that tail process output.
+    printf 'UPLOAD_EVENT status=%s ts=%s file=%q remote=%q size_bytes=%s\n' \
+        "$status" "$ts" "$relative_path" "$remote_target" "$size_bytes"
+}
+
 # Ensure directories exist
 mkdir -p "$STATE_DIR"
 mkdir -p "$FAILED_DIR"
@@ -424,6 +436,7 @@ do_upload() {
     fi
 
     log "INFO" "Starting upload: ${relative_path}"
+    emit_upload_event "start" "${relative_path}" "${remote_target}" "${file_size}"
 
     # Move this single file to its exact remote path to preserve folder structure.
     if rclone moveto "$file" "$remote_target" \
@@ -431,6 +444,7 @@ do_upload() {
         --progress --stats=0 2>&1 | tee -a "$LOG_FILE"; then
 
         log "INFO" "Upload successful: ${relative_path}"
+        emit_upload_event "success" "${relative_path}" "${remote_target}" "${file_size}"
 
         # Create reference file (atomically)
         local remote_link="${file}.MOVED"
@@ -455,6 +469,7 @@ EOF
         return 0
     else
         log "ERROR" "Upload failed: ${relative_path}"
+        emit_upload_event "failed" "${relative_path}" "${remote_target}" "${file_size}"
         return 1
     fi
 }

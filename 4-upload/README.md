@@ -65,6 +65,16 @@ By default (for the service user):
 - Log: `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/antscihub-upload.log`
 - Lock: `${XDG_RUNTIME_DIR:-/tmp}/antscihub-upload.lock`
 
+## Console Upload Events
+
+For orchestrators that monitor process stdout, each upload emits explicit event lines:
+
+```text
+UPLOAD_EVENT status=start ts=<utc-iso8601> file=<shell-escaped-path> remote=<shell-escaped-remote> size_bytes=<n>
+UPLOAD_EVENT status=success ts=<utc-iso8601> file=<shell-escaped-path> remote=<shell-escaped-remote> size_bytes=<n>
+UPLOAD_EVENT status=failed ts=<utc-iso8601> file=<shell-escaped-path> remote=<shell-escaped-remote> size_bytes=<n>
+```
+
 ## Troubleshooting
 
 ```bash

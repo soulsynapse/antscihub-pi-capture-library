@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Recording trigger command (`antcam start`)
+2. Recording commands (`antcam start`, `antcam test`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -44,10 +44,28 @@ Apply options:
 - `--dry-run` (preview only)
 - `--no-reboot` (write config but do not reboot)
 
-### Recording Command
+Current bundled profiles:
+
+- `auto` -> `camera_auto_detect=1`
+- `imx708` -> `camera_auto_detect=0`, `dtoverlay=imx708`
+- `owlcam` -> `camera_auto_detect=0`, `dtoverlay=ov64a40,...`, `dtoverlay=cma,cma-256`
+
+### How `antcam apply` Works
+
+1. Finds active `config.txt` (`/boot/firmware/config.txt` or `/boot/config.txt`)
+2. Backs it up (`.antcam.bak.<timestamp>`)
+3. Removes previous managed block
+4. Removes known conflicting camera lines
+5. Writes selected profile in the managed block:
+   - `# antscihub-capture-config BEGIN`
+   - `# antscihub-capture-config END`
+6. Reboots (unless `--no-reboot`)
+
+### Recording Commands
 
 ```bash
 antcam start
+antcam test
 ```
 
 `antcam start` resolves the active user's Desktop path and then:
@@ -56,6 +74,12 @@ antcam start
 - Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
 - Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
+
+`antcam test` resolves the active user's Desktop path and then:
+
+- Uses existing `<desktop>/4-CAPTURE`
+- Runs `test.sh` from inside `<desktop>/4-CAPTURE`
+- Does not create or require `<desktop>/4-CAPTURE/experiment.txt`
 
 ### Upload Service
 
@@ -73,6 +97,12 @@ systemctl status antscihub-upload.service
 journalctl -u antscihub-upload.service -f
 ```
 
+## Operational Defaults
+
+- Remote: `gdrive_personal`
+- Remote path: empty (remote root)
+- Upload service user: installer chooses invoking non-root user when possible
+
 ## Upload Worker Behavior
 
 The upload worker:
@@ -86,7 +116,30 @@ The upload worker:
 7. Adds machine suffix on remote-name conflicts
 8. Tracks processed files by file identity
 
+## State Paths
+
+Upload worker (user-scoped):
+
+- `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/`
+- `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/antscihub-upload.log`
+
+Legacy camera state/log paths from previous dynamic service may still exist:
+
+- `/var/lib/antscihub-capture-config/`
+- `/var/log/antscihub-capture-config.log`
+
+## Validation
+
+Run:
+
+```bash
+bash 2-test_scripts/run_static_checks.sh
+```
+
 ## Notes
 
 - Upload requires `rclone` configured for `gdrive_personal`
 - Camera profile selection is now explicit and operator-controlled via `antcam`
+- `antcam apply` requires `sudo` (except `--dry-run`)
+- `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
+- `antcam test` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop

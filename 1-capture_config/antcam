@@ -20,6 +20,7 @@ Usage:
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
   antcam start
+  antcam test
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -30,6 +31,7 @@ Examples:
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start
+  antcam test
 EOF
 }
 
@@ -366,6 +368,27 @@ start_recording() {
     )
 }
 
+start_test() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for test path"
+
+    local desktop_dir capture_dir test_script
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    capture_dir="${desktop_dir}/4-CAPTURE"
+    test_script="${capture_dir}/test.sh"
+
+    [[ -d "${capture_dir}" ]] || die "capture directory not found: ${capture_dir}"
+    [[ -f "${test_script}" ]] || die "test script not found: ${test_script}"
+
+    echo "capture directory: ${capture_dir}"
+    echo "starting test script: ${test_script}"
+
+    (
+        cd "${capture_dir}"
+        bash "./test.sh"
+    )
+}
+
 main() {
     local cmd="${1:-}"
     case "${cmd}" in
@@ -395,6 +418,11 @@ main() {
             shift
             [[ $# -eq 0 ]] || die "start takes no arguments"
             start_recording
+            ;;
+        test)
+            shift
+            [[ $# -eq 0 ]] || die "test takes no arguments"
+            start_test
             ;;
         help|-h|--help|"")
             usage

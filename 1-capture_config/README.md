@@ -15,6 +15,7 @@ sudo antcam apply <profile>
 sudo antcam apply <profile> --dry-run
 sudo antcam apply <profile> --no-reboot
 antcam start
+antcam test
 ```
 
 ## Profiles
@@ -47,5 +48,7 @@ Current bundled profiles:
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam start` creates missing `4-CAPTURE/record.sh` and `4-CAPTURE/experiment.txt` as empty files before execution
+- `antcam test` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
+- `antcam test` runs `4-CAPTURE/test.sh` and does not require `4-CAPTURE/experiment.txt`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

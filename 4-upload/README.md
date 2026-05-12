@@ -47,6 +47,8 @@ Remote behavior:
 ## Safety/Resilience
 
 - File age + stability checks before upload
+- Still-image fast path: common image formats (`jpg`, `jpeg`, `png`, `tif`, `tiff`, `bmp`, `gif`, `webp`, `heic`, `heif`, and common RAW formats) use 3s minimum age + 3s stability window
+- Non-image files keep conservative defaults: 30s minimum age + 10s stability window
 - Single-instance process lock
 - Atomic processed-state updates
 - Retry counters and exponential backoff scheduling

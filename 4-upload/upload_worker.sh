@@ -103,10 +103,12 @@ detect_machine_suffix() {
 MACHINE_SUFFIX="$(detect_machine_suffix)"
 
 # Tuning
-FILE_STABILITY_CHECK_INTERVAL=10  # Check size stability every 10 seconds
-MIN_FILE_AGE=30                   # Wait at least 30 seconds before uploading
-MAX_RETRIES=5                     # Max retry attempts per file
-SCAN_INTERVAL=10                  # Scan for new files every 10 seconds
+MIN_FILE_AGE_DEFAULT=30                      # Default wait before upload (seconds)
+MIN_FILE_AGE_STILL_IMAGE=3                   # Faster path for still images (seconds)
+FILE_STABILITY_CHECK_INTERVAL_DEFAULT=10     # Default size-stability window (seconds)
+FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE=3  # Faster stability window for still images
+MAX_RETRIES=5                                # Max retry attempts per file
+SCAN_INTERVAL=10                             # Scan for new files every 10 seconds
 
 if [[ -z "${RCLONE_REMOTE}" ]]; then
     echo "[upload-worker] Error: RCLONE_REMOTE must be set" >&2
@@ -257,14 +259,46 @@ is_uploadable() {
     return 0
 }
 
+is_still_image() {
+    local basename="$1"
+    local lower_basename="${basename,,}"
+    case "${lower_basename}" in
+        *.jpg|*.jpeg|*.png|*.tif|*.tiff|*.bmp|*.gif|*.webp|*.heic|*.heif|*.dng|*.cr2|*.cr3|*.nef|*.arw|*.orf|*.rw2|*.raf)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+required_min_age_for_file() {
+    local basename="$1"
+    if is_still_image "${basename}"; then
+        echo "$MIN_FILE_AGE_STILL_IMAGE"
+    else
+        echo "$MIN_FILE_AGE_DEFAULT"
+    fi
+}
+
+stability_interval_for_file() {
+    local basename="$1"
+    if is_still_image "${basename}"; then
+        echo "$FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE"
+    else
+        echo "$FILE_STABILITY_CHECK_INTERVAL_DEFAULT"
+    fi
+}
+
 # Validation: file stability (size hasn't changed)
 is_file_stable() {
     local file="$1"
+    local stability_interval="$2"
     local initial_size
     local final_size
 
     initial_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
-    sleep "$FILE_STABILITY_CHECK_INTERVAL"
+    sleep "$stability_interval"
 
     if [[ ! -f "$file" ]]; then
         return 1  # File was deleted
@@ -464,14 +498,16 @@ while true; do
         now=$(date +%s)
         age=$((now - mtime))
 
-        if [[ $age -lt $MIN_FILE_AGE ]]; then
-            log "DEBUG" "File too new ($age < $MIN_FILE_AGE): $basename"
+        required_min_age=$(required_min_age_for_file "$basename")
+        if [[ $age -lt $required_min_age ]]; then
+            log "DEBUG" "File too new ($age < $required_min_age): $basename"
             continue
         fi
 
         # Validation: file stability
-        log "DEBUG" "Checking stability: $basename"
-        if ! is_file_stable "$file"; then
+        stability_interval=$(stability_interval_for_file "$basename")
+        log "DEBUG" "Checking stability (${stability_interval}s): $basename"
+        if ! is_file_stable "$file" "$stability_interval"; then
             log "DEBUG" "File not stable (still being written): $basename"
             continue
         fi

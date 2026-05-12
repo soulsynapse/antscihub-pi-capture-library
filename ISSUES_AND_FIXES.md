@@ -74,7 +74,7 @@ This file tracks key issues that were found and fixed in this repo.
 
 18. Dynamic boot-time camera logic was too operationally fragile for mixed fleets
    - Result: automatic profile switching could still produce surprising outcomes across different Pi/image/camera combinations
-   - Fix: replaced dynamic service-first flow with explicit operator-driven camera profile CLI (`antscam list/current/show/apply`) and disabled the old boot-time camera service by default
+   - Fix: replaced dynamic service-first flow with explicit operator-driven camera profile CLI (`antcam list/current/show/apply`) and disabled the old boot-time camera service by default
 
 ## Validation Added
 

@@ -6,8 +6,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CAMERA_SERVICE_NAME="antscihub-capture-config.service"
 CAMERA_SERVICE_PATH="/etc/systemd/system/${CAMERA_SERVICE_NAME}"
 
-CAMERA_CLI_SOURCE="${SCRIPT_DIR}/1-capture_config/antscam"
-CAMERA_CLI_TARGET="/usr/local/bin/antscam"
+CAMERA_CLI_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam"
+CAMERA_CLI_TARGET="/usr/local/bin/antcam"
+LEGACY_CAMERA_CLI_TARGET="/usr/local/bin/antscam"
 CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
 CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
 
@@ -166,8 +167,13 @@ install_camera_cli() {
     cp -a "${CAMERA_PROFILE_SOURCE_DIR}/." "${CAMERA_PROFILE_TARGET_DIR}/"
     find "${CAMERA_PROFILE_TARGET_DIR}" -type f -name '*.conf' -exec chmod 0644 {} +
 
-    log_info "Installing antscam CLI to ${CAMERA_CLI_TARGET}"
+    log_info "Installing antcam CLI to ${CAMERA_CLI_TARGET}"
     install -m 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
+
+    if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
+        log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"
+        rm -f "${LEGACY_CAMERA_CLI_TARGET}"
+    fi
 }
 
 write_upload_unit() {
@@ -302,9 +308,10 @@ main() {
     log_info "Upload source dir: ${upload_dir}"
     log_info "Upload destination: ${upload_destination}"
     log_info "Camera commands:"
-    log_info "  sudo antscam list"
-    log_info "  sudo antscam current"
-    log_info "  sudo antscam apply imx708"
+    log_info "  sudo antcam list"
+    log_info "  sudo antcam current"
+    log_info "  sudo antcam apply imx708"
+    log_info "  antcam start"
     log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"
     log_info "  journalctl -u ${UPLOAD_SERVICE_NAME} -n 100"

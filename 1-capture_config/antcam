@@ -5,7 +5,7 @@ BEGIN_MARKER="# antscihub-capture-config BEGIN"
 END_MARKER="# antscihub-capture-config END"
 
 DEFAULT_PROFILE_DIR="/etc/antscihub/camera-profiles"
-PROFILE_DIR="${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}"
+PROFILE_DIR="${ANTCAM_PROFILE_DIR:-${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}}"
 
 CONFIG_CANDIDATES=(
     /boot/firmware/config.txt
@@ -15,24 +15,26 @@ CONFIG_CANDIDATES=(
 usage() {
     cat <<'EOF'
 Usage:
-  sudo antscam list
-  sudo antscam current
-  sudo antscam show <profile>
-  sudo antscam apply <profile> [--dry-run] [--no-reboot]
+  sudo antcam list
+  sudo antcam current
+  sudo antcam show <profile>
+  sudo antcam apply <profile> [--dry-run] [--no-reboot]
+  antcam start
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
 
 Examples:
-  sudo antscam list
-  sudo antscam show imx708
-  sudo antscam apply imx708
-  sudo antscam apply auto --dry-run
+  sudo antcam list
+  sudo antcam show imx708
+  sudo antcam apply imx708
+  sudo antcam apply auto --dry-run
+  antcam start
 EOF
 }
 
 die() {
-    echo "antscam: $*" >&2
+    echo "antcam: $*" >&2
     exit 1
 }
 
@@ -62,6 +64,69 @@ profile_path() {
     local path="${PROFILE_DIR}/${profile}.conf"
     [[ -f "${path}" ]] || die "profile not found: ${profile}"
     printf '%s\n' "${path}"
+}
+
+home_for_user() {
+    local username="$1"
+    local user_home
+    if command -v getent >/dev/null 2>&1; then
+        user_home="$(getent passwd "$username" 2>/dev/null | cut -d: -f6 || true)"
+    else
+        user_home="$(awk -F: -v user="$username" '$1 == user { print $6; exit }' /etc/passwd 2>/dev/null || true)"
+    fi
+    [[ -n "${user_home}" ]] || return 1
+    printf '%s\n' "${user_home}"
+}
+
+resolve_effective_home() {
+    if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        local sudo_home
+        if sudo_home="$(home_for_user "${SUDO_USER}")"; then
+            printf '%s\n' "${sudo_home}"
+            return 0
+        fi
+    fi
+
+    if [[ -n "${HOME:-}" ]]; then
+        printf '%s\n' "${HOME}"
+        return 0
+    fi
+
+    local current_user
+    current_user="$(id -un)"
+    home_for_user "${current_user}"
+}
+
+resolve_desktop_dir_for_home() {
+    local user_home="$1"
+    local desktop=""
+    local user_dirs_file="${user_home}/.config/user-dirs.dirs"
+
+    if [[ -f "${user_dirs_file}" ]]; then
+        local desktop_line
+        desktop_line="$(grep -E '^XDG_DESKTOP_DIR=' "${user_dirs_file}" | tail -n 1 || true)"
+        if [[ -n "${desktop_line}" ]]; then
+            desktop="${desktop_line#XDG_DESKTOP_DIR=}"
+            desktop="${desktop%\"}"
+            desktop="${desktop#\"}"
+            desktop="${desktop//\$HOME/${user_home}}"
+            if [[ "${desktop}" != /* ]]; then
+                desktop="${user_home}/${desktop#./}"
+            fi
+        fi
+    fi
+
+    if [[ -z "${desktop}" ]]; then
+        if [[ -d "${user_home}/Desktop" ]]; then
+            desktop="${user_home}/Desktop"
+        elif [[ -d "${user_home}/desktop" ]]; then
+            desktop="${user_home}/desktop"
+        else
+            desktop="${user_home}/Desktop"
+        fi
+    fi
+
+    printf '%s\n' "${desktop%/}"
 }
 
 normalize_lines() {
@@ -224,7 +289,7 @@ apply_profile() {
     local tmp_without_block tmp_cleaned
     tmp_without_block="$(mktemp)"
     tmp_cleaned="$(mktemp)"
-    trap 'rm -f "${tmp_without_block}" "${tmp_cleaned}"' EXIT
+    trap '[[ -n "${tmp_without_block:-}" ]] && rm -f -- "${tmp_without_block}"; [[ -n "${tmp_cleaned:-}" ]] && rm -f -- "${tmp_cleaned}"' EXIT
 
     remove_old_managed_block "${config_file}" "${tmp_without_block}"
     remove_conflicting_camera_lines "${tmp_without_block}" "${tmp_cleaned}"
@@ -245,7 +310,7 @@ apply_profile() {
         return 0
     fi
 
-    local backup_file="${config_file}.antscam.bak.$(date +%Y%m%d-%H%M%S)"
+    local backup_file="${config_file}.antcam.bak.$(date +%Y%m%d-%H%M%S)"
     cp "${config_file}" "${backup_file}"
     install -m 0644 "${tmp_without_block}" "${config_file}"
     sync
@@ -263,6 +328,44 @@ apply_profile() {
     systemctl reboot --no-block
 }
 
+start_recording() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
+
+    local desktop_dir capture_dir record_script experiment_file
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    capture_dir="${desktop_dir}/4-CAPTURE"
+    record_script="${capture_dir}/record.sh"
+    experiment_file="${capture_dir}/experiment.txt"
+
+    if [[ ! -d "${capture_dir}" ]]; then
+        mkdir -p "${capture_dir}"
+        echo "created capture directory: ${capture_dir}"
+    fi
+
+    if [[ ! -e "${record_script}" ]]; then
+        touch "${record_script}"
+        echo "created empty recording script: ${record_script}"
+    fi
+
+    if [[ ! -e "${experiment_file}" ]]; then
+        touch "${experiment_file}"
+        echo "created empty experiment file: ${experiment_file}"
+    fi
+
+    [[ -f "${record_script}" ]] || die "recording script path is not a file: ${record_script}"
+    [[ -f "${experiment_file}" ]] || die "experiment file path is not a file: ${experiment_file}"
+
+    echo "capture directory: ${capture_dir}"
+    echo "experiment file: ${experiment_file}"
+    echo "starting recording script: ${record_script}"
+
+    (
+        cd "${capture_dir}"
+        EXPERIMENT_FILE="${experiment_file}" bash "./record.sh"
+    )
+}
+
 main() {
     local cmd="${1:-}"
     case "${cmd}" in
@@ -278,15 +381,20 @@ main() {
             ;;
         show)
             shift
-            [[ $# -eq 1 ]] || die "usage: antscam show <profile>"
+            [[ $# -eq 1 ]] || die "usage: antcam show <profile>"
             show_profile "$1"
             ;;
         apply)
             shift
-            [[ $# -ge 1 ]] || die "usage: antscam apply <profile> [--dry-run] [--no-reboot]"
+            [[ $# -ge 1 ]] || die "usage: antcam apply <profile> [--dry-run] [--no-reboot]"
             local profile="$1"
             shift
             apply_profile "${profile}" "$@"
+            ;;
+        start)
+            shift
+            [[ $# -eq 0 ]] || die "start takes no arguments"
+            start_recording
             ;;
         help|-h|--help|"")
             usage

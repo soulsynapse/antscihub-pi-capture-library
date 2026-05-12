@@ -2,14 +2,15 @@
 
 This repository provides:
 
-1. Manual camera profile CLI: `antscam`
-2. Upload service: `antscihub-upload.service`
+1. Manual camera profile CLI: `antcam`
+2. Recording trigger command: `antcam start`
+3. Upload service: `antscihub-upload.service`
 
-## 1. Camera Profiles (`antscam`)
+## 1. Camera Profiles (`antcam`)
 
 Source:
 
-- `1-capture_config/antscam`
+- `1-capture_config/antcam`
 - `1-capture_config/profiles/*.conf`
 
 Purpose:
@@ -22,10 +23,20 @@ Purpose:
 
 Install target:
 
-- CLI: `/usr/local/bin/antscam`
+- CLI: `/usr/local/bin/antcam`
 - Profiles: `/etc/antscihub/camera-profiles`
 
-## 2. Upload Service
+## 2. Recording Start (`antcam start`)
+
+Purpose:
+
+- Resolve the active user's Desktop directory
+- Ensure `<desktop>/4-CAPTURE` exists
+- Ensure empty `<desktop>/4-CAPTURE/record.sh` exists
+- Ensure empty `<desktop>/4-CAPTURE/experiment.txt` exists
+- Execute `record.sh` from `<desktop>/4-CAPTURE`
+
+## 3. Upload Service
 
 Source:
 

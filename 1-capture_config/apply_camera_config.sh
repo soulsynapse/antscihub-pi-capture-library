@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Legacy script retained for backward compatibility.
-# Active camera configuration flow is now manual via `antscam`.
+# Active camera configuration flow is now manual via `antcam`.
 
 STATE_DIR="/var/lib/antscihub-capture-config"
 LOG_FILE="/var/log/antscihub-capture-config.log"

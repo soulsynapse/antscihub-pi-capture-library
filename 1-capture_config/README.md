@@ -1,19 +1,20 @@
-# Camera Profiles (`antscam`)
+# Camera Profiles (`antcam`)
 
 Camera config is now manual and profile-driven.
 
 This module no longer relies on a boot-time dynamic camera detection service.  
-Instead, you apply a known camera profile explicitly with `antscam`.
+Instead, you apply a known camera profile explicitly with `antcam`.
 
 ## Commands
 
 ```bash
-sudo antscam list
-sudo antscam current
-sudo antscam show <profile>
-sudo antscam apply <profile>
-sudo antscam apply <profile> --dry-run
-sudo antscam apply <profile> --no-reboot
+sudo antcam list
+sudo antcam current
+sudo antcam show <profile>
+sudo antcam apply <profile>
+sudo antcam apply <profile> --dry-run
+sudo antcam apply <profile> --no-reboot
+antcam start
 ```
 
 ## Profiles
@@ -33,7 +34,7 @@ Current bundled profiles:
 ## How `apply` works
 
 1. Finds active `config.txt` (`/boot/firmware/config.txt` or `/boot/config.txt`)
-2. Backs it up (`.antscam.bak.<timestamp>`)
+2. Backs it up (`.antcam.bak.<timestamp>`)
 3. Removes previous managed block
 4. Removes known conflicting camera lines
 5. Writes selected profile in the managed block:
@@ -43,6 +44,8 @@ Current bundled profiles:
 
 ## Notes
 
-- `antscam apply` requires `sudo` (except `--dry-run`)
+- `antcam apply` requires `sudo` (except `--dry-run`)
+- `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
+- `antcam start` creates missing `4-CAPTURE/record.sh` and `4-CAPTURE/experiment.txt` as empty files before execution
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

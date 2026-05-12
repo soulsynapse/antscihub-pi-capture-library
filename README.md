@@ -2,14 +2,15 @@
 
 Lightweight Raspberry Pi services/scripts for:
 
-1. Manual camera profile application (`antscam`)
-2. Continuous upload of completed files from Desktop to remote storage via `rclone`
+1. Manual camera profile application (`antcam`)
+2. Recording trigger command (`antcam start`)
+3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
 
 - [1-capture_config](1-capture_config) - Camera profile CLI + profile files
 - [2-test_scripts](2-test_scripts) - Validation scripts
-- [3-recording_scripts](3-recording_scripts) - Recording scripts (placeholder)
+- [3-recording_scripts](3-recording_scripts) - Recording command docs
 - [4-upload](4-upload) - Upload worker service
 
 ## Quick Start
@@ -22,7 +23,7 @@ sudo bash install.sh
 
 This install flow:
 
-- Installs `antscam` to `/usr/local/bin/antscam`
+- Installs `antcam` to `/usr/local/bin/antcam`
 - Installs camera profiles to `/etc/antscihub/camera-profiles`
 - Disables/removes the old dynamic camera service (`antscihub-capture-config.service`)
 - Installs/updates `antscihub-upload.service`
@@ -32,16 +33,29 @@ This install flow:
 ### Camera Profile Commands
 
 ```bash
-sudo antscam list
-sudo antscam current
-sudo antscam show imx708
-sudo antscam apply imx708
+sudo antcam list
+sudo antcam current
+sudo antcam show imx708
+sudo antcam apply imx708
 ```
 
 Apply options:
 
 - `--dry-run` (preview only)
 - `--no-reboot` (write config but do not reboot)
+
+### Recording Command
+
+```bash
+antcam start
+```
+
+`antcam start` resolves the active user's Desktop path and then:
+
+- Creates `<desktop>/4-CAPTURE` if missing
+- Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
+- Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
+- Runs `record.sh` from inside `<desktop>/4-CAPTURE`
 
 ### Upload Service
 
@@ -75,4 +89,4 @@ The upload worker:
 ## Notes
 
 - Upload requires `rclone` configured for `gdrive_personal`
-- Camera profile selection is now explicit and operator-controlled via `antscam`
+- Camera profile selection is now explicit and operator-controlled via `antcam`

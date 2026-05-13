@@ -49,8 +49,10 @@ Current bundled profiles:
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam start` creates missing `4-CAPTURE/record.sh` and `4-CAPTURE/experiment.txt` as empty files before execution
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
+- If `record.sh` fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - `antcam test` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam test` runs `4-CAPTURE/test.sh` and does not require `4-CAPTURE/experiment.txt`
 - `antcam test` publishes encrypted Fleet report messages when test starts/ends (`test_start`, `test_end`)
+- If `test.sh` fails, `antcam test` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/test/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

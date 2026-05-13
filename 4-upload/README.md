@@ -109,6 +109,8 @@ Additional context fields are included when available:
 
 Uploader `report` values:
 
+- `upload_detected`
+- `upload_renamed`
 - `upload_start`
 - `upload_success`
 - `upload_failed`

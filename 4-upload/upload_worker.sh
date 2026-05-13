@@ -340,6 +340,12 @@ build_fleet_event_topic() {
 upload_status_to_report_name() {
     local status="$1"
     case "${status}" in
+        detected)
+            printf '%s' "upload_detected"
+            ;;
+        renamed)
+            printf '%s' "upload_renamed"
+            ;;
         start)
             printf '%s' "upload_start"
             ;;
@@ -364,7 +370,10 @@ upload_status_to_report_name() {
 upload_status_to_severity() {
     local status="$1"
     case "${status}" in
-        start)
+        detected)
+            printf '%s' "ROUTINE"
+            ;;
+        renamed|start)
             printf '%s' "ATTENTION"
             ;;
         success)
@@ -385,7 +394,7 @@ upload_status_to_severity() {
 upload_status_to_success() {
     local status="$1"
     case "${status}" in
-        success|start)
+        detected|renamed|success|start)
             printf '%s' "true"
             ;;
         *)
@@ -425,6 +434,12 @@ publish_upload_mqtt_event() {
 
     local message="Upload event: ${status}"
     case "${status}" in
+        detected)
+            message="File detected for upload"
+            ;;
+        renamed)
+            message="Upload target renamed to avoid conflict"
+            ;;
         start)
             message="Upload started"
             ;;
@@ -590,6 +605,7 @@ log_file_detected_once() {
 
     file_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
     log "INFO" "Detected file: ${relative_path} (size=${file_size} bytes)"
+    emit_upload_event "detected" "${relative_path}" "" "${file_size}" "" "file_detected" ""
     SEEN_FILE_DETECTIONS["$detection_key"]="1"
 }
 
@@ -855,6 +871,7 @@ do_upload() {
     if [[ "$selected_relative_path" != "$relative_path" ]]; then
         log "WARN" "Remote conflict detected for ${relative_path}"
         log "INFO" "Renaming remote upload target: ${relative_path} -> ${selected_relative_path}"
+        emit_upload_event "renamed" "${relative_path}" "${remote_target}" "${file_size}" "" "renamed_to:${selected_relative_path}" ""
     fi
 
     log "INFO" "Starting upload: ${relative_path}"

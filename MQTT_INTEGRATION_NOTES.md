@@ -76,10 +76,18 @@ Optional context fields are included by source (for example `service`, `folder`,
 
 `antcam test` runs `4-CAPTURE/test.sh` and does not require `experiment.txt`.
 
+Failure diagnostics from `antcam` are written for uploader pickup:
+
+- `record.sh` failures: `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- `test.sh` failures: `<desktop>/5-UPLOAD/diagnostics/test/`
+- If the primary diagnostic path fails, a fallback timestamped file is written in `<desktop>/5-UPLOAD/diagnostics/`
+
 ## Uploader Events
 
 Uploader report names:
 
+- `upload_detected`
+- `upload_renamed`
 - `upload_start`
 - `upload_success`
 - `upload_failed`
@@ -102,7 +110,7 @@ Current MQTT-related assertions include:
 
 - `test_start` and `test_end` present in `antcam`
 - `encrypt=True` present in both `antcam` and uploader python fallbacks
-- `--no-encrypt` absent from uploader script
+- `--no-encrypt` absent from both `antcam` and uploader scripts
 
 ## Quick Pi Test Commands
 

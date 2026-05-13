@@ -75,6 +75,7 @@ antcam test
 - Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
+- On `record.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 `antcam test` resolves the active user's Desktop path and then:
 
@@ -82,6 +83,7 @@ antcam test
 - Runs `test.sh` from inside `<desktop>/4-CAPTURE`
 - Does not create or require `<desktop>/4-CAPTURE/experiment.txt`
 - Publishes encrypted Fleet report messages at test start/end (`report=test_start|test_end`)
+- On `test.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/test/`
 
 ### Upload Service
 

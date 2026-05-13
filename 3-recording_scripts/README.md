@@ -17,6 +17,7 @@ antcam test
 6. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
+7. If `record.sh` fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
 
 `antcam test` behavior:
 
@@ -27,3 +28,4 @@ antcam test
 5. Publish encrypted Fleet report messages when test starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=test_start|test_end`, `device_id`, `timestamp`, `severity`, `success`
+6. If `test.sh` fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/test/` for uploader pickup.

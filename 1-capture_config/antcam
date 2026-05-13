@@ -138,6 +138,13 @@ resolve_desktop_dir_for_home() {
     printf '%s\n' "${desktop%/}"
 }
 
+resolve_upload_dir_for_home() {
+    local user_home="$1"
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/5-UPLOAD"
+}
+
 json_escape() {
     local input="${1:-}"
     input="${input//\\/\\\\}"
@@ -425,6 +432,84 @@ publish_recording_event() {
     return 1
 }
 
+write_script_failure_diagnostic() {
+    local user_home="$1"
+    local capture_dir="$2"
+    local script_path="$3"
+    local exit_code="$4"
+    local console_log_path="$5"
+    local script_kind="$6"
+
+    local upload_dir timestamp_utc timestamp_slug device_id
+    local target_subdir primary_dir primary_file fallback_dir fallback_file
+    local diagnostic_body_tmp
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+
+    timestamp_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
+    target_subdir="diagnostics"
+    case "${script_kind}" in
+        test)
+            target_subdir="diagnostics/test"
+            ;;
+        recording)
+            target_subdir="diagnostics/recordings"
+            ;;
+    esac
+
+    primary_dir="${upload_dir}/${target_subdir}"
+    primary_file="${primary_dir}/${script_kind}-failure-${device_id}-${timestamp_slug}.log"
+    fallback_dir="${upload_dir}/diagnostics"
+    fallback_file="${fallback_dir}/diagnostic-write-fallback-${device_id}-${timestamp_slug}.log"
+    diagnostic_body_tmp="$(mktemp)"
+
+    {
+        echo "# AntCam Script Failure Diagnostic"
+        echo "timestamp_utc=${timestamp_utc}"
+        echo "device_id=${device_id}"
+        echo "script_kind=${script_kind}"
+        echo "capture_dir=${capture_dir}"
+        echo "script_path=${script_path}"
+        echo "exit_code=${exit_code}"
+        echo
+        echo "## Console Output"
+        if [[ -f "${console_log_path}" ]]; then
+            cat "${console_log_path}"
+        else
+            echo "(console log file unavailable)"
+        fi
+    } > "${diagnostic_body_tmp}"
+
+    if mkdir -p "${primary_dir}" && cp "${diagnostic_body_tmp}" "${primary_file}" >/dev/null 2>&1; then
+        rm -f "${diagnostic_body_tmp}" >/dev/null 2>&1 || true
+        echo "wrote script failure diagnostic: ${primary_file}"
+        return 0
+    fi
+
+    if mkdir -p "${fallback_dir}"; then
+        {
+            echo "# AntCam Diagnostic Write Fallback"
+            echo "timestamp_utc=${timestamp_utc}"
+            echo "device_id=${device_id}"
+            echo "script_kind=${script_kind}"
+            echo "intended_path=${primary_file}"
+            echo "reason=failed_to_write_primary_diagnostic"
+            echo
+            echo "## Original Diagnostic Content"
+            cat "${diagnostic_body_tmp}"
+        } > "${fallback_file}"
+        rm -f "${diagnostic_body_tmp}" >/dev/null 2>&1 || true
+        echo "wrote fallback diagnostic: ${fallback_file}"
+        return 0
+    fi
+
+    rm -f "${diagnostic_body_tmp}" >/dev/null 2>&1 || true
+    echo "antcam: warning: unable to write diagnostic report to ${primary_dir} or fallback diagnostics folder" >&2
+    return 1
+}
+
 normalize_lines() {
     awk '
         {
@@ -665,11 +750,16 @@ start_recording() {
         "${record_script}" || true
 
     local record_exit_code=0
+    local record_console_log
+    record_console_log="$(mktemp)"
 
+    set +e
     (
         cd "${capture_dir}"
         EXPERIMENT_FILE="${experiment_file}" bash "./record.sh"
-    ) || record_exit_code=$?
+    ) 2>&1 | tee "${record_console_log}"
+    record_exit_code="${PIPESTATUS[0]}"
+    set -e
 
     if [[ "${record_exit_code}" -eq 0 ]]; then
         publish_recording_event \
@@ -681,6 +771,13 @@ start_recording() {
             "${record_script}" \
             "${record_exit_code}" || true
     else
+        write_script_failure_diagnostic \
+            "${user_home}" \
+            "${capture_dir}" \
+            "${record_script}" \
+            "${record_exit_code}" \
+            "${record_console_log}" \
+            "recording" || true
         publish_recording_event \
             "recording_end" \
             "ERROR" \
@@ -690,6 +787,8 @@ start_recording() {
             "${record_script}" \
             "${record_exit_code}" || true
     fi
+
+    rm -f "${record_console_log}" >/dev/null 2>&1 || true
 
     return "${record_exit_code}"
 }
@@ -718,11 +817,16 @@ start_test() {
         "${test_script}" || true
 
     local test_exit_code=0
+    local test_console_log
+    test_console_log="$(mktemp)"
 
+    set +e
     (
         cd "${capture_dir}"
         bash "./test.sh"
-    ) || test_exit_code=$?
+    ) 2>&1 | tee "${test_console_log}"
+    test_exit_code="${PIPESTATUS[0]}"
+    set -e
 
     if [[ "${test_exit_code}" -eq 0 ]]; then
         publish_recording_event \
@@ -734,6 +838,13 @@ start_test() {
             "${test_script}" \
             "${test_exit_code}" || true
     else
+        write_script_failure_diagnostic \
+            "${user_home}" \
+            "${capture_dir}" \
+            "${test_script}" \
+            "${test_exit_code}" \
+            "${test_console_log}" \
+            "test" || true
         publish_recording_event \
             "test_end" \
             "ERROR" \
@@ -743,6 +854,8 @@ start_test() {
             "${test_script}" \
             "${test_exit_code}" || true
     fi
+
+    rm -f "${test_console_log}" >/dev/null 2>&1 || true
 
     return "${test_exit_code}"
 }

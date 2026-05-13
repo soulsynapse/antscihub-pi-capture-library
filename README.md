@@ -74,12 +74,14 @@ antcam test
 - Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
 - Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
+- Publishes Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 
 `antcam test` resolves the active user's Desktop path and then:
 
 - Uses existing `<desktop>/4-CAPTURE`
 - Runs `test.sh` from inside `<desktop>/4-CAPTURE`
 - Does not create or require `<desktop>/4-CAPTURE/experiment.txt`
+- Publishes Fleet report messages at test start/end (`report=test_start|test_end`)
 
 ### Upload Service
 

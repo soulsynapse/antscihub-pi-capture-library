@@ -6,6 +6,13 @@ END_MARKER="# antscihub-capture-config END"
 
 DEFAULT_PROFILE_DIR="/etc/antscihub/camera-profiles"
 PROFILE_DIR="${ANTCAM_PROFILE_DIR:-${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}}"
+FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
+FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
+MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
+MQTT_EVENT_ENABLED="${MQTT_EVENT_ENABLED:-true}"
+DEVICE_ID_CACHE=""
+DEVICE_ID_CACHE_READY="false"
+MQTT_PUBLISH_WARNING_EMITTED="false"
 
 CONFIG_CANDIDATES=(
     /boot/firmware/config.txt
@@ -129,6 +136,293 @@ resolve_desktop_dir_for_home() {
     fi
 
     printf '%s\n' "${desktop%/}"
+}
+
+json_escape() {
+    local input="${1:-}"
+    input="${input//\\/\\\\}"
+    input="${input//\"/\\\"}"
+    input="${input//$'\n'/\\n}"
+    input="${input//$'\r'/\\r}"
+    input="${input//$'\t'/\\t}"
+    printf '%s' "${input}"
+}
+
+normalize_device_id() {
+    local input="${1:-}"
+    input="${input//$'\r'/}"
+    input="${input//$'\n'/}"
+    input="${input//$'\t'/}"
+    input="${input// /}"
+    printf '%s' "${input}"
+}
+
+detect_device_id_fallback() {
+    local raw=""
+    raw="$(hostname 2>/dev/null || true)"
+    if [[ -z "$raw" && -f /etc/hostname ]]; then
+        raw="$(head -n 1 /etc/hostname 2>/dev/null || true)"
+    fi
+    if [[ -z "$raw" && -f /etc/machine-id ]]; then
+        raw="$(head -n 1 /etc/machine-id 2>/dev/null || true)"
+    fi
+    raw="${raw//[^[:alnum:]._-]/_}"
+    raw="${raw//__/_}"
+    raw="${raw##_}"
+    raw="${raw%%_}"
+    if [[ -z "$raw" ]]; then
+        raw="unknown-device"
+    fi
+    printf '%s' "$raw"
+}
+
+resolve_device_id() {
+    if [[ "${DEVICE_ID_CACHE_READY}" == "true" ]]; then
+        printf '%s' "${DEVICE_ID_CACHE}"
+        return 0
+    fi
+
+    local candidate=""
+    if [[ -n "${DEVICE_ID:-}" ]]; then
+        candidate="$(normalize_device_id "${DEVICE_ID}")"
+    elif [[ -n "${FLEET_DEVICE_ID:-}" ]]; then
+        candidate="$(normalize_device_id "${FLEET_DEVICE_ID}")"
+    fi
+
+    if [[ -z "${candidate}" ]] && command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1; then
+        candidate="$("${FLEET_PUBLISH_BIN}" --device-id 2>/dev/null | head -n 1 || true)"
+        candidate="$(normalize_device_id "${candidate}")"
+        if [[ "${candidate}" == *=* ]]; then
+            candidate="${candidate##*=}"
+            candidate="$(normalize_device_id "${candidate}")"
+        fi
+        if [[ -z "${candidate}" ]]; then
+            candidate="$("${FLEET_PUBLISH_BIN}" device-id 2>/dev/null | head -n 1 || true)"
+            candidate="$(normalize_device_id "${candidate}")"
+            if [[ "${candidate}" == *=* ]]; then
+                candidate="${candidate##*=}"
+                candidate="$(normalize_device_id "${candidate}")"
+            fi
+        fi
+    fi
+
+    if [[ -z "${candidate}" ]] && command -v python3 >/dev/null 2>&1; then
+        candidate="$(python3 - <<'PY' 2>/dev/null || true
+try:
+    from mqtt_client import DEVICE_ID
+    print((DEVICE_ID or "").strip())
+except Exception:
+    pass
+PY
+)"
+        candidate="$(normalize_device_id "${candidate}")"
+    fi
+
+    if [[ -z "${candidate}" ]]; then
+        local file_candidate
+        for file_candidate in \
+            "/etc/fleet/device_id" \
+            "/var/lib/fleet/device_id" \
+            "${XDG_CONFIG_HOME:-${HOME}/.config}/fleet/device_id" \
+            "/etc/antscihub/device_id"; do
+            if [[ -f "${file_candidate}" ]]; then
+                candidate="$(head -n 1 "${file_candidate}" 2>/dev/null || true)"
+                candidate="$(normalize_device_id "${candidate}")"
+                [[ -n "${candidate}" ]] && break
+            fi
+        done
+    fi
+
+    if [[ -z "${candidate}" ]]; then
+        candidate="$(detect_device_id_fallback)"
+    fi
+
+    DEVICE_ID_CACHE="${candidate}"
+    DEVICE_ID_CACHE_READY="true"
+    printf '%s' "${DEVICE_ID_CACHE}"
+}
+
+build_fleet_event_topic() {
+    local device_id="$1"
+    local template="${FLEET_EVENT_TOPIC_TEMPLATE}"
+    local topic
+
+    topic="${template//\{DEVICE_ID\}/${device_id}}"
+    if [[ -z "${topic}" ]]; then
+        topic="fleet/report/${device_id}"
+    fi
+
+    printf '%s' "${topic}"
+}
+
+publish_with_fleet_publish() {
+    local topic="$1"
+    local payload="$2"
+
+    command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1 || return 1
+
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+
+    return 1
+}
+
+publish_with_mqtt_report_cli() {
+    local topic="$1"
+    local payload="$2"
+
+    command -v "${MQTT_REPORT_BIN}" >/dev/null 2>&1 || return 1
+    "${MQTT_REPORT_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1
+}
+
+publish_with_fleet_mqtt_python() {
+    local topic="$1"
+    local payload="$2"
+
+    command -v python3 >/dev/null 2>&1 || return 1
+
+    python3 - "${topic}" "${payload}" >/dev/null 2>&1 <<'PY'
+import json
+import sys
+
+topic = sys.argv[1]
+payload_raw = sys.argv[2]
+
+try:
+    payload_obj = json.loads(payload_raw)
+except Exception:
+    payload_obj = payload_raw
+
+published = False
+
+try:
+    from mqtt_client import fleet
+    try:
+        if hasattr(fleet, "loop_start"):
+            fleet.loop_start()
+        if hasattr(fleet, "wait_until_connected"):
+            fleet.wait_until_connected(timeout=10)
+    except Exception:
+        pass
+    try:
+        fleet.publish(topic, payload_obj, encrypt=False)
+    except TypeError:
+        fleet.publish(topic, payload_obj)
+    published = True
+except Exception:
+    published = False
+
+if not published:
+    try:
+        from mqtt_client import FleetMQTT
+    except Exception:
+        sys.exit(2)
+
+    client = None
+    for ctor in (lambda: FleetMQTT(), lambda: FleetMQTT("antscihub-recording")):
+        try:
+            client = ctor()
+            break
+        except Exception:
+            continue
+
+    if client is None:
+        sys.exit(3)
+
+    for method_name in ("publish_json", "publish", "send"):
+        method = getattr(client, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            if method_name == "publish_json":
+                if isinstance(payload_obj, str):
+                    parsed_payload = json.loads(payload_obj)
+                else:
+                    parsed_payload = payload_obj
+                try:
+                    method(topic, parsed_payload, encrypt=False)
+                except TypeError:
+                    method(topic, parsed_payload)
+            else:
+                try:
+                    method(topic, payload_obj, encrypt=False)
+                except TypeError:
+                    try:
+                        method(topic, payload_obj)
+                    except TypeError:
+                        method(topic, payload_raw)
+            published = True
+            break
+        except Exception:
+            continue
+
+    for close_name in ("close", "disconnect", "stop"):
+        close_method = getattr(client, close_name, None)
+        if callable(close_method):
+            try:
+                close_method()
+            except Exception:
+                pass
+
+sys.exit(0 if published else 4)
+PY
+}
+
+publish_recording_event() {
+    local report_name="$1"
+    local severity="$2"
+    local message="$3"
+    local success_bool="$4"
+    local capture_dir="${5:-}"
+    local script_path="${6:-}"
+    local exit_code="${7:-}"
+
+    if [[ "${MQTT_EVENT_ENABLED,,}" != "true" ]]; then
+        return 0
+    fi
+
+    local device_id topic timestamp payload
+    device_id="$(resolve_device_id)"
+    topic="$(build_fleet_event_topic "${device_id}")"
+    timestamp="$(date +%s)"
+
+    payload="{\"event\":\"report\""
+    payload+=",\"report\":\"$(json_escape "${report_name}")\""
+    payload+=",\"device_id\":\"$(json_escape "${device_id}")\""
+    payload+=",\"timestamp\":${timestamp}"
+    payload+=",\"severity\":\"$(json_escape "${severity}")\""
+    payload+=",\"message\":\"$(json_escape "${message}")\""
+    payload+=",\"success\":${success_bool}"
+    payload+=",\"service\":\"antscihub-recording\""
+    if [[ -n "${capture_dir}" ]]; then
+        payload+=",\"folder\":\"$(json_escape "${capture_dir}")\""
+    fi
+    if [[ -n "${script_path}" ]]; then
+        payload+=",\"script\":\"$(json_escape "${script_path}")\""
+    fi
+    if [[ -n "${exit_code}" ]]; then
+        payload+=",\"exit_code\":\"$(json_escape "${exit_code}")\""
+    fi
+    payload+="}"
+
+    if publish_with_fleet_publish "${topic}" "${payload}"; then
+        return 0
+    fi
+    if publish_with_mqtt_report_cli "${topic}" "${payload}"; then
+        return 0
+    fi
+    if publish_with_fleet_mqtt_python "${topic}" "${payload}"; then
+        return 0
+    fi
+
+    if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
+        echo "antcam: warning: unable to publish recording MQTT events (tried ${FLEET_PUBLISH_BIN}, ${MQTT_REPORT_BIN}, python mqtt_client)" >&2
+        MQTT_PUBLISH_WARNING_EMITTED="true"
+    fi
+    return 1
 }
 
 normalize_lines() {
@@ -362,10 +656,42 @@ start_recording() {
     echo "experiment file: ${experiment_file}"
     echo "starting recording script: ${record_script}"
 
+    publish_recording_event \
+        "recording_start" \
+        "ATTENTION" \
+        "Recording script starting" \
+        "true" \
+        "${capture_dir}" \
+        "${record_script}" || true
+
+    local record_exit_code=0
+
     (
         cd "${capture_dir}"
         EXPERIMENT_FILE="${experiment_file}" bash "./record.sh"
-    )
+    ) || record_exit_code=$?
+
+    if [[ "${record_exit_code}" -eq 0 ]]; then
+        publish_recording_event \
+            "recording_end" \
+            "INFO" \
+            "Recording script completed" \
+            "true" \
+            "${capture_dir}" \
+            "${record_script}" \
+            "${record_exit_code}" || true
+    else
+        publish_recording_event \
+            "recording_end" \
+            "ERROR" \
+            "Recording script failed" \
+            "false" \
+            "${capture_dir}" \
+            "${record_script}" \
+            "${record_exit_code}" || true
+    fi
+
+    return "${record_exit_code}"
 }
 
 start_test() {
@@ -383,10 +709,42 @@ start_test() {
     echo "capture directory: ${capture_dir}"
     echo "starting test script: ${test_script}"
 
+    publish_recording_event \
+        "test_start" \
+        "ATTENTION" \
+        "Test script starting" \
+        "true" \
+        "${capture_dir}" \
+        "${test_script}" || true
+
+    local test_exit_code=0
+
     (
         cd "${capture_dir}"
         bash "./test.sh"
-    )
+    ) || test_exit_code=$?
+
+    if [[ "${test_exit_code}" -eq 0 ]]; then
+        publish_recording_event \
+            "test_end" \
+            "INFO" \
+            "Test script completed" \
+            "true" \
+            "${capture_dir}" \
+            "${test_script}" \
+            "${test_exit_code}" || true
+    else
+        publish_recording_event \
+            "test_end" \
+            "ERROR" \
+            "Test script failed" \
+            "false" \
+            "${capture_dir}" \
+            "${test_script}" \
+            "${test_exit_code}" || true
+    fi
+
+    return "${test_exit_code}"
 }
 
 main() {

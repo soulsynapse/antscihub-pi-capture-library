@@ -74,14 +74,14 @@ antcam test
 - Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
 - Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
-- Publishes Fleet report messages at recording start/end (`report=recording_start|recording_end`)
+- Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 
 `antcam test` resolves the active user's Desktop path and then:
 
 - Uses existing `<desktop>/4-CAPTURE`
 - Runs `test.sh` from inside `<desktop>/4-CAPTURE`
 - Does not create or require `<desktop>/4-CAPTURE/experiment.txt`
-- Publishes Fleet report messages at test start/end (`report=test_start|test_end`)
+- Publishes encrypted Fleet report messages at test start/end (`report=test_start|test_end`)
 
 ### Upload Service
 
@@ -117,7 +117,7 @@ The upload worker:
 6. Retries failures with exponential backoff
 7. Adds machine suffix on remote-name conflicts
 8. Tracks processed files by file identity
-9. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, unencrypted JSON)
+9. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, encrypted payloads)
 
 ## State Paths
 
@@ -146,3 +146,4 @@ bash 2-test_scripts/run_static_checks.sh
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam test` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
+- MQTT implementation handoff notes are in `MQTT_INTEGRATION_NOTES.md`

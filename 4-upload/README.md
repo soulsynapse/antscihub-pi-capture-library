@@ -77,15 +77,15 @@ UPLOAD_EVENT status=failed ts=<utc-iso8601> file=<shell-escaped-path> remote=<sh
 
 ## MQTT Upload Events (Orchestrator)
 
-The uploader publishes plain JSON report events to Fleet.
+The uploader publishes report events to Fleet using encrypted MQTT payloads.
 
 - Default topic: `fleet/report/{DEVICE_ID}`
 - Topic override: `FLEET_EVENT_TOPIC_TEMPLATE` (supports `{DEVICE_ID}` placeholder)
-- Preferred transport: `fleet-publish --topic ... --json ... --no-encrypt`
+- Preferred transport: `fleet-publish --topic ... --json ...`
 - Also supported: `mqtt_report.py --topic ... --json ...`
 - Fallback transport: `mqtt_client.FleetMQTT` (python module from fleet setup)
 
-Each payload includes core fields:
+Each event object includes core fields before encryption:
 
 - `event` (`report` for uploader messages)
 - `report` (uploader report name, for example `upload_start`)

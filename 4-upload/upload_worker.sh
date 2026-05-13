@@ -229,13 +229,12 @@ publish_with_fleet_publish() {
     command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1 || return 1
 
     # Preferred format from fleet messaging guide.
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1 && return 0
 
     # Compatibility fallbacks for older publisher variants.
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" >/dev/null 2>&1 && return 0
 
     return 1
 }
@@ -286,12 +285,12 @@ for method_name in ("publish_json", "publish", "send"):
             else:
                 parsed_payload = payload_obj
             try:
-                method(topic, parsed_payload, encrypt=False)
+                method(topic, parsed_payload, encrypt=True)
             except TypeError:
                 method(topic, parsed_payload)
         else:
             try:
-                method(topic, payload_obj, encrypt=False)
+                method(topic, payload_obj, encrypt=True)
             except TypeError:
                 try:
                     method(topic, payload_obj)
@@ -409,7 +408,8 @@ publish_upload_mqtt_event() {
     fi
 
     local device_id
-    device_id="$(resolve_device_id)"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
     if [[ -z "${device_id}" ]]; then
         if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
             log "WARN" "Skipping MQTT upload event publish: no device_id available"
@@ -507,7 +507,7 @@ publish_upload_mqtt_event() {
     fi
 
     if [[ "${MQTT_PUBLISH_WARNING_EMITTED}" != "true" ]]; then
-        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN} (--no-encrypt), ${MQTT_REPORT_BIN}, and python mqtt_client.FleetMQTT."
+        log "WARN" "Unable to publish upload events to MQTT. Tried ${FLEET_PUBLISH_BIN}, ${MQTT_REPORT_BIN}, and python mqtt_client.FleetMQTT."
         MQTT_PUBLISH_WARNING_EMITTED="true"
     fi
     return 1

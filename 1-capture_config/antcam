@@ -261,11 +261,10 @@ publish_with_fleet_publish() {
 
     command -v "${FLEET_PUBLISH_BIN}" >/dev/null 2>&1 || return 1
 
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
     "${FLEET_PUBLISH_BIN}" --topic "${topic}" --json "${payload}" >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
-    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" --no-encrypt >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --payload "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" --topic "${topic}" --message "${payload}" >/dev/null 2>&1 && return 0
+    "${FLEET_PUBLISH_BIN}" -t "${topic}" -m "${payload}" >/dev/null 2>&1 && return 0
 
     return 1
 }
@@ -308,7 +307,7 @@ try:
     except Exception:
         pass
     try:
-        fleet.publish(topic, payload_obj, encrypt=False)
+        fleet.publish(topic, payload_obj, encrypt=True)
     except TypeError:
         fleet.publish(topic, payload_obj)
     published = True
@@ -343,12 +342,12 @@ if not published:
                 else:
                     parsed_payload = payload_obj
                 try:
-                    method(topic, parsed_payload, encrypt=False)
+                    method(topic, parsed_payload, encrypt=True)
                 except TypeError:
                     method(topic, parsed_payload)
             else:
                 try:
-                    method(topic, payload_obj, encrypt=False)
+                    method(topic, payload_obj, encrypt=True)
                 except TypeError:
                     try:
                         method(topic, payload_obj)
@@ -385,7 +384,8 @@ publish_recording_event() {
     fi
 
     local device_id topic timestamp payload
-    device_id="$(resolve_device_id)"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
     topic="$(build_fleet_event_topic "${device_id}")"
     timestamp="$(date +%s)"
 

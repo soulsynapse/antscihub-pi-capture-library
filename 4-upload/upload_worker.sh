@@ -411,6 +411,7 @@ publish_upload_mqtt_event() {
     local attempt="${5:-}"
     local reason="${6:-}"
     local exit_code="${7:-}"
+    local cmd_name="${8:-rclone moveto}"
 
     if [[ "${MQTT_EVENT_ENABLED,,}" != "true" ]]; then
         return 0
@@ -457,6 +458,30 @@ publish_upload_mqtt_event() {
             ;;
     esac
 
+    local -a message_parts=()
+    if [[ -n "${relative_path}" ]]; then
+        message_parts+=("file=${relative_path}")
+    fi
+    if [[ -n "${size_bytes}" ]]; then
+        message_parts+=("size_bytes=${size_bytes}")
+    fi
+    if [[ -n "${remote_target}" ]]; then
+        message_parts+=("remote=${remote_target}")
+    fi
+    if [[ -n "${attempt}" ]]; then
+        message_parts+=("attempt=${attempt}")
+    fi
+    if [[ -n "${exit_code}" ]]; then
+        message_parts+=("exit_code=${exit_code}")
+    fi
+    if [[ -n "${reason}" ]]; then
+        message_parts+=("reason=${reason}")
+    fi
+
+    if (( ${#message_parts[@]} > 0 )); then
+        message="${message} (${message_parts[*]})"
+    fi
+
     local timestamp topic folder
     timestamp="$(date +%s)"
     topic="$(build_fleet_event_topic "${device_id}")"
@@ -476,7 +501,7 @@ publish_upload_mqtt_event() {
     pairs+=("\"message\":\"$(json_escape "${message}")\"")
     pairs+=("\"folder\":\"$(json_escape "${folder}")\"")
     pairs+=("\"file\":\"$(json_escape "${relative_path}")\"")
-    pairs+=("\"cmd\":\"$(json_escape "rclone moveto")\"")
+    pairs+=("\"cmd\":\"$(json_escape "${cmd_name}")\"")
     if [[ -n "${remote_target}" ]]; then
         pairs+=("\"remote\":\"$(json_escape "${remote_target}")\"")
     fi
@@ -536,12 +561,13 @@ emit_upload_event() {
     local attempt="${5:-}"
     local reason="${6:-}"
     local exit_code="${7:-}"
+    local cmd_name="${8:-rclone moveto}"
     local ts
     ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     # Explicit stdout event line for orchestrators that tail process output.
     printf 'UPLOAD_EVENT status=%s ts=%s file=%q remote=%q size_bytes=%s\n' \
         "$status" "$ts" "$relative_path" "$remote_target" "$size_bytes"
-    publish_upload_mqtt_event "${status}" "${relative_path}" "${remote_target}" "${size_bytes}" "${attempt}" "${reason}" "${exit_code}" || true
+    publish_upload_mqtt_event "${status}" "${relative_path}" "${remote_target}" "${size_bytes}" "${attempt}" "${reason}" "${exit_code}" "${cmd_name}" || true
 }
 
 # Ensure directories exist
@@ -849,6 +875,21 @@ calculate_backoff() {
     echo $delay
 }
 
+is_config_relative_path() {
+    local relative_path="$1"
+    local part
+    local -a parts=()
+    local IFS='/'
+    read -r -a parts <<< "$relative_path"
+
+    for part in "${parts[@]}"; do
+        if [[ "${part,,}" == "config" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
 # Main upload function
 do_upload() {
     local file="$1"
@@ -861,6 +902,9 @@ do_upload() {
     local remote_target
     local file_size
     local file_mtime
+    local is_config_file="false"
+    local rclone_subcommand="moveto"
+    local cmd_label="rclone moveto"
     basename=$(basename "$file")
     selection="$(resolve_remote_target "$relative_path")"
     selected_relative_path="${selection%%|*}"
@@ -868,29 +912,37 @@ do_upload() {
     file_size=$(stat -c %s "$file" 2>/dev/null || echo 0)
     file_mtime=$(stat -c %y "$file" 2>/dev/null || echo "unknown")
 
+    if is_config_relative_path "$relative_path"; then
+        is_config_file="true"
+        rclone_subcommand="copyto"
+        cmd_label="rclone copyto"
+        log "INFO" "Config-path upload mode (no local move or .MOVED placeholder): ${relative_path}"
+    fi
+
     if [[ "$selected_relative_path" != "$relative_path" ]]; then
         log "WARN" "Remote conflict detected for ${relative_path}"
         log "INFO" "Renaming remote upload target: ${relative_path} -> ${selected_relative_path}"
-        emit_upload_event "renamed" "${relative_path}" "${remote_target}" "${file_size}" "" "renamed_to:${selected_relative_path}" ""
+        emit_upload_event "renamed" "${relative_path}" "${remote_target}" "${file_size}" "" "renamed_to:${selected_relative_path}" "" "${cmd_label}"
     fi
 
-    log "INFO" "Starting upload: ${relative_path}"
-    emit_upload_event "start" "${relative_path}" "${remote_target}" "${file_size}"
+    log "INFO" "Starting upload: ${relative_path} (size=${file_size} bytes, remote=${remote_target}, cmd=${rclone_subcommand})"
+    emit_upload_event "start" "${relative_path}" "${remote_target}" "${file_size}" "" "" "" "${cmd_label}"
 
-    # Move this single file to its exact remote path to preserve folder structure.
+    # Upload this single file to its exact remote path to preserve folder structure.
     local rclone_exit_code=0
-    if rclone moveto "$file" "$remote_target" \
+    if rclone "${rclone_subcommand}" "$file" "$remote_target" \
         --immutable \
         --progress --stats=0 2>&1 | tee -a "$LOG_FILE"; then
 
-        log "INFO" "Upload successful: ${relative_path}"
-        emit_upload_event "success" "${relative_path}" "${remote_target}" "${file_size}"
+        log "INFO" "Upload successful: ${relative_path} (size=${file_size} bytes, remote=${remote_target}, cmd=${rclone_subcommand})"
+        emit_upload_event "success" "${relative_path}" "${remote_target}" "${file_size}" "" "" "" "${cmd_label}"
 
-        # Create reference file (atomically)
-        local remote_link="${file}.MOVED"
-        local tmpref
-        tmpref=$(mktemp)
-        cat > "$tmpref" <<EOF
+        if [[ "${is_config_file}" != "true" ]]; then
+            # Create reference file (atomically) for moved files.
+            local remote_link="${file}.MOVED"
+            local tmpref
+            tmpref=$(mktemp)
+            cat > "$tmpref" <<EOF
 # File moved to remote storage
 # Original file: ${relative_path}
 # Final remote relative path: ${selected_relative_path}
@@ -899,8 +951,11 @@ do_upload() {
 # Source mtime: ${file_mtime}
 # Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 EOF
-        mv "$tmpref" "$remote_link"
-        log "INFO" "Created reference: $remote_link"
+            mv "$tmpref" "$remote_link"
+            log "INFO" "Created reference: $remote_link"
+        else
+            log "INFO" "Config-path upload completed without local placeholder: ${relative_path}"
+        fi
 
         # Mark as processed and clear retry metadata
         add_processed_file "$file_identity"
@@ -909,8 +964,8 @@ EOF
         return 0
     else
         rclone_exit_code="${PIPESTATUS[0]:-1}"
-        log "ERROR" "Upload failed: ${relative_path}"
-        emit_upload_event "failed" "${relative_path}" "${remote_target}" "${file_size}" "" "rclone_failed" "${rclone_exit_code}"
+        log "ERROR" "Upload failed: ${relative_path} (size=${file_size} bytes, remote=${remote_target}, cmd=${rclone_subcommand}, exit_code=${rclone_exit_code})"
+        emit_upload_event "failed" "${relative_path}" "${remote_target}" "${file_size}" "" "rclone_failed" "${rclone_exit_code}" "${cmd_label}"
         return 1
     fi
 }
@@ -980,8 +1035,9 @@ while true; do
 
         # Skip if exceeds retry limit
         if exceeds_retry_limit "$file_key"; then
+            current_size_bytes=$(stat -c %s "$file" 2>/dev/null || echo "unknown")
             log "WARN" "Exceeded max retries ($MAX_RETRIES) for: $basename"
-            emit_upload_event "gave_up" "${relative_path}" "" "unknown" "${MAX_RETRIES}" "max_retries_exceeded" ""
+            emit_upload_event "gave_up" "${relative_path}" "" "${current_size_bytes}" "${MAX_RETRIES}" "max_retries_exceeded" ""
             continue
         fi
 
@@ -997,10 +1053,11 @@ while true; do
             current_retries=$(increment_retry_count "$file_key")
 
             if [[ $current_retries -lt $MAX_RETRIES ]]; then
+                current_size_bytes=$(stat -c %s "$file" 2>/dev/null || echo "unknown")
                 backoff=$(calculate_backoff "$current_retries")
                 schedule_next_retry "$file_key" "$backoff"
                 log "WARN" "Retry scheduled for ${relative_path}: attempt ${current_retries}/${MAX_RETRIES} (backoff: ${backoff}s)"
-                emit_upload_event "retry" "${relative_path}" "" "unknown" "${current_retries}" "retry_backoff_${backoff}s" ""
+                emit_upload_event "retry" "${relative_path}" "" "${current_size_bytes}" "${current_retries}" "retry_backoff_${backoff}s" ""
             fi
         fi
     done < <(find "$UPLOAD_DIR" -type f -print0 2>/dev/null)

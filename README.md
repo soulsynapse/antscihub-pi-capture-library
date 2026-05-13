@@ -115,7 +115,9 @@ The upload worker:
 2. Skips hidden files, temp files (`~*`), and `.MOVED` files
 3. Waits for minimum age + size stability
 4. Uploads with `rclone moveto`, preserving folder structure
+   - Exception: files under any `config/` path component are uploaded via `rclone copyto` and left untouched locally
 5. Writes `<filename>.MOVED` with destination metadata
+   - Exception: no `.MOVED` placeholder is written for `config/` path files
 6. Retries failures with exponential backoff
 7. Adds machine suffix on remote-name conflicts
 8. Tracks processed files by file identity

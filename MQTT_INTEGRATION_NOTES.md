@@ -101,6 +101,13 @@ Uploader additionally logs local operational lines for:
 - retry scheduling and failures
 
 MQTT payloads include context such as `file`, `folder`, `remote`, `size_bytes`, `attempt`, `reason`, and `exit_code`.
+The uploader `message` field also includes key details at every stage (file path, size, remote target, attempt, and reason when present) so GUI-only message views remain informative.
+
+Uploader path special-case:
+
+- Any file whose relative path includes a `config` directory component is treated as a read-only local source.
+- Those files are uploaded with `rclone copyto` (not `moveto`).
+- No local `.MOVED` placeholder file is written for those config-path uploads.
 
 ## Validation Checks
 

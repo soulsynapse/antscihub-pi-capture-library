@@ -43,6 +43,7 @@ Remote behavior:
 - If `RCLONE_PATH` is set, each file is moved to `RCLONE_PATH/<relative path from local 5-UPLOAD>`
 - If `RCLONE_PATH` is empty, files are moved directly under remote root with preserved relative paths
 - No extra nested `5-UPLOAD/5-UPLOAD` level is created
+- Special case: files under any `config/` path component are uploaded with `rclone copyto` (not moved), and no `.MOVED` placeholder is written for them
 
 ## Safety/Resilience
 
@@ -56,6 +57,7 @@ Remote behavior:
 - Remote conflict handling: if target path already exists, upload is renamed with machine suffix
 - `rclone moveto --immutable` prevents overwrite-on-conflict races
 - `.MOVED` reference files are written beside each moved file with destination/timestamp metadata
+- `config/` paths are treated as read-only sources locally: upload succeeds without deleting local files or writing placeholders
 
 ## Service Data Locations
 
@@ -106,6 +108,8 @@ Additional context fields are included when available:
 - `attempt`
 - `reason`
 - `exit_code`
+
+The `message` field is human-readable and includes upload context at every report stage, including file path and size (plus remote target, attempt, and failure reason when available).
 
 Uploader `report` values:
 

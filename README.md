@@ -114,6 +114,7 @@ The upload worker:
 1. Resolves Desktop and watches `<desktop>/5-UPLOAD`
 2. Skips hidden files, temp files (`~*`), and `.MOVED` files
 3. Waits for minimum age + size stability
+   - `state.env` and `*.log` files require 5 minutes of inactivity before upload
 4. Uploads with `rclone moveto`, preserving folder structure
    - Exception: files under any `config/` path component are uploaded via `rclone copyto` and left untouched locally
 5. Writes `<filename>.MOVED` with destination metadata

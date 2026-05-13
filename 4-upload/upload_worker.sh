@@ -116,6 +116,7 @@ declare -A SEEN_FILE_DETECTIONS=()
 # Tuning
 MIN_FILE_AGE_DEFAULT=30                      # Default wait before upload (seconds)
 MIN_FILE_AGE_STILL_IMAGE=3                   # Faster path for still images (seconds)
+MIN_FILE_AGE_STATE_AND_LOG=300               # Wait 5 minutes for state.env and *.log files
 FILE_STABILITY_CHECK_INTERVAL_DEFAULT=10     # Default size-stability window (seconds)
 FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE=3  # Faster stability window for still images
 MAX_RETRIES=5                                # Max retry attempts per file
@@ -747,9 +748,24 @@ is_still_image() {
     esac
 }
 
+is_slow_maturity_file() {
+    local basename="$1"
+    local lower_basename="${basename,,}"
+    case "${lower_basename}" in
+        state.env|*.log)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 required_min_age_for_file() {
     local basename="$1"
-    if is_still_image "${basename}"; then
+    if is_slow_maturity_file "${basename}"; then
+        echo "$MIN_FILE_AGE_STATE_AND_LOG"
+    elif is_still_image "${basename}"; then
         echo "$MIN_FILE_AGE_STILL_IMAGE"
     else
         echo "$MIN_FILE_AGE_DEFAULT"

@@ -108,6 +108,7 @@ Uploader path special-case:
 - Any file whose relative path includes a `config` directory component is treated as a read-only local source.
 - Those files are uploaded with `rclone copyto` (not `moveto`).
 - No local `.MOVED` placeholder file is written for those config-path uploads.
+- `state.env` and `*.log` files require 5 minutes since last modification before upload is attempted.
 
 ## Validation Checks
 

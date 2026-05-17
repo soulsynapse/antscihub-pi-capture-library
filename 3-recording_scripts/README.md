@@ -22,7 +22,6 @@ antcam focus
 
 1. Resolve the active Desktop directory (including `sudo` invocation support).
 2. Ensure `<desktop>/4-CAPTURE` exists (create it if missing).
-3. Ensure `<desktop>/4-CAPTURE/focus.sh` exists (create default script if missing).
-4. Run `focus.sh` from inside `<desktop>/4-CAPTURE`.
-5. The default script performs an autofocus capture and reports lens-position-based approximate focus distance when available.
-6. If `focus.sh` fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+3. Run autofocus helper `2-test_scripts/antcam_focus_autofocus.sh` (or installed copy `/etc/antscihub/antcam_focus_autofocus.sh`) from inside `<desktop>/4-CAPTURE`.
+4. Final output is the `lens-position` value suitable for `rpicam-vid --lens-position <value>`.
+5. If the autofocus helper fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.

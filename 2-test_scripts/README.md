@@ -13,3 +13,7 @@ Checks include:
 - Recording trigger docs presence
 - Presence of key upload-worker safety functions and MQTT event emitter hooks
 - Install defaults for `gdrive_personal:5-UPLOAD`
+
+This folder also contains the autofocus helper used by `antcam focus`:
+
+- `antcam_focus_autofocus.sh`

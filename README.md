@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Recording command (`antcam start`)
+2. Capture commands (`antcam start`, `antcam focus`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -65,16 +65,24 @@ Current bundled profiles:
 
 ```bash
 antcam start
+antcam focus
 ```
 
 `antcam start` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
 - Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
-- Creates empty `<desktop>/4-CAPTURE/experiment.txt` if missing
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On `record.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+
+`antcam focus` resolves the active user's Desktop path and then:
+
+- Creates `<desktop>/4-CAPTURE` if missing
+- Creates `<desktop>/4-CAPTURE/focus.sh` if missing (default autofocus probe script)
+- Runs `focus.sh` from inside `<desktop>/4-CAPTURE`
+- Uses autofocus capture to estimate focus distance from lens metadata
+- On `focus.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 ### Upload Service
 

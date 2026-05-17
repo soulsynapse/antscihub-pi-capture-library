@@ -126,7 +126,6 @@ fleet-publish --topic "fleet/report/${DEV}" --json "{\"event\":\"report\",\"repo
 ```bash
 CAP="$HOME/Desktop/4-CAPTURE"
 mkdir -p "$CAP"
-: > "$CAP/experiment.txt"
 
 cat > "$CAP/record.sh" <<'EOF'
 #!/usr/bin/env bash

@@ -15,6 +15,7 @@ sudo antcam apply <profile>
 sudo antcam apply <profile> --dry-run
 sudo antcam apply <profile> --no-reboot
 antcam start
+antcam focus
 ```
 
 ## Profiles
@@ -46,8 +47,12 @@ Current bundled profiles:
 
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
-- `antcam start` creates missing `4-CAPTURE/record.sh` and `4-CAPTURE/experiment.txt` as empty files before execution
+- `antcam start` creates missing `4-CAPTURE/record.sh` as an empty file before execution
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
 - If `record.sh` fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- `antcam focus` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
+- `antcam focus` creates missing `4-CAPTURE/focus.sh` with a default autofocus test script
+- `antcam focus` runs autofocus, captures a focus test image, and reports lens-position-based approximate focus distance when available
+- If `focus.sh` fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

@@ -319,6 +319,7 @@ main() {
     log_info "  sudo antcam current"
     log_info "  sudo antcam apply imx708"
     log_info "  antcam start"
+    log_info "  antcam focus"
     log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"
     log_info "  journalctl -u ${UPLOAD_SERVICE_NAME} -n 100"

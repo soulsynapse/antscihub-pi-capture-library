@@ -27,6 +27,7 @@ Usage:
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
   antcam start
+  antcam focus
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -37,6 +38,7 @@ Examples:
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start
+  antcam focus
 EOF
 }
 
@@ -703,11 +705,10 @@ start_recording() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
-    local desktop_dir capture_dir record_script experiment_file
+    local desktop_dir capture_dir record_script
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
     capture_dir="${desktop_dir}/4-CAPTURE"
     record_script="${capture_dir}/record.sh"
-    experiment_file="${capture_dir}/experiment.txt"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -719,16 +720,9 @@ start_recording() {
         echo "created empty recording script: ${record_script}"
     fi
 
-    if [[ ! -e "${experiment_file}" ]]; then
-        touch "${experiment_file}"
-        echo "created empty experiment file: ${experiment_file}"
-    fi
-
     [[ -f "${record_script}" ]] || die "recording script path is not a file: ${record_script}"
-    [[ -f "${experiment_file}" ]] || die "experiment file path is not a file: ${experiment_file}"
 
     echo "capture directory: ${capture_dir}"
-    echo "experiment file: ${experiment_file}"
     echo "starting recording script: ${record_script}"
 
     publish_recording_event \
@@ -746,7 +740,7 @@ start_recording() {
     set +e
     (
         cd "${capture_dir}"
-        EXPERIMENT_FILE="${experiment_file}" bash "./record.sh"
+        bash "./record.sh"
     ) 2>&1 | tee "${record_console_log}"
     record_exit_code="${PIPESTATUS[0]}"
     set -e
@@ -783,6 +777,134 @@ start_recording() {
     return "${record_exit_code}"
 }
 
+write_default_focus_script() {
+    local focus_script="$1"
+    cat > "${focus_script}" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+capture_dir="$(pwd)"
+timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
+image_file="${capture_dir}/focus-check-${timestamp}.jpg"
+metadata_file="${capture_dir}/focus-check-${timestamp}.txt"
+log_file="${capture_dir}/focus-check-${timestamp}.log"
+
+camera_cmd=""
+if command -v rpicam-still >/dev/null 2>&1; then
+    camera_cmd="rpicam-still"
+elif command -v libcamera-still >/dev/null 2>&1; then
+    camera_cmd="libcamera-still"
+else
+    echo "focus.sh: rpicam-still or libcamera-still not found. Install Raspberry Pi camera apps." >&2
+    exit 1
+fi
+
+echo "Running autofocus probe with ${camera_cmd}" | tee "${log_file}"
+echo "Image output: ${image_file}" | tee -a "${log_file}"
+echo "Metadata output: ${metadata_file}" | tee -a "${log_file}"
+
+set +e
+"${camera_cmd}" \
+    --nopreview \
+    --timeout 1500 \
+    --autofocus-mode auto \
+    --autofocus-on-capture \
+    --metadata "${metadata_file}" \
+    --metadata-format txt \
+    --output "${image_file}" 2>&1 | tee -a "${log_file}"
+capture_exit="${PIPESTATUS[0]}"
+set -e
+
+if [[ "${capture_exit}" -ne 0 ]]; then
+    echo "focus.sh: autofocus capture failed (exit=${capture_exit})." | tee -a "${log_file}" >&2
+    exit "${capture_exit}"
+fi
+
+lens_position="$(grep -E '^LensPosition=' "${metadata_file}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+focus_metric="$(grep -E '^(FocusFoM|Focus|focus)=' "${metadata_file}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
+
+if [[ -n "${lens_position}" ]]; then
+    focus_distance="$(python3 - "${lens_position}" <<'PY' 2>/dev/null || true
+import sys
+try:
+    d = float(sys.argv[1])
+except Exception:
+    print("")
+    sys.exit(0)
+if d <= 0:
+    print("infinity")
+else:
+    print(f"{1.0 / d:.3f}m (approx)")
+PY
+)"
+    echo "Autofocus lens position (diopters): ${lens_position}" | tee -a "${log_file}"
+    if [[ -n "${focus_distance}" ]]; then
+        echo "Approx focus distance: ${focus_distance}" | tee -a "${log_file}"
+    fi
+else
+    echo "Lens position not found in metadata. Check ${metadata_file} for camera-specific keys." | tee -a "${log_file}"
+fi
+
+if [[ -n "${focus_metric}" ]]; then
+    echo "Focus metric: ${focus_metric}" | tee -a "${log_file}"
+fi
+
+echo "Autofocus probe complete." | tee -a "${log_file}"
+EOF
+    chmod +x "${focus_script}"
+}
+
+start_focus_check() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for focus path"
+
+    local desktop_dir capture_dir focus_script
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    capture_dir="${desktop_dir}/4-CAPTURE"
+    focus_script="${capture_dir}/focus.sh"
+
+    if [[ ! -d "${capture_dir}" ]]; then
+        mkdir -p "${capture_dir}"
+        echo "created capture directory: ${capture_dir}"
+    fi
+
+    if [[ ! -e "${focus_script}" ]]; then
+        write_default_focus_script "${focus_script}"
+        echo "created autofocus test script: ${focus_script}"
+    fi
+
+    [[ -f "${focus_script}" ]] || die "focus script path is not a file: ${focus_script}"
+    chmod +x "${focus_script}" >/dev/null 2>&1 || true
+
+    echo "capture directory: ${capture_dir}"
+    echo "starting focus script: ${focus_script}"
+
+    local focus_exit_code=0
+    local focus_console_log
+    focus_console_log="$(mktemp)"
+
+    set +e
+    (
+        cd "${capture_dir}"
+        bash "./focus.sh"
+    ) 2>&1 | tee "${focus_console_log}"
+    focus_exit_code="${PIPESTATUS[0]}"
+    set -e
+
+    if [[ "${focus_exit_code}" -ne 0 ]]; then
+        write_script_failure_diagnostic \
+            "${user_home}" \
+            "${capture_dir}" \
+            "${focus_script}" \
+            "${focus_exit_code}" \
+            "${focus_console_log}" \
+            "focus" || true
+    fi
+
+    rm -f "${focus_console_log}" >/dev/null 2>&1 || true
+    return "${focus_exit_code}"
+}
+
 main() {
     local cmd="${1:-}"
     case "${cmd}" in
@@ -812,6 +934,11 @@ main() {
             shift
             [[ $# -eq 0 ]] || die "start takes no arguments"
             start_recording
+            ;;
+        focus)
+            shift
+            [[ $# -eq 0 ]] || die "focus takes no arguments"
+            start_focus_check
             ;;
         help|-h|--help|"")
             usage

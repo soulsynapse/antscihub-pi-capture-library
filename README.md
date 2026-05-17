@@ -79,10 +79,9 @@ antcam focus
 `antcam focus` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
-- Creates `<desktop>/4-CAPTURE/focus.sh` if missing (default autofocus probe script)
-- Runs `focus.sh` from inside `<desktop>/4-CAPTURE`
-- Uses autofocus capture to estimate focus distance from lens metadata
-- On `focus.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- Runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
+- Final output is the `lens-position` value for direct use with `rpicam-vid --lens-position <value>`
+- On autofocus helper failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 ### Upload Service
 

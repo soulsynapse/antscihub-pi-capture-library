@@ -11,6 +11,8 @@ CAMERA_CLI_TARGET="/usr/local/bin/antcam"
 LEGACY_CAMERA_CLI_TARGET="/usr/local/bin/antscam"
 CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
 CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
+FOCUS_SCRIPT_SOURCE="${SCRIPT_DIR}/2-test_scripts/antcam_focus_autofocus.sh"
+FOCUS_SCRIPT_TARGET="/etc/antscihub/antcam_focus_autofocus.sh"
 
 UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
@@ -56,6 +58,11 @@ require_inputs() {
 
     if [[ ! -f "$UPLOAD_SCRIPT" ]]; then
         log_error "Missing upload worker script: $UPLOAD_SCRIPT"
+        exit 1
+    fi
+
+    if [[ ! -f "$FOCUS_SCRIPT_SOURCE" ]]; then
+        log_error "Missing focus helper script: $FOCUS_SCRIPT_SOURCE"
         exit 1
     fi
 }
@@ -169,6 +176,10 @@ install_camera_cli() {
 
     log_info "Installing antcam CLI to ${CAMERA_CLI_TARGET}"
     install -m 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
+
+    log_info "Installing focus helper script to ${FOCUS_SCRIPT_TARGET}"
+    mkdir -p "/etc/antscihub"
+    install -m 0755 "${FOCUS_SCRIPT_SOURCE}" "${FOCUS_SCRIPT_TARGET}"
 
     if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
         log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"
@@ -310,6 +321,7 @@ main() {
     log_info "Installation/update complete"
     log_info "Camera profiles dir: ${CAMERA_PROFILE_TARGET_DIR}"
     log_info "Camera CLI: ${CAMERA_CLI_TARGET}"
+    log_info "Focus helper script: ${FOCUS_SCRIPT_TARGET}"
     log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"
     log_info "Upload service user: ${upload_user}"
     log_info "Upload source dir: ${upload_dir}"

@@ -51,8 +51,8 @@ Current bundled profiles:
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
 - If `record.sh` fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - `antcam focus` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
-- `antcam focus` creates missing `4-CAPTURE/focus.sh` with a default autofocus test script
-- `antcam focus` runs autofocus, captures a focus test image, and reports lens-position-based approximate focus distance when available
-- If `focus.sh` fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- `antcam focus` runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
+- `antcam focus` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
+- If the autofocus helper fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

@@ -777,81 +777,26 @@ start_recording() {
     return "${record_exit_code}"
 }
 
-write_default_focus_script() {
-    local focus_script="$1"
-    cat > "${focus_script}" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-capture_dir="$(pwd)"
-timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
-image_file="${capture_dir}/focus-check-${timestamp}.jpg"
-metadata_file="${capture_dir}/focus-check-${timestamp}.txt"
-log_file="${capture_dir}/focus-check-${timestamp}.log"
-
-camera_cmd=""
-if command -v rpicam-still >/dev/null 2>&1; then
-    camera_cmd="rpicam-still"
-elif command -v libcamera-still >/dev/null 2>&1; then
-    camera_cmd="libcamera-still"
-else
-    echo "focus.sh: rpicam-still or libcamera-still not found. Install Raspberry Pi camera apps." >&2
-    exit 1
-fi
-
-echo "Running autofocus probe with ${camera_cmd}" | tee "${log_file}"
-echo "Image output: ${image_file}" | tee -a "${log_file}"
-echo "Metadata output: ${metadata_file}" | tee -a "${log_file}"
-
-set +e
-"${camera_cmd}" \
-    --nopreview \
-    --timeout 1500 \
-    --autofocus-mode auto \
-    --autofocus-on-capture \
-    --metadata "${metadata_file}" \
-    --metadata-format txt \
-    --output "${image_file}" 2>&1 | tee -a "${log_file}"
-capture_exit="${PIPESTATUS[0]}"
-set -e
-
-if [[ "${capture_exit}" -ne 0 ]]; then
-    echo "focus.sh: autofocus capture failed (exit=${capture_exit})." | tee -a "${log_file}" >&2
-    exit "${capture_exit}"
-fi
-
-lens_position="$(grep -E '^LensPosition=' "${metadata_file}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-focus_metric="$(grep -E '^(FocusFoM|Focus|focus)=' "${metadata_file}" | tail -n 1 | cut -d= -f2- | tr -d '[:space:]' || true)"
-
-if [[ -n "${lens_position}" ]]; then
-    focus_distance="$(python3 - "${lens_position}" <<'PY' 2>/dev/null || true
-import sys
-try:
-    d = float(sys.argv[1])
-except Exception:
-    print("")
-    sys.exit(0)
-if d <= 0:
-    print("infinity")
-else:
-    print(f"{1.0 / d:.3f}m (approx)")
-PY
-)"
-    echo "Autofocus lens position (diopters): ${lens_position}" | tee -a "${log_file}"
-    if [[ -n "${focus_distance}" ]]; then
-        echo "Approx focus distance: ${focus_distance}" | tee -a "${log_file}"
+resolve_focus_script_path() {
+    if [[ -n "${ANTCAM_FOCUS_SCRIPT:-}" && -f "${ANTCAM_FOCUS_SCRIPT}" ]]; then
+        printf '%s\n' "${ANTCAM_FOCUS_SCRIPT}"
+        return 0
     fi
-else
-    echo "Lens position not found in metadata. Check ${metadata_file} for camera-specific keys." | tee -a "${log_file}"
-fi
 
-if [[ -n "${focus_metric}" ]]; then
-    echo "Focus metric: ${focus_metric}" | tee -a "${log_file}"
-fi
+    if [[ -f "/etc/antscihub/antcam_focus_autofocus.sh" ]]; then
+        printf '%s\n' "/etc/antscihub/antcam_focus_autofocus.sh"
+        return 0
+    fi
 
-echo "Autofocus probe complete." | tee -a "${log_file}"
-EOF
-    chmod +x "${focus_script}"
+    local script_dir repo_candidate
+    script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_candidate="${script_dir}/../2-test_scripts/antcam_focus_autofocus.sh"
+    if [[ -f "${repo_candidate}" ]]; then
+        printf '%s\n' "${repo_candidate}"
+        return 0
+    fi
+
+    return 1
 }
 
 start_focus_check() {
@@ -861,16 +806,11 @@ start_focus_check() {
     local desktop_dir capture_dir focus_script
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
     capture_dir="${desktop_dir}/4-CAPTURE"
-    focus_script="${capture_dir}/focus.sh"
+    focus_script="$(resolve_focus_script_path)" || die "focus script not found (expected 2-test_scripts/antcam_focus_autofocus.sh or /etc/antscihub/antcam_focus_autofocus.sh)"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
         echo "created capture directory: ${capture_dir}"
-    fi
-
-    if [[ ! -e "${focus_script}" ]]; then
-        write_default_focus_script "${focus_script}"
-        echo "created autofocus test script: ${focus_script}"
     fi
 
     [[ -f "${focus_script}" ]] || die "focus script path is not a file: ${focus_script}"
@@ -886,7 +826,7 @@ start_focus_check() {
     set +e
     (
         cd "${capture_dir}"
-        bash "./focus.sh"
+        bash "${focus_script}"
     ) 2>&1 | tee "${focus_console_log}"
     focus_exit_code="${PIPESTATUS[0]}"
     set -e

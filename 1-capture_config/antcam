@@ -27,7 +27,6 @@ Usage:
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
   antcam start
-  antcam test
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -38,7 +37,6 @@ Examples:
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start
-  antcam test
 EOF
 }
 
@@ -449,15 +447,7 @@ write_script_failure_diagnostic() {
     timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
     resolve_device_id >/dev/null
     device_id="${DEVICE_ID_CACHE}"
-    target_subdir="diagnostics"
-    case "${script_kind}" in
-        test)
-            target_subdir="diagnostics/test"
-            ;;
-        recording)
-            target_subdir="diagnostics/recordings"
-            ;;
-    esac
+    target_subdir="diagnostics/recordings"
 
     primary_dir="${upload_dir}/${target_subdir}"
     primary_file="${primary_dir}/${script_kind}-failure-${device_id}-${timestamp_slug}.log"
@@ -793,73 +783,6 @@ start_recording() {
     return "${record_exit_code}"
 }
 
-start_test() {
-    local user_home
-    user_home="$(resolve_effective_home)" || die "could not resolve user home for test path"
-
-    local desktop_dir capture_dir test_script
-    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
-    capture_dir="${desktop_dir}/4-CAPTURE"
-    test_script="${capture_dir}/test.sh"
-
-    [[ -d "${capture_dir}" ]] || die "capture directory not found: ${capture_dir}"
-    [[ -f "${test_script}" ]] || die "test script not found: ${test_script}"
-
-    echo "capture directory: ${capture_dir}"
-    echo "starting test script: ${test_script}"
-
-    publish_recording_event \
-        "test_start" \
-        "ATTENTION" \
-        "Test script starting" \
-        "true" \
-        "${capture_dir}" \
-        "${test_script}" || true
-
-    local test_exit_code=0
-    local test_console_log
-    test_console_log="$(mktemp)"
-
-    set +e
-    (
-        cd "${capture_dir}"
-        bash "./test.sh"
-    ) 2>&1 | tee "${test_console_log}"
-    test_exit_code="${PIPESTATUS[0]}"
-    set -e
-
-    if [[ "${test_exit_code}" -eq 0 ]]; then
-        publish_recording_event \
-            "test_end" \
-            "INFO" \
-            "Test script completed" \
-            "true" \
-            "${capture_dir}" \
-            "${test_script}" \
-            "${test_exit_code}" || true
-    else
-        write_script_failure_diagnostic \
-            "${user_home}" \
-            "${capture_dir}" \
-            "${test_script}" \
-            "${test_exit_code}" \
-            "${test_console_log}" \
-            "test" || true
-        publish_recording_event \
-            "test_end" \
-            "ERROR" \
-            "Test script failed" \
-            "false" \
-            "${capture_dir}" \
-            "${test_script}" \
-            "${test_exit_code}" || true
-    fi
-
-    rm -f "${test_console_log}" >/dev/null 2>&1 || true
-
-    return "${test_exit_code}"
-}
-
 main() {
     local cmd="${1:-}"
     case "${cmd}" in
@@ -889,11 +812,6 @@ main() {
             shift
             [[ $# -eq 0 ]] || die "start takes no arguments"
             start_recording
-            ;;
-        test)
-            shift
-            [[ $# -eq 0 ]] || die "test takes no arguments"
-            start_test
             ;;
         help|-h|--help|"")
             usage

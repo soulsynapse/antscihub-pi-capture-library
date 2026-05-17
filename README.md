@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Recording commands (`antcam start`, `antcam test`)
+2. Recording command (`antcam start`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -65,7 +65,6 @@ Current bundled profiles:
 
 ```bash
 antcam start
-antcam test
 ```
 
 `antcam start` resolves the active user's Desktop path and then:
@@ -76,14 +75,6 @@ antcam test
 - Runs `record.sh` from inside `<desktop>/4-CAPTURE`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On `record.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
-
-`antcam test` resolves the active user's Desktop path and then:
-
-- Uses existing `<desktop>/4-CAPTURE`
-- Runs `test.sh` from inside `<desktop>/4-CAPTURE`
-- Does not create or require `<desktop>/4-CAPTURE/experiment.txt`
-- Publishes encrypted Fleet report messages at test start/end (`report=test_start|test_end`)
-- On `test.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/test/`
 
 ### Upload Service
 
@@ -150,5 +141,4 @@ bash 2-test_scripts/run_static_checks.sh
 - Camera profile selection is now explicit and operator-controlled via `antcam`
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
-- `antcam test` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - MQTT implementation handoff notes are in `MQTT_INTEGRATION_NOTES.md`

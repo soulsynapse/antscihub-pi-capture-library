@@ -69,17 +69,9 @@ Optional context fields are included by source (for example `service`, `folder`,
 - `recording_start` (`ATTENTION`, `success=true`)
 - `recording_end` (`INFO` on success, `ERROR` on failure, includes `exit_code`)
 
-### `antcam test`
-
-- `test_start` (`ATTENTION`, `success=true`)
-- `test_end` (`INFO` on success, `ERROR` on failure, includes `exit_code`)
-
-`antcam test` runs `4-CAPTURE/test.sh` and does not require `experiment.txt`.
-
 Failure diagnostics from `antcam` are written for uploader pickup:
 
 - `record.sh` failures: `<desktop>/5-UPLOAD/diagnostics/recordings/`
-- `test.sh` failures: `<desktop>/5-UPLOAD/diagnostics/test/`
 - If the primary diagnostic path fails, a fallback timestamped file is written in `<desktop>/5-UPLOAD/diagnostics/`
 
 ## Uploader Events
@@ -116,7 +108,7 @@ Static checks are in `2-test_scripts/run_static_checks.sh`.
 
 Current MQTT-related assertions include:
 
-- `test_start` and `test_end` present in `antcam`
+- `recording_start` and `recording_end` present in `antcam`
 - `encrypt=True` present in both `antcam` and uploader python fallbacks
 - `--no-encrypt` absent from both `antcam` and uploader scripts
 
@@ -129,27 +121,28 @@ DEV="$(hostname)"
 fleet-publish --topic "fleet/report/${DEV}" --json "{\"event\":\"report\",\"report\":\"manual_probe\",\"device_id\":\"${DEV}\",\"timestamp\":$(date +%s),\"severity\":\"INFO\",\"message\":\"manual probe\",\"success\":true}"
 ```
 
-### 2) `antcam test` success/failure events
+### 2) `antcam start` success/failure events
 
 ```bash
 CAP="$HOME/Desktop/4-CAPTURE"
 mkdir -p "$CAP"
+: > "$CAP/experiment.txt"
 
-cat > "$CAP/test.sh" <<'EOF'
+cat > "$CAP/record.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "[test.sh] success run"
+echo "[record.sh] success run"
 exit 0
 EOF
-chmod +x "$CAP/test.sh"
-antcam test
+chmod +x "$CAP/record.sh"
+antcam start
 
-cat > "$CAP/test.sh" <<'EOF'
+cat > "$CAP/record.sh" <<'EOF'
 #!/usr/bin/env bash
-echo "[test.sh] failure run"
+echo "[record.sh] failure run"
 exit 7
 EOF
-chmod +x "$CAP/test.sh"
-antcam test || true
+chmod +x "$CAP/record.sh"
+antcam start || true
 ```
 
 ### 3) Tail uploader service logs

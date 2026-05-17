@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam report`, `antcam start`, `antcam focus`)
+2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -35,7 +35,7 @@ This install flow:
 
 ```bash
 sudo antcam list
-sudo antcam current
+sudo antcam report cam
 sudo antcam show imx708
 sudo antcam apply imx708
 ```
@@ -74,6 +74,7 @@ antcam report fps
 antcam report length
 antcam report segment
 antcam start <recording-script-name>
+antcam stop
 antcam focus
 ```
 
@@ -85,10 +86,13 @@ antcam focus
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`)
+- Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
 - `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+
+`antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed).
 
 Bundled recording script:
 

@@ -9,7 +9,7 @@ Instead, you apply a known camera profile explicitly with `antcam`.
 
 ```bash
 sudo antcam list
-sudo antcam current
+sudo antcam report cam
 sudo antcam show <profile>
 sudo antcam apply <profile>
 sudo antcam apply <profile> --dry-run
@@ -23,6 +23,7 @@ antcam report fps
 antcam report length
 antcam report segment
 antcam start <recording-script-name>
+antcam stop
 antcam focus
 ```
 
@@ -65,6 +66,8 @@ Current bundled profiles:
 - `antcam report length` returns the saved recording length (or default)
 - `antcam report segment` returns the saved segment length (or default)
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
+- `antcam start` writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` so `antcam stop` can target the live recording process
+- `antcam stop` gracefully stops the active recording with `SIGINT` first, then `SIGTERM` if needed
 - If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - `antcam focus` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)

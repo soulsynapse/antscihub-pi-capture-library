@@ -16,9 +16,13 @@ DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
 LENGTH_SETTINGS_RELATIVE_PATH="${ANTCAM_LENGTH_SETTINGS_RELATIVE_PATH:-${DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
 SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
+RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
+DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS:-20}"
+DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS:-10}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
@@ -36,10 +40,11 @@ usage() {
     cat <<'EOF'
 Usage:
   sudo antcam list
-  sudo antcam current
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
+  sudo antcam report cam
   antcam start <recording-script-name>
+  antcam stop
   antcam focus
   antcam set focus <lens-position|auto>
   antcam set fps <value>
@@ -56,10 +61,12 @@ Profiles are loaded from:
 
 Examples:
   sudo antcam list
+  sudo antcam report cam
   sudo antcam show imx708
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start video
+  antcam stop
   antcam focus
   antcam set focus 7.5
   antcam set focus auto
@@ -255,6 +262,24 @@ resolve_segment_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${SEGMENT_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_recording_state_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_RECORDING_STATE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_RECORDING_STATE_FILE}"
+        return 0
+    fi
+
+    if [[ "${RECORDING_STATE_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${RECORDING_STATE_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${RECORDING_STATE_RELATIVE_PATH#./}"
+}
+
 normalize_duration_value() {
     local input="${1:-}"
     input="${input//[[:space:]]/}"
@@ -331,6 +356,17 @@ is_valid_fps_value() {
 is_valid_duration_value() {
     local value="${1:-}"
     duration_to_milliseconds "${value}" >/dev/null 2>&1
+}
+
+is_pid_value() {
+    local value="${1:-}"
+    [[ "${value}" =~ ^[0-9]+$ ]]
+}
+
+is_pid_running() {
+    local pid="${1:-}"
+    is_pid_value "${pid}" || return 1
+    kill -0 "${pid}" >/dev/null 2>&1
 }
 
 sanitize_recording_script_name() {
@@ -1060,6 +1096,68 @@ set_segment_setting_for_home() {
     printf '%s\n' "${segment_file}"
 }
 
+read_recording_state_field() {
+    local state_file="$1"
+    local field_name="$2"
+    [[ -f "${state_file}" ]] || return 1
+    grep -E "^${field_name}=" "${state_file}" 2>/dev/null | tail -n 1 | cut -d= -f2-
+}
+
+read_recording_pid_from_state_file() {
+    local state_file="$1"
+    local pid_value
+    pid_value="$(read_recording_state_field "${state_file}" "record_pid" || true)"
+    if ! is_pid_value "${pid_value}"; then
+        return 1
+    fi
+    printf '%s\n' "${pid_value}"
+}
+
+clear_recording_state_for_home() {
+    local user_home="$1"
+    local state_file
+    state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    rm -f "${state_file}" >/dev/null 2>&1 || true
+}
+
+write_recording_state_for_home() {
+    local user_home="$1"
+    local record_pid="$2"
+    local capture_dir="$3"
+    local record_script="$4"
+    local requested_script_name="$5"
+    is_pid_value "${record_pid}" || return 1
+
+    local state_file state_dir state_tmp
+    state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    state_dir="$(dirname "${state_file}")"
+    mkdir -p "${state_dir}"
+    state_tmp="$(mktemp "${state_dir}/.recording-state.XXXXXX")"
+
+    {
+        echo "record_pid=${record_pid}"
+        echo "capture_dir=${capture_dir}"
+        echo "record_script=${record_script}"
+        echo "record_script_name=${requested_script_name}"
+        echo "started_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        echo "stop_requested=false"
+    } > "${state_tmp}"
+
+    mv -f "${state_tmp}" "${state_file}"
+}
+
+mark_recording_stop_requested_for_home() {
+    local user_home="$1"
+    local state_file
+    state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    [[ -f "${state_file}" ]] || return 1
+
+    {
+        echo "stop_requested=true"
+        echo "stop_requested_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } >> "${state_file}"
+}
+
 set_focus_value() {
     local focus_value="$1"
     local user_home
@@ -1134,7 +1232,7 @@ report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
-    local capture_dir upload_dir focus_file focus_value
+    local capture_dir upload_dir focus_file focus_value state_file
     local fps_file fps_value length_file length_value segment_file segment_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
@@ -1142,6 +1240,7 @@ report_capture_settings() {
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    state_file="$(resolve_recording_state_file_for_home "${user_home}")"
 
     if [[ -f "${focus_file}" ]]; then
         focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
@@ -1178,6 +1277,7 @@ report_capture_settings() {
     echo "recording_length=${length_value}"
     echo "segment_settings_file=${segment_file}"
     echo "recording_segment=${segment_value}"
+    echo "recording_state_file=${state_file}"
 }
 
 start_recording() {
@@ -1187,8 +1287,10 @@ start_recording() {
 
     local capture_dir upload_dir record_script focus_value focus_file
     local fps_value fps_file length_value length_file segment_value segment_file
+    local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     record_script="$(resolve_recording_script_path "${requested_script_name}")"
     focus_value="$(read_focus_setting_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
@@ -1198,6 +1300,14 @@ start_recording() {
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_value="$(read_segment_setting_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+
+    if [[ -f "${recording_state_file}" ]]; then
+        existing_record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
+        if [[ -n "${existing_record_pid}" ]] && is_pid_running "${existing_record_pid}"; then
+            die "a recording is already running (pid ${existing_record_pid}); use 'antcam stop' first"
+        fi
+        rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+    fi
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -1214,6 +1324,7 @@ start_recording() {
     echo "recording length: ${length_value}"
     echo "recording segment: ${segment_value}"
     echo "recording upload dir: ${upload_dir}"
+    echo "recording state file: ${recording_state_file}"
 
     publish_recording_event \
         "recording_start" \
@@ -1224,25 +1335,41 @@ start_recording() {
         "${record_script}" || true
 
     local record_exit_code=0
-    local record_console_log
+    local record_console_log record_pid stop_requested
+    stop_requested="false"
     record_console_log="$(mktemp)"
 
     set +e
     (
         cd "${capture_dir}"
-        ANTCAM_CAPTURE_DIR="${capture_dir}" \
-        ANTCAM_UPLOAD_DIR="${upload_dir}" \
-        ANTCAM_FOCUS_VALUE_FILE="${focus_file}" \
-        ANTCAM_FOCUS_LENS_POSITION="${focus_value}" \
-        ANTCAM_FPS_VALUE_FILE="${fps_file}" \
-        ANTCAM_RECORDING_FPS="${fps_value}" \
-        ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
-        ANTCAM_RECORDING_LENGTH="${length_value}" \
-        ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
-        ANTCAM_RECORDING_SEGMENT="${segment_value}" \
-        bash "${record_script}"
-    ) 2>&1 | tee "${record_console_log}"
-    record_exit_code="${PIPESTATUS[0]}"
+        exec env \
+            ANTCAM_CAPTURE_DIR="${capture_dir}" \
+            ANTCAM_UPLOAD_DIR="${upload_dir}" \
+            ANTCAM_FOCUS_VALUE_FILE="${focus_file}" \
+            ANTCAM_FOCUS_LENS_POSITION="${focus_value}" \
+            ANTCAM_FPS_VALUE_FILE="${fps_file}" \
+            ANTCAM_RECORDING_FPS="${fps_value}" \
+            ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
+            ANTCAM_RECORDING_LENGTH="${length_value}" \
+            ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
+            ANTCAM_RECORDING_SEGMENT="${segment_value}" \
+            bash "${record_script}"
+    ) > >(tee "${record_console_log}") 2>&1 &
+    record_pid="$!"
+
+    if ! write_recording_state_for_home "${user_home}" "${record_pid}" "${capture_dir}" "${record_script}" "${requested_script_name}"; then
+        echo "antcam: warning: failed to write recording state file; stopping recording process ${record_pid}" >&2
+        kill -INT "${record_pid}" >/dev/null 2>&1 || true
+        wait "${record_pid}" >/dev/null 2>&1 || true
+        set -e
+        rm -f "${record_console_log}" >/dev/null 2>&1 || true
+        die "unable to write recording state file: ${recording_state_file}"
+    fi
+
+    wait "${record_pid}"
+    record_exit_code="$?"
+    stop_requested="$(read_recording_state_field "${recording_state_file}" "stop_requested" || true)"
+    clear_recording_state_for_home "${user_home}"
     set -e
 
     if [[ "${record_exit_code}" -eq 0 ]]; then
@@ -1254,6 +1381,16 @@ start_recording() {
             "${capture_dir}" \
             "${record_script}" \
             "${record_exit_code}" || true
+    elif [[ "${stop_requested}" == "true" ]]; then
+        publish_recording_event \
+            "recording_end" \
+            "INFO" \
+            "Recording stopped by antcam stop" \
+            "true" \
+            "${capture_dir}" \
+            "${record_script}" \
+            "${record_exit_code}" || true
+        record_exit_code=0
     else
         write_script_failure_diagnostic \
             "${user_home}" \
@@ -1275,6 +1412,73 @@ start_recording() {
     rm -f "${record_console_log}" >/dev/null 2>&1 || true
 
     return "${record_exit_code}"
+}
+
+stop_recording() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
+
+    local recording_state_file record_pid capture_dir record_script
+    recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+
+    if [[ ! -f "${recording_state_file}" ]]; then
+        echo "no active recording found"
+        return 0
+    fi
+
+    record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
+    capture_dir="$(read_recording_state_field "${recording_state_file}" "capture_dir" || true)"
+    record_script="$(read_recording_state_field "${recording_state_file}" "record_script" || true)"
+
+    if [[ -z "${record_pid}" ]]; then
+        rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+        echo "removed stale recording state file with missing pid: ${recording_state_file}"
+        return 0
+    fi
+
+    if ! is_pid_running "${record_pid}"; then
+        rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+        echo "removed stale recording state file (pid not running): ${recording_state_file}"
+        return 0
+    fi
+
+    mark_recording_stop_requested_for_home "${user_home}" || true
+
+    echo "stopping recording process ${record_pid} with SIGINT"
+    kill -INT "${record_pid}" >/dev/null 2>&1 || die "failed to signal recording process ${record_pid}"
+
+    local wait_seconds=0
+    while is_pid_running "${record_pid}" && [[ "${wait_seconds}" -lt "${DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS}" ]]; do
+        sleep 1
+        wait_seconds=$((wait_seconds + 1))
+    done
+
+    if is_pid_running "${record_pid}"; then
+        echo "recording process ${record_pid} is still running after ${DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS}s; sending SIGTERM"
+        kill -TERM "${record_pid}" >/dev/null 2>&1 || true
+
+        wait_seconds=0
+        while is_pid_running "${record_pid}" && [[ "${wait_seconds}" -lt "${DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS}" ]]; do
+            sleep 1
+            wait_seconds=$((wait_seconds + 1))
+        done
+    fi
+
+    if is_pid_running "${record_pid}"; then
+        die "recording process ${record_pid} did not stop after SIGINT/SIGTERM"
+    fi
+
+    clear_recording_state_for_home "${user_home}"
+
+    publish_recording_event \
+        "recording_stop" \
+        "INFO" \
+        "Recording stop requested by antcam stop" \
+        "true" \
+        "${capture_dir}" \
+        "${record_script}" || true
+
+    echo "recording stopped"
 }
 
 resolve_focus_script_path() {
@@ -1462,11 +1666,6 @@ main() {
             [[ $# -eq 0 ]] || die "list takes no arguments"
             list_profiles
             ;;
-        current)
-            shift
-            [[ $# -eq 0 ]] || die "current takes no arguments"
-            current_profile_name
-            ;;
         show)
             shift
             [[ $# -eq 1 ]] || die "usage: antcam show <profile>"
@@ -1483,6 +1682,11 @@ main() {
             shift
             [[ $# -eq 1 ]] || die "usage: antcam start <recording-script-name>"
             start_recording "$1"
+            ;;
+        stop)
+            shift
+            [[ $# -eq 0 ]] || die "usage: antcam stop"
+            stop_recording
             ;;
         focus)
             shift
@@ -1525,6 +1729,11 @@ main() {
                 return 0
             fi
             case "$1" in
+                cam)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report cam"
+                    current_profile_name
+                    ;;
                 focus)
                     shift
                     [[ $# -eq 0 ]] || die "usage: antcam report focus"

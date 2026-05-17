@@ -12,6 +12,7 @@ antcam report fps
 antcam report length
 antcam report segment
 antcam start <recording-script-name>
+antcam stop
 antcam focus
 ```
 
@@ -25,11 +26,20 @@ antcam focus
 6. Read recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (or `ANTCAM_LENGTH_VALUE_FILE` override, defaults to `0s`).
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`).
 8. Run the selected script from inside `<desktop>/4-CAPTURE`.
-9. `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`.
-10. Publish encrypted Fleet report messages when recording starts and ends.
+9. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
+10. `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`.
+11. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
-11. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+12. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+
+`antcam stop` behavior:
+
+1. Resolve the active Desktop directory (including `sudo` invocation support).
+2. Read `<desktop>/4-CAPTURE/config/recording-active-state.env`.
+3. If recording PID is active, send `SIGINT` for graceful stop.
+4. If still active after a timeout, send `SIGTERM`.
+5. Clear recording state file after the recording process exits.
 
 Bundled recording scripts:
 

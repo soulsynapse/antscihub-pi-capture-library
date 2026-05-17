@@ -40,6 +40,8 @@ sudo antcam show imx708
 sudo antcam apply imx708
 ```
 
+`antcam report cam` prints a make/model camera label for the active profile (for example, `Raspberry Pi Camera Module 3 (Sony IMX708)`).
+
 Apply options:
 
 - `--dry-run` (preview only)
@@ -88,15 +90,16 @@ antcam focus
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`
+- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photo.sh` -> `photo-%05d.jpg`)
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 `antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed).
 
-Bundled recording script:
+Bundled recording scripts:
 
 - `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment (`antcam set length`, `antcam set segment`), and focus from saved `lens-position` or `auto`
+- `photo.sh` -> configurable fps still-photo capture (`antcam set fps <value>`) and recording length (`antcam set length`), ignores segment setting, and uses focus from saved `lens-position` or `auto`
 
 `antcam focus` resolves the active user's Desktop path and then:
 

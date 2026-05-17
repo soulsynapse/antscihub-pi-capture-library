@@ -57,6 +57,7 @@ Current bundled profiles:
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam start` requires a recording script name and resolves it from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
+- Bundled recording script names include `video` and `photo` (for example: `antcam start video`, `antcam start photo`)
 - `antcam set focus <lens-position|auto>` writes the focus setting file used by recording scripts (`auto` omits `--lens-position` at record time)
 - `antcam set fps <value>` writes the fps setting file used by recording scripts
 - `antcam set length <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
@@ -65,6 +66,7 @@ Current bundled profiles:
 - `antcam report fps` returns the saved fps value (or default)
 - `antcam report length` returns the saved recording length (or default)
 - `antcam report segment` returns the saved segment length (or default)
+- `antcam report cam` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
 - `antcam start` writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` so `antcam stop` can target the live recording process
 - `antcam stop` gracefully stops the active recording with `SIGINT` first, then `SIGTERM` if needed

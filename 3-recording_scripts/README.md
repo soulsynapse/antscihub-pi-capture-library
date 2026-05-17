@@ -27,7 +27,7 @@ antcam focus
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`).
 8. Run the selected script from inside `<desktop>/4-CAPTURE`.
 9. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
-10. `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`.
+10. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (for example, `video.sh` writes `video-%05d.h264`, `photo.sh` writes `photo-%05d.jpg`).
 11. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
@@ -47,6 +47,12 @@ Bundled recording scripts:
   - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam set fps <value>`, defaults to `1`)
   - Uses configurable length (`antcam set length <duration>`, default `0s`) and segment size (`antcam set segment <duration>`, default `1m`)
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
+- `photo.sh`
+  - Runs `rpicam-still`/`libcamera-still` timelapse-style still capture
+  - Uses configured fps (`antcam set fps <value>`) as capture rate and configured length (`antcam set length <duration>`, default `0s`)
+  - Does not use segment settings (`antcam set segment`)
+  - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
+  - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/photo-%05d.jpg`
 
 `antcam focus` behavior:
 

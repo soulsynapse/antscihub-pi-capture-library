@@ -12,6 +12,13 @@ DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/focus-lens-position.txt"
 FOCUS_SETTINGS_RELATIVE_PATH="${ANTCAM_FOCUS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_FPS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-fps.txt"
 FPS_SETTINGS_RELATIVE_PATH="${ANTCAM_FPS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FPS_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
+LENGTH_SETTINGS_RELATIVE_PATH="${ANTCAM_LENGTH_SETTINGS_RELATIVE_PATH:-${DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
+SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
+DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
+DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
@@ -34,11 +41,15 @@ Usage:
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
   antcam start <recording-script-name>
   antcam focus
-  antcam set focus <lens-position>
+  antcam set focus <lens-position|auto>
   antcam set fps <value>
+  antcam set length <duration>
+  antcam set segment <duration>
   antcam report
   antcam report focus
   antcam report fps
+  antcam report length
+  antcam report segment
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -48,12 +59,17 @@ Examples:
   sudo antcam show imx708
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
-  antcam start record_1fps_1m_focus
+  antcam start video
   antcam focus
   antcam set focus 7.5
+  antcam set focus auto
   antcam set fps 2
+  antcam set length 30h
+  antcam set segment 10m
   antcam report focus
   antcam report fps
+  antcam report length
+  antcam report segment
 EOF
 }
 
@@ -203,6 +219,89 @@ resolve_fps_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${FPS_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_length_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_LENGTH_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_LENGTH_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${LENGTH_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${LENGTH_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${LENGTH_SETTINGS_RELATIVE_PATH#./}"
+}
+
+resolve_segment_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_SEGMENT_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_SEGMENT_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${SEGMENT_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${SEGMENT_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${SEGMENT_SETTINGS_RELATIVE_PATH#./}"
+}
+
+normalize_duration_value() {
+    local input="${1:-}"
+    input="${input//[[:space:]]/}"
+    input="${input,,}"
+    printf '%s\n' "${input}"
+}
+
+duration_to_milliseconds() {
+    local duration_value
+    duration_value="$(normalize_duration_value "${1:-}")"
+    [[ -n "${duration_value}" ]] || return 1
+
+    local remaining="${duration_value}"
+    local total_ms=0
+    local amount=0
+    local unit=""
+    local rest=""
+
+    while [[ -n "${remaining}" ]]; do
+        if [[ "${remaining}" =~ ^([0-9]+)([hms])(.*)$ ]]; then
+            amount="${BASH_REMATCH[1]}"
+            unit="${BASH_REMATCH[2]}"
+            rest="${BASH_REMATCH[3]}"
+        else
+            return 1
+        fi
+
+        case "${unit}" in
+            h)
+                total_ms=$((total_ms + (amount * 3600000)))
+                ;;
+            m)
+                total_ms=$((total_ms + (amount * 60000)))
+                ;;
+            s)
+                total_ms=$((total_ms + (amount * 1000)))
+                ;;
+            *)
+                return 1
+                ;;
+        esac
+        remaining="${rest}"
+    done
+
+    printf '%s\n' "${total_ms}"
+}
+
 is_positive_numeric_value() {
     local value="$1"
     [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
@@ -214,9 +313,24 @@ is_valid_lens_position_value() {
     [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]
 }
 
+is_auto_focus_value() {
+    local value="${1:-}"
+    [[ "${value,,}" == "auto" ]]
+}
+
+is_valid_focus_setting_value() {
+    local value="${1:-}"
+    is_auto_focus_value "${value}" || is_valid_lens_position_value "${value}"
+}
+
 is_valid_fps_value() {
     local value="$1"
     is_positive_numeric_value "${value}"
+}
+
+is_valid_duration_value() {
+    local value="${1:-}"
+    duration_to_milliseconds "${value}" >/dev/null 2>&1
 }
 
 sanitize_recording_script_name() {
@@ -818,24 +932,132 @@ read_focus_setting_for_home() {
     local user_home="$1"
     local focus_file focus_value
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
-    [[ -f "${focus_file}" ]] || die "focus setting file not found: ${focus_file} (set one with: antcam set focus <value>)"
+
+    if [[ ! -f "${focus_file}" ]]; then
+        printf '%s\n' "auto"
+        return 0
+    fi
 
     focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
-    is_valid_lens_position_value "${focus_value}" || die "invalid focus value in ${focus_file}: ${focus_value}"
+    if is_auto_focus_value "${focus_value}"; then
+        printf '%s\n' "auto"
+        return 0
+    fi
+
+    is_valid_lens_position_value "${focus_value}" || die "invalid focus value in ${focus_file}: ${focus_value} (expected numeric lens-position or 'auto')"
     printf '%s\n' "${focus_value}"
+}
+
+read_fps_setting_for_home() {
+    local user_home="$1"
+    local fps_file fps_value
+    fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${fps_file}" ]]; then
+        printf '%s\n' "${DEFAULT_RECORDING_FPS}"
+        return 0
+    fi
+
+    fps_value="$(head -n 1 "${fps_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    is_valid_fps_value "${fps_value}" || die "invalid fps value in ${fps_file}: ${fps_value}"
+    printf '%s\n' "${fps_value}"
+}
+
+read_length_setting_for_home() {
+    local user_home="$1"
+    local length_file length_value
+    length_file="$(resolve_length_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${length_file}" ]]; then
+        printf '%s\n' "${DEFAULT_RECORDING_LENGTH}"
+        return 0
+    fi
+
+    length_value="$(head -n 1 "${length_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    is_valid_duration_value "${length_value}" || die "invalid length value in ${length_file}: ${length_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+    printf '%s\n' "$(normalize_duration_value "${length_value}")"
+}
+
+read_segment_setting_for_home() {
+    local user_home="$1"
+    local segment_file segment_value segment_ms
+    segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${segment_file}" ]]; then
+        printf '%s\n' "${DEFAULT_RECORDING_SEGMENT}"
+        return 0
+    fi
+
+    segment_value="$(head -n 1 "${segment_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    is_valid_duration_value "${segment_value}" || die "invalid segment value in ${segment_file}: ${segment_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+    segment_ms="$(duration_to_milliseconds "${segment_value}")"
+    [[ "${segment_ms}" -gt 0 ]] || die "invalid segment value in ${segment_file}: ${segment_value} (must be greater than 0)"
+    printf '%s\n' "$(normalize_duration_value "${segment_value}")"
 }
 
 set_focus_setting_for_home() {
     local user_home="$1"
     local focus_value="$2"
-    is_valid_lens_position_value "${focus_value}" || die "invalid focus value: ${focus_value} (expected numeric lens-position)"
+    local normalized_focus_value
+    normalized_focus_value="$(normalize_duration_value "${focus_value}")"
+    if ! is_valid_focus_setting_value "${normalized_focus_value}"; then
+        die "invalid focus value: ${focus_value} (expected numeric lens-position or 'auto')"
+    fi
+    if is_auto_focus_value "${normalized_focus_value}"; then
+        normalized_focus_value="auto"
+    fi
 
     local focus_file focus_dir
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     focus_dir="$(dirname "${focus_file}")"
     mkdir -p "${focus_dir}"
-    printf '%s\n' "${focus_value}" > "${focus_file}"
+    printf '%s\n' "${normalized_focus_value}" > "${focus_file}"
     printf '%s\n' "${focus_file}"
+}
+
+set_fps_setting_for_home() {
+    local user_home="$1"
+    local fps_value="$2"
+    is_valid_fps_value "${fps_value}" || die "invalid fps value: ${fps_value} (expected a numeric value greater than zero)"
+
+    local fps_file fps_dir
+    fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
+    fps_dir="$(dirname "${fps_file}")"
+    mkdir -p "${fps_dir}"
+    printf '%s\n' "${fps_value}" > "${fps_file}"
+    printf '%s\n' "${fps_file}"
+}
+
+set_length_setting_for_home() {
+    local user_home="$1"
+    local length_value="$2"
+    local normalized_length_value
+    normalized_length_value="$(normalize_duration_value "${length_value}")"
+    is_valid_duration_value "${normalized_length_value}" || die "invalid length value: ${length_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+
+    local length_file length_dir
+    length_file="$(resolve_length_value_file_for_home "${user_home}")"
+    length_dir="$(dirname "${length_file}")"
+    mkdir -p "${length_dir}"
+    printf '%s\n' "${normalized_length_value}" > "${length_file}"
+    printf '%s\n' "${length_file}"
+}
+
+set_segment_setting_for_home() {
+    local user_home="$1"
+    local segment_value="$2"
+    local normalized_segment_value segment_ms
+    normalized_segment_value="$(normalize_duration_value "${segment_value}")"
+    is_valid_duration_value "${normalized_segment_value}" || die "invalid segment value: ${segment_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+    segment_ms="$(duration_to_milliseconds "${normalized_segment_value}")"
+    [[ "${segment_ms}" -gt 0 ]] || die "invalid segment value: ${segment_value} (must be greater than 0)"
+
+    local segment_file segment_dir
+    segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    segment_dir="$(dirname "${segment_file}")"
+    mkdir -p "${segment_dir}"
+    printf '%s\n' "${normalized_segment_value}" > "${segment_file}"
+    printf '%s\n' "${segment_file}"
 }
 
 set_focus_value() {
@@ -845,8 +1067,43 @@ set_focus_value() {
 
     local focus_file
     focus_file="$(set_focus_setting_for_home "${user_home}" "${focus_value}")"
-    echo "focus lens-position set to ${focus_value}"
+    echo "focus setting set to $(read_focus_setting_for_home "${user_home}")"
     echo "focus settings file: ${focus_file}"
+}
+
+set_fps_value() {
+    local fps_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for fps settings"
+
+    local fps_file
+    fps_file="$(set_fps_setting_for_home "${user_home}" "${fps_value}")"
+    echo "recording fps set to ${fps_value}"
+    echo "fps settings file: ${fps_file}"
+}
+
+set_length_value() {
+    local length_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for length settings"
+
+    local length_file normalized_length
+    length_file="$(set_length_setting_for_home "${user_home}" "${length_value}")"
+    normalized_length="$(read_length_setting_for_home "${user_home}")"
+    echo "recording length set to ${normalized_length}"
+    echo "length settings file: ${length_file}"
+}
+
+set_segment_value() {
+    local segment_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for segment settings"
+
+    local segment_file normalized_segment
+    segment_file="$(set_segment_setting_for_home "${user_home}" "${segment_value}")"
+    normalized_segment="$(read_segment_setting_for_home "${user_home}")"
+    echo "recording segment set to ${normalized_segment}"
+    echo "segment settings file: ${segment_file}"
 }
 
 report_focus_value() {
@@ -855,19 +1112,59 @@ report_focus_value() {
     read_focus_setting_for_home "${user_home}"
 }
 
+report_fps_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for fps settings"
+    read_fps_setting_for_home "${user_home}"
+}
+
+report_length_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for length settings"
+    read_length_setting_for_home "${user_home}"
+}
+
+report_segment_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for segment settings"
+    read_segment_setting_for_home "${user_home}"
+}
+
 report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
     local capture_dir upload_dir focus_file focus_value
+    local fps_file fps_value length_file length_value segment_file segment_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+    fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
+    length_file="$(resolve_length_value_file_for_home "${user_home}")"
+    segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
 
     if [[ -f "${focus_file}" ]]; then
         focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
     else
-        focus_value="unset"
+        focus_value="auto (default)"
+    fi
+
+    if [[ -f "${fps_file}" ]]; then
+        fps_value="$(head -n 1 "${fps_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    else
+        fps_value="${DEFAULT_RECORDING_FPS} (default)"
+    fi
+
+    if [[ -f "${length_file}" ]]; then
+        length_value="$(head -n 1 "${length_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    else
+        length_value="${DEFAULT_RECORDING_LENGTH} (default)"
+    fi
+
+    if [[ -f "${segment_file}" ]]; then
+        segment_value="$(head -n 1 "${segment_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    else
+        segment_value="${DEFAULT_RECORDING_SEGMENT} (default)"
     fi
 
     echo "capture_dir=${capture_dir}"
@@ -875,6 +1172,12 @@ report_capture_settings() {
     echo "recording_script_dir=${RECORDING_SCRIPT_DIR}"
     echo "focus_settings_file=${focus_file}"
     echo "focus_lens_position=${focus_value}"
+    echo "fps_settings_file=${fps_file}"
+    echo "recording_fps=${fps_value}"
+    echo "length_settings_file=${length_file}"
+    echo "recording_length=${length_value}"
+    echo "segment_settings_file=${segment_file}"
+    echo "recording_segment=${segment_value}"
 }
 
 start_recording() {
@@ -882,11 +1185,19 @@ start_recording() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
-    local capture_dir record_script focus_value focus_file
+    local capture_dir upload_dir record_script focus_value focus_file
+    local fps_value fps_file length_value length_file segment_value segment_file
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     record_script="$(resolve_recording_script_path "${requested_script_name}")"
     focus_value="$(read_focus_setting_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+    fps_value="$(read_fps_setting_for_home "${user_home}")"
+    fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
+    length_value="$(read_length_setting_for_home "${user_home}")"
+    length_file="$(resolve_length_value_file_for_home "${user_home}")"
+    segment_value="$(read_segment_setting_for_home "${user_home}")"
+    segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -899,6 +1210,10 @@ start_recording() {
     echo "capture directory: ${capture_dir}"
     echo "recording script: ${record_script}"
     echo "focus lens-position: ${focus_value}"
+    echo "recording fps: ${fps_value}"
+    echo "recording length: ${length_value}"
+    echo "recording segment: ${segment_value}"
+    echo "recording upload dir: ${upload_dir}"
 
     publish_recording_event \
         "recording_start" \
@@ -916,8 +1231,15 @@ start_recording() {
     (
         cd "${capture_dir}"
         ANTCAM_CAPTURE_DIR="${capture_dir}" \
+        ANTCAM_UPLOAD_DIR="${upload_dir}" \
         ANTCAM_FOCUS_VALUE_FILE="${focus_file}" \
         ANTCAM_FOCUS_LENS_POSITION="${focus_value}" \
+        ANTCAM_FPS_VALUE_FILE="${fps_file}" \
+        ANTCAM_RECORDING_FPS="${fps_value}" \
+        ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
+        ANTCAM_RECORDING_LENGTH="${length_value}" \
+        ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
+        ANTCAM_RECORDING_SEGMENT="${segment_value}" \
         bash "${record_script}"
     ) 2>&1 | tee "${record_console_log}"
     record_exit_code="${PIPESTATUS[0]}"
@@ -1169,12 +1491,27 @@ main() {
             ;;
         set)
             shift
-            [[ $# -ge 1 ]] || die "usage: antcam set focus <lens-position>"
+            [[ $# -ge 1 ]] || die "usage: antcam set <focus|fps|length|segment> <value>"
             case "$1" in
                 focus)
                     shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set focus <lens-position>"
+                    [[ $# -eq 1 ]] || die "usage: antcam set focus <lens-position|auto>"
                     set_focus_value "$1"
+                    ;;
+                fps)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam set fps <value>"
+                    set_fps_value "$1"
+                    ;;
+                length)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam set length <duration>"
+                    set_length_value "$1"
+                    ;;
+                segment)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam set segment <duration>"
+                    set_segment_value "$1"
                     ;;
                 *)
                     die "unknown set target: $1"
@@ -1192,6 +1529,21 @@ main() {
                     shift
                     [[ $# -eq 0 ]] || die "usage: antcam report focus"
                     report_focus_value
+                    ;;
+                fps)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report fps"
+                    report_fps_value
+                    ;;
+                length)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report length"
+                    report_length_value
+                    ;;
+                segment)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report segment"
+                    report_segment_value
                     ;;
                 *)
                     die "unknown report target: $1"

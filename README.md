@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam set focus`, `antcam report`, `antcam start`, `antcam focus`)
+2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam report`, `antcam start`, `antcam focus`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -65,8 +65,14 @@ Current bundled profiles:
 ### Recording Commands
 
 ```bash
-antcam set focus <lens-position>
+antcam set focus <lens-position|auto>
+antcam set fps <value>
+antcam set length <duration>
+antcam set segment <duration>
 antcam report focus
+antcam report fps
+antcam report length
+antcam report segment
 antcam start <recording-script-name>
 antcam focus
 ```
@@ -75,14 +81,18 @@ antcam focus
 
 - Creates `<desktop>/4-CAPTURE` if missing
 - Resolves `<recording-script-name>` from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
-- Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt`
+- Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt` (defaults to `auto` if not set)
+- Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
+- Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
+- Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`)
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
+- `video.sh` writes chunked video files to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 Bundled recording script:
 
-- `record_1fps_1m_focus.sh` -> 1 fps video, 1-minute chunks (`--segment 60000`), focus from saved `lens-position`
+- `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment (`antcam set length`, `antcam set segment`), and focus from saved `lens-position` or `auto`
 
 `antcam focus` resolves the active user's Desktop path and then:
 

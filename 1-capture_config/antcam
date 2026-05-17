@@ -799,6 +799,96 @@ resolve_focus_script_path() {
     return 1
 }
 
+extract_focus_lens_position() {
+    local focus_log_path="$1"
+    local candidate=""
+
+    if [[ -f "${focus_log_path}" ]]; then
+        candidate="$(tail -n 1 "${focus_log_path}" 2>/dev/null | tr -d '[:space:]' || true)"
+        if [[ "${candidate}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+
+        candidate="$(grep -Eo 'lens-position[[:space:]]+[0-9]+([.][0-9]+)?' "${focus_log_path}" 2>/dev/null | tail -n 1 | awk '{print $2}' || true)"
+        candidate="$(printf '%s' "${candidate}" | tr -d '[:space:]')"
+        if [[ "${candidate}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            printf '%s\n' "${candidate}"
+            return 0
+        fi
+    fi
+
+    return 1
+}
+
+extract_focus_image_path() {
+    local focus_log_path="$1"
+    if [[ ! -f "${focus_log_path}" ]]; then
+        return 1
+    fi
+
+    local image_path
+    image_path="$(grep -E 'FOCUS_IMAGE_PATH=' "${focus_log_path}" 2>/dev/null | tail -n 1 | sed 's/^.*FOCUS_IMAGE_PATH=//')"
+    image_path="$(printf '%s' "${image_path}" | tr -d '\r')"
+    [[ -n "${image_path}" ]] || return 1
+    printf '%s\n' "${image_path}"
+}
+
+distance_label_for_lens_position() {
+    local lens_position="$1"
+    python3 - "${lens_position}" <<'PY' 2>/dev/null || true
+import sys
+
+label = "unknown"
+try:
+    value = float(sys.argv[1])
+except Exception:
+    print(label)
+    raise SystemExit(0)
+
+if value <= 0:
+    label = "infinity"
+else:
+    label = f"{1.0 / value:.3f}m"
+
+print(label)
+PY
+}
+
+sanitize_label_for_filename() {
+    local label="$1"
+    local sanitized="${label//[^[:alnum:]._-]/_}"
+    sanitized="${sanitized//./p}"
+    sanitized="${sanitized//__/_}"
+    sanitized="${sanitized##_}"
+    sanitized="${sanitized%%_}"
+    [[ -n "${sanitized}" ]] || sanitized="unknown"
+    printf '%s\n' "${sanitized}"
+}
+
+drop_focus_photo_to_diagnostics() {
+    local user_home="$1"
+    local focus_image_path="$2"
+    local lens_position="$3"
+
+    [[ -f "${focus_image_path}" ]] || return 1
+
+    local upload_dir diagnostics_dir timestamp_slug distance_label distance_tag lens_tag device_id destination
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    diagnostics_dir="${upload_dir}/diagnostics/recordings"
+    timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
+    distance_label="$(distance_label_for_lens_position "${lens_position}")"
+    distance_tag="$(sanitize_label_for_filename "${distance_label}")"
+    lens_tag="$(sanitize_label_for_filename "${lens_position}")"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
+    destination="${diagnostics_dir}/focus-distance-${distance_tag}-lens-${lens_tag}-${device_id}-${timestamp_slug}.jpg"
+
+    mkdir -p "${diagnostics_dir}"
+    cp -f "${focus_image_path}" "${destination}"
+    printf '%s\n' "${destination}"
+}
+
 start_focus_check() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for focus path"
@@ -821,6 +911,9 @@ start_focus_check() {
 
     local focus_exit_code=0
     local focus_console_log
+    local focus_lens_position=""
+    local focus_image_path=""
+    local dropped_photo_path=""
     focus_console_log="$(mktemp)"
 
     set +e
@@ -831,7 +924,19 @@ start_focus_check() {
     focus_exit_code="${PIPESTATUS[0]}"
     set -e
 
-    if [[ "${focus_exit_code}" -ne 0 ]]; then
+    focus_lens_position="$(extract_focus_lens_position "${focus_console_log}" || true)"
+    focus_image_path="$(extract_focus_image_path "${focus_console_log}" || true)"
+
+    if [[ "${focus_exit_code}" -eq 0 ]]; then
+        if [[ -n "${focus_lens_position}" && -n "${focus_image_path}" ]]; then
+            dropped_photo_path="$(drop_focus_photo_to_diagnostics "${user_home}" "${focus_image_path}" "${focus_lens_position}" || true)"
+            if [[ -n "${dropped_photo_path}" ]]; then
+                echo "focus diagnostic photo: ${dropped_photo_path}" >&2
+            fi
+        else
+            echo "antcam: warning: autofocus output parsing incomplete; diagnostic photo naming with distance skipped" >&2
+        fi
+    else
         write_script_failure_diagnostic \
             "${user_home}" \
             "${capture_dir}" \

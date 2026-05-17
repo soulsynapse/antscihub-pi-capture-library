@@ -81,6 +81,7 @@ antcam focus
 - Creates `<desktop>/4-CAPTURE` if missing
 - Runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
 - Final output is the `lens-position` value for direct use with `rpicam-vid --lens-position <value>`
+- Drops a focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` with distance in the filename (`focus-distance-...jpg`)
 - On autofocus helper failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 ### Upload Service

@@ -53,6 +53,7 @@ Current bundled profiles:
 - `antcam focus` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus` runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
 - `antcam focus` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
+- `antcam focus` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` with distance embedded in the filename (`focus-distance-...jpg`)
 - If the autofocus helper fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI and profile files

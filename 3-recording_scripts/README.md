@@ -24,4 +24,5 @@ antcam focus
 2. Ensure `<desktop>/4-CAPTURE` exists (create it if missing).
 3. Run autofocus helper `2-test_scripts/antcam_focus_autofocus.sh` (or installed copy `/etc/antscihub/antcam_focus_autofocus.sh`) from inside `<desktop>/4-CAPTURE`.
 4. Final output is the `lens-position` value suitable for `rpicam-vid --lens-position <value>`.
-5. If the autofocus helper fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+5. Copy captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` with distance in the filename (`focus-distance-...jpg`) for uploader pickup.
+6. If the autofocus helper fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.

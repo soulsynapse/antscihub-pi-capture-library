@@ -26,6 +26,8 @@ fi
 log "Running autofocus probe with ${camera_cmd[0]}"
 log "Image output: ${image_file}"
 log "Metadata output: ${metadata_file}"
+log "FOCUS_IMAGE_PATH=${image_file}"
+log "FOCUS_METADATA_PATH=${metadata_file}"
 
 set +e
 "${camera_cmd[@]}" \

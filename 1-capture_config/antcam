@@ -6,6 +6,10 @@ END_MARKER="# antscihub-capture-config END"
 
 DEFAULT_PROFILE_DIR="/etc/antscihub/camera-profiles"
 PROFILE_DIR="${ANTCAM_PROFILE_DIR:-${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}}"
+DEFAULT_RECORDING_SCRIPT_DIR="/etc/antscihub/recording-scripts"
+RECORDING_SCRIPT_DIR="${ANTCAM_RECORDING_SCRIPT_DIR:-${DEFAULT_RECORDING_SCRIPT_DIR}}"
+DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/focus-lens-position.txt"
+FOCUS_SETTINGS_RELATIVE_PATH="${ANTCAM_FOCUS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH}}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
@@ -26,8 +30,11 @@ Usage:
   sudo antcam current
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
-  antcam start
+  antcam start <recording-script-name>
   antcam focus
+  antcam set focus <lens-position>
+  antcam report
+  antcam report focus
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -37,8 +44,10 @@ Examples:
   sudo antcam show imx708
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
-  antcam start
+  antcam start record_1fps_1m_focus
   antcam focus
+  antcam set focus 7.5
+  antcam report focus
 EOF
 }
 
@@ -143,6 +152,75 @@ resolve_upload_dir_for_home() {
     local desktop_dir
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
     printf '%s\n' "${desktop_dir%/}/5-UPLOAD"
+}
+
+resolve_capture_dir_for_home() {
+    local user_home="$1"
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/4-CAPTURE"
+}
+
+resolve_focus_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_FOCUS_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_FOCUS_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${FOCUS_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${FOCUS_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${FOCUS_SETTINGS_RELATIVE_PATH#./}"
+}
+
+is_valid_lens_position_value() {
+    local value="$1"
+    [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+sanitize_recording_script_name() {
+    local script_name="$1"
+    [[ "${script_name}" =~ ^[a-zA-Z0-9._-]+$ ]] || die "invalid recording script name: ${script_name}"
+}
+
+resolve_recording_script_path() {
+    local requested_name="$1"
+    sanitize_recording_script_name "${requested_name}"
+
+    local self_dir repo_dir
+    self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    repo_dir="${self_dir}/../3-recording_scripts"
+
+    local search_dirs=()
+    if [[ -d "${RECORDING_SCRIPT_DIR}" ]]; then
+        search_dirs+=("${RECORDING_SCRIPT_DIR}")
+    fi
+    if [[ -d "${repo_dir}" && "${repo_dir}" != "${RECORDING_SCRIPT_DIR}" ]]; then
+        search_dirs+=("${repo_dir}")
+    fi
+    (( ${#search_dirs[@]} > 0 )) || die "recording script directories not found: ${RECORDING_SCRIPT_DIR}, ${repo_dir}"
+
+    local script_dir direct_path shell_path
+    for script_dir in "${search_dirs[@]}"; do
+        direct_path="${script_dir}/${requested_name}"
+        shell_path="${script_dir}/${requested_name}.sh"
+        if [[ -f "${direct_path}" ]]; then
+            printf '%s\n' "${direct_path}"
+            return 0
+        fi
+        if [[ -f "${shell_path}" ]]; then
+            printf '%s\n' "${shell_path}"
+            return 0
+        fi
+    done
+
+    die "recording script not found: ${requested_name} (searched ${RECORDING_SCRIPT_DIR} and ${repo_dir})"
 }
 
 json_escape() {
@@ -701,29 +779,91 @@ apply_profile() {
     systemctl reboot --no-block
 }
 
+read_focus_setting_for_home() {
+    local user_home="$1"
+    local focus_file focus_value
+    focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+    [[ -f "${focus_file}" ]] || die "focus setting file not found: ${focus_file} (set one with: antcam set focus <value>)"
+
+    focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    is_valid_lens_position_value "${focus_value}" || die "invalid focus value in ${focus_file}: ${focus_value}"
+    printf '%s\n' "${focus_value}"
+}
+
+set_focus_setting_for_home() {
+    local user_home="$1"
+    local focus_value="$2"
+    is_valid_lens_position_value "${focus_value}" || die "invalid focus value: ${focus_value} (expected numeric lens-position)"
+
+    local focus_file focus_dir
+    focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+    focus_dir="$(dirname "${focus_file}")"
+    mkdir -p "${focus_dir}"
+    printf '%s\n' "${focus_value}" > "${focus_file}"
+    printf '%s\n' "${focus_file}"
+}
+
+set_focus_value() {
+    local focus_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for focus settings"
+
+    local focus_file
+    focus_file="$(set_focus_setting_for_home "${user_home}" "${focus_value}")"
+    echo "focus lens-position set to ${focus_value}"
+    echo "focus settings file: ${focus_file}"
+}
+
+report_focus_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for focus settings"
+    read_focus_setting_for_home "${user_home}"
+}
+
+report_capture_settings() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
+
+    local capture_dir upload_dir focus_file focus_value
+    capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+
+    if [[ -f "${focus_file}" ]]; then
+        focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    else
+        focus_value="unset"
+    fi
+
+    echo "capture_dir=${capture_dir}"
+    echo "upload_dir=${upload_dir}"
+    echo "recording_script_dir=${RECORDING_SCRIPT_DIR}"
+    echo "focus_settings_file=${focus_file}"
+    echo "focus_lens_position=${focus_value}"
+}
+
 start_recording() {
+    local requested_script_name="$1"
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
-    local desktop_dir capture_dir record_script
-    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
-    capture_dir="${desktop_dir}/4-CAPTURE"
-    record_script="${capture_dir}/record.sh"
+    local capture_dir record_script focus_value focus_file
+    capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
+    record_script="$(resolve_recording_script_path "${requested_script_name}")"
+    focus_value="$(read_focus_setting_for_home "${user_home}")"
+    focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
         echo "created capture directory: ${capture_dir}"
     fi
 
-    if [[ ! -e "${record_script}" ]]; then
-        touch "${record_script}"
-        echo "created empty recording script: ${record_script}"
-    fi
-
     [[ -f "${record_script}" ]] || die "recording script path is not a file: ${record_script}"
+    chmod +x "${record_script}" >/dev/null 2>&1 || true
 
     echo "capture directory: ${capture_dir}"
-    echo "starting recording script: ${record_script}"
+    echo "recording script: ${record_script}"
+    echo "focus lens-position: ${focus_value}"
 
     publish_recording_event \
         "recording_start" \
@@ -740,7 +880,10 @@ start_recording() {
     set +e
     (
         cd "${capture_dir}"
-        bash "./record.sh"
+        ANTCAM_CAPTURE_DIR="${capture_dir}" \
+        ANTCAM_FOCUS_VALUE_FILE="${focus_file}" \
+        ANTCAM_FOCUS_LENS_POSITION="${focus_value}" \
+        bash "${record_script}"
     ) 2>&1 | tee "${record_console_log}"
     record_exit_code="${PIPESTATUS[0]}"
     set -e
@@ -790,7 +933,7 @@ resolve_focus_script_path() {
 
     local script_dir repo_candidate
     script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    repo_candidate="${script_dir}/../2-test_scripts/antcam_focus_autofocus.sh"
+    repo_candidate="${script_dir}/antcam_focus_autofocus.sh"
     if [[ -f "${repo_candidate}" ]]; then
         printf '%s\n' "${repo_candidate}"
         return 0
@@ -834,36 +977,44 @@ extract_focus_image_path() {
     printf '%s\n' "${image_path}"
 }
 
-distance_label_for_lens_position() {
+format_lens_position_for_filename() {
     local lens_position="$1"
-    python3 - "${lens_position}" <<'PY' 2>/dev/null || true
-import sys
 
-label = "unknown"
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "${lens_position}" <<'PY' 2>/dev/null || true
+import sys
 try:
     value = float(sys.argv[1])
 except Exception:
-    print(label)
+    print("unknown")
     raise SystemExit(0)
-
-if value <= 0:
-    label = "infinity"
-else:
-    label = f"{1.0 / value:.3f}m"
-
-print(label)
+print(f"{value:.1f}")
 PY
+        return 0
+    fi
+
+    if [[ "${lens_position}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        awk -v v="${lens_position}" 'BEGIN { printf "%.1f\n", v }'
+    else
+        printf '%s\n' "unknown"
+    fi
 }
 
-sanitize_label_for_filename() {
-    local label="$1"
-    local sanitized="${label//[^[:alnum:]._-]/_}"
-    sanitized="${sanitized//./p}"
-    sanitized="${sanitized//__/_}"
-    sanitized="${sanitized##_}"
-    sanitized="${sanitized%%_}"
-    [[ -n "${sanitized}" ]] || sanitized="unknown"
-    printf '%s\n' "${sanitized}"
+resolve_focus_hostname_for_filename() {
+    local host=""
+    host="$(hostname 2>/dev/null || true)"
+    if [[ -z "${host}" && -f /etc/hostname ]]; then
+        host="$(head -n 1 /etc/hostname 2>/dev/null || true)"
+    fi
+    host="${host//$'\r'/}"
+    host="${host//$'\n'/}"
+    host="${host//$'\t'/}"
+    host="${host//[^[:alnum:]._-]/_}"
+    host="${host//__/_}"
+    host="${host##_}"
+    host="${host%%_}"
+    [[ -n "${host}" ]] || host="unknown-host"
+    printf '%s\n' "${host}"
 }
 
 drop_focus_photo_to_diagnostics() {
@@ -873,16 +1024,13 @@ drop_focus_photo_to_diagnostics() {
 
     [[ -f "${focus_image_path}" ]] || return 1
 
-    local upload_dir diagnostics_dir timestamp_slug distance_label distance_tag lens_tag device_id destination
+    local upload_dir diagnostics_dir timestamp_slug lens_tag host_tag destination
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     diagnostics_dir="${upload_dir}/diagnostics/recordings"
-    timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
-    distance_label="$(distance_label_for_lens_position "${lens_position}")"
-    distance_tag="$(sanitize_label_for_filename "${distance_label}")"
-    lens_tag="$(sanitize_label_for_filename "${lens_position}")"
-    resolve_device_id >/dev/null
-    device_id="${DEVICE_ID_CACHE}"
-    destination="${diagnostics_dir}/focus-distance-${distance_tag}-lens-${lens_tag}-${device_id}-${timestamp_slug}.jpg"
+    timestamp_slug="$(date -u +%Y-%m-%d__T-%H-%M-%S)"
+    lens_tag="$(format_lens_position_for_filename "${lens_position}")"
+    host_tag="$(resolve_focus_hostname_for_filename)"
+    destination="${diagnostics_dir}/${timestamp_slug}__focus-result-lens-position-${lens_tag}__${host_tag}.jpeg"
 
     mkdir -p "${diagnostics_dir}"
     cp -f "${focus_image_path}" "${destination}"
@@ -893,10 +1041,9 @@ start_focus_check() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for focus path"
 
-    local desktop_dir capture_dir focus_script
-    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
-    capture_dir="${desktop_dir}/4-CAPTURE"
-    focus_script="$(resolve_focus_script_path)" || die "focus script not found (expected 2-test_scripts/antcam_focus_autofocus.sh or /etc/antscihub/antcam_focus_autofocus.sh)"
+    local capture_dir focus_script
+    capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
+    focus_script="$(resolve_focus_script_path)" || die "focus script not found (expected 1-capture_config/antcam_focus_autofocus.sh or /etc/antscihub/antcam_focus_autofocus.sh)"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -934,7 +1081,7 @@ start_focus_check() {
                 echo "focus diagnostic photo: ${dropped_photo_path}" >&2
             fi
         else
-            echo "antcam: warning: autofocus output parsing incomplete; diagnostic photo naming with distance skipped" >&2
+            echo "antcam: warning: autofocus output parsing incomplete; diagnostic photo naming with lens-position skipped" >&2
         fi
     else
         write_script_failure_diagnostic \
@@ -977,13 +1124,44 @@ main() {
             ;;
         start)
             shift
-            [[ $# -eq 0 ]] || die "start takes no arguments"
-            start_recording
+            [[ $# -eq 1 ]] || die "usage: antcam start <recording-script-name>"
+            start_recording "$1"
             ;;
         focus)
             shift
             [[ $# -eq 0 ]] || die "focus takes no arguments"
             start_focus_check
+            ;;
+        set)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam set focus <lens-position>"
+            case "$1" in
+                focus)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam set focus <lens-position>"
+                    set_focus_value "$1"
+                    ;;
+                *)
+                    die "unknown set target: $1"
+                    ;;
+            esac
+            ;;
+        report)
+            shift
+            if [[ $# -eq 0 ]]; then
+                report_capture_settings
+                return 0
+            fi
+            case "$1" in
+                focus)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report focus"
+                    report_focus_value
+                    ;;
+                *)
+                    die "unknown report target: $1"
+                    ;;
+            esac
             ;;
         help|-h|--help|"")
             usage

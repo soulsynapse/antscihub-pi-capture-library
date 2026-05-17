@@ -3,14 +3,14 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam start`, `antcam focus`)
+2. Capture commands (`antcam set focus`, `antcam report`, `antcam start`, `antcam focus`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
 
 - [1-capture_config](1-capture_config) - Camera profile CLI + profile files
 - [2-test_scripts](2-test_scripts) - Validation scripts
-- [3-recording_scripts](3-recording_scripts) - Recording command docs
+- [3-recording_scripts](3-recording_scripts) - Recording scripts + docs
 - [4-upload](4-upload) - Upload worker service
 
 ## Quick Start
@@ -25,6 +25,7 @@ This install flow:
 
 - Installs `antcam` to `/usr/local/bin/antcam`
 - Installs camera profiles to `/etc/antscihub/camera-profiles`
+- Installs recording scripts to `/etc/antscihub/recording-scripts`
 - Disables/removes the old dynamic camera service (`antscihub-capture-config.service`)
 - Installs/updates `antscihub-upload.service`
 
@@ -64,24 +65,31 @@ Current bundled profiles:
 ### Recording Commands
 
 ```bash
-antcam start
+antcam set focus <lens-position>
+antcam report focus
+antcam start <recording-script-name>
 antcam focus
 ```
 
-`antcam start` resolves the active user's Desktop path and then:
+`antcam start <recording-script-name>` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
-- Creates empty `<desktop>/4-CAPTURE/record.sh` if missing
-- Runs `record.sh` from inside `<desktop>/4-CAPTURE`
+- Resolves `<recording-script-name>` from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
+- Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt`
+- Runs the selected recording script from inside `<desktop>/4-CAPTURE`
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
-- On `record.sh` failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+
+Bundled recording script:
+
+- `record_1fps_1m_focus.sh` -> 1 fps video, 1-minute chunks (`--segment 60000`), focus from saved `lens-position`
 
 `antcam focus` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
-- Runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
+- Runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
 - Final output is the `lens-position` value for direct use with `rpicam-vid --lens-position <value>`
-- Drops a focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` with distance in the filename (`focus-distance-...jpg`)
+- Drops a focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` named `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
 - On autofocus helper failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 ### Upload Service

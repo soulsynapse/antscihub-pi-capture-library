@@ -14,6 +14,7 @@ Checks include:
 - Presence of key upload-worker safety functions and MQTT event emitter hooks
 - Install defaults for `gdrive_personal:5-UPLOAD`
 
-This folder also contains the autofocus helper used by `antcam focus`:
+Autofocus and recording runtime scripts now live in:
 
-- `antcam_focus_autofocus.sh`
+- `1-capture_config/antcam_focus_autofocus.sh`
+- `3-recording_scripts/*.sh`

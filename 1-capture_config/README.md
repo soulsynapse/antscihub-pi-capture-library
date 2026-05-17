@@ -14,7 +14,9 @@ sudo antcam show <profile>
 sudo antcam apply <profile>
 sudo antcam apply <profile> --dry-run
 sudo antcam apply <profile> --no-reboot
-antcam start
+antcam set focus <lens-position>
+antcam report focus
+antcam start <recording-script-name>
 antcam focus
 ```
 
@@ -47,13 +49,15 @@ Current bundled profiles:
 
 - `antcam apply` requires `sudo` (except `--dry-run`)
 - `antcam start` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
-- `antcam start` creates missing `4-CAPTURE/record.sh` as an empty file before execution
+- `antcam start` requires a recording script name and resolves it from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
+- `antcam set focus <lens-position>` writes the focus setting file used by recording scripts
+- `antcam report focus` returns the saved focus value
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
-- If `record.sh` fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - `antcam focus` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
-- `antcam focus` runs the autofocus helper script from `2-test_scripts/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
+- `antcam focus` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
 - `antcam focus` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
-- `antcam focus` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` with distance embedded in the filename (`focus-distance-...jpg`)
+- `antcam focus` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` as `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
 - If the autofocus helper fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
-- `install.sh` installs/updates the CLI and profile files
+- `install.sh` installs/updates the CLI, profile files, focus helper, and recording scripts

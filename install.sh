@@ -11,8 +11,10 @@ CAMERA_CLI_TARGET="/usr/local/bin/antcam"
 LEGACY_CAMERA_CLI_TARGET="/usr/local/bin/antscam"
 CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
 CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
-FOCUS_SCRIPT_SOURCE="${SCRIPT_DIR}/2-test_scripts/antcam_focus_autofocus.sh"
+FOCUS_SCRIPT_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam_focus_autofocus.sh"
 FOCUS_SCRIPT_TARGET="/etc/antscihub/antcam_focus_autofocus.sh"
+RECORDING_SCRIPT_SOURCE_DIR="${SCRIPT_DIR}/3-recording_scripts"
+RECORDING_SCRIPT_TARGET_DIR="/etc/antscihub/recording-scripts"
 
 UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
@@ -63,6 +65,16 @@ require_inputs() {
 
     if [[ ! -f "$FOCUS_SCRIPT_SOURCE" ]]; then
         log_error "Missing focus helper script: $FOCUS_SCRIPT_SOURCE"
+        exit 1
+    fi
+
+    if [[ ! -d "$RECORDING_SCRIPT_SOURCE_DIR" ]]; then
+        log_error "Missing recording script directory: $RECORDING_SCRIPT_SOURCE_DIR"
+        exit 1
+    fi
+
+    if ! find "$RECORDING_SCRIPT_SOURCE_DIR" -maxdepth 1 -type f -name '*.sh' | grep -q '.'; then
+        log_error "No recording scripts found in: $RECORDING_SCRIPT_SOURCE_DIR"
         exit 1
     fi
 }
@@ -180,6 +192,12 @@ install_camera_cli() {
     log_info "Installing focus helper script to ${FOCUS_SCRIPT_TARGET}"
     mkdir -p "/etc/antscihub"
     install -m 0755 "${FOCUS_SCRIPT_SOURCE}" "${FOCUS_SCRIPT_TARGET}"
+
+    log_info "Installing recording scripts to ${RECORDING_SCRIPT_TARGET_DIR}"
+    mkdir -p "${RECORDING_SCRIPT_TARGET_DIR}"
+    rm -f "${RECORDING_SCRIPT_TARGET_DIR}"/*.sh
+    cp -a "${RECORDING_SCRIPT_SOURCE_DIR}/." "${RECORDING_SCRIPT_TARGET_DIR}/"
+    find "${RECORDING_SCRIPT_TARGET_DIR}" -type f -name '*.sh' -exec chmod 0755 {} +
 
     if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
         log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"
@@ -322,6 +340,7 @@ main() {
     log_info "Camera profiles dir: ${CAMERA_PROFILE_TARGET_DIR}"
     log_info "Camera CLI: ${CAMERA_CLI_TARGET}"
     log_info "Focus helper script: ${FOCUS_SCRIPT_TARGET}"
+    log_info "Recording scripts dir: ${RECORDING_SCRIPT_TARGET_DIR}"
     log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"
     log_info "Upload service user: ${upload_user}"
     log_info "Upload source dir: ${upload_dir}"
@@ -330,7 +349,9 @@ main() {
     log_info "  sudo antcam list"
     log_info "  sudo antcam current"
     log_info "  sudo antcam apply imx708"
-    log_info "  antcam start"
+    log_info "  antcam set focus 7.5"
+    log_info "  antcam report focus"
+    log_info "  antcam start record_1fps_1m_focus"
     log_info "  antcam focus"
     log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"

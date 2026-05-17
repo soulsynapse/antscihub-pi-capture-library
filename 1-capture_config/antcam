@@ -10,6 +10,8 @@ DEFAULT_RECORDING_SCRIPT_DIR="/etc/antscihub/recording-scripts"
 RECORDING_SCRIPT_DIR="${ANTCAM_RECORDING_SCRIPT_DIR:-${DEFAULT_RECORDING_SCRIPT_DIR}}"
 DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/focus-lens-position.txt"
 FOCUS_SETTINGS_RELATIVE_PATH="${ANTCAM_FOCUS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_FPS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-fps.txt"
+FPS_SETTINGS_RELATIVE_PATH="${ANTCAM_FPS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FPS_SETTINGS_RELATIVE_PATH}}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
@@ -33,8 +35,10 @@ Usage:
   antcam start <recording-script-name>
   antcam focus
   antcam set focus <lens-position>
+  antcam set fps <value>
   antcam report
   antcam report focus
+  antcam report fps
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -47,7 +51,9 @@ Examples:
   antcam start record_1fps_1m_focus
   antcam focus
   antcam set focus 7.5
+  antcam set fps 2
   antcam report focus
+  antcam report fps
 EOF
 }
 
@@ -179,9 +185,38 @@ resolve_focus_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${FOCUS_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_fps_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_FPS_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_FPS_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${FPS_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${FPS_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${FPS_SETTINGS_RELATIVE_PATH#./}"
+}
+
+is_positive_numeric_value() {
+    local value="$1"
+    [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    awk -v v="${value}" 'BEGIN { exit (v > 0 ? 0 : 1) }'
+}
+
 is_valid_lens_position_value() {
     local value="$1"
     [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]]
+}
+
+is_valid_fps_value() {
+    local value="$1"
+    is_positive_numeric_value "${value}"
 }
 
 sanitize_recording_script_name() {

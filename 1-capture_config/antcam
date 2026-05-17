@@ -370,6 +370,20 @@ is_pid_running() {
     kill -0 "${pid}" >/dev/null 2>&1
 }
 
+signal_pid_and_children() {
+    local signal_name="$1"
+    local pid="$2"
+    is_pid_value "${pid}" || return 1
+
+    kill "-${signal_name}" "${pid}" >/dev/null 2>&1 || true
+
+    if command -v pkill >/dev/null 2>&1; then
+        pkill "-${signal_name}" -P "${pid}" >/dev/null 2>&1 || true
+    fi
+
+    return 0
+}
+
 sanitize_recording_script_name() {
     local script_name="$1"
     [[ "${script_name}" =~ ^[a-zA-Z0-9._-]+$ ]] || die "invalid recording script name: ${script_name}"
@@ -1458,7 +1472,7 @@ stop_recording() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
-    local recording_state_file record_pid capture_dir record_script
+    local recording_state_file record_pid capture_dir record_script record_script_name
     recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
 
     if [[ ! -f "${recording_state_file}" ]]; then
@@ -1469,6 +1483,7 @@ stop_recording() {
     record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
     capture_dir="$(read_recording_state_field "${recording_state_file}" "capture_dir" || true)"
     record_script="$(read_recording_state_field "${recording_state_file}" "record_script" || true)"
+    record_script_name="$(read_recording_state_field "${recording_state_file}" "record_script_name" || true)"
 
     if [[ -z "${record_pid}" ]]; then
         rm -f "${recording_state_file}" >/dev/null 2>&1 || true
@@ -1484,8 +1499,12 @@ stop_recording() {
 
     mark_recording_stop_requested_for_home "${user_home}" || true
 
-    echo "stopping recording process ${record_pid} with SIGINT"
-    kill -INT "${record_pid}" >/dev/null 2>&1 || die "failed to signal recording process ${record_pid}"
+    if [[ -n "${record_script_name}" ]]; then
+        echo "stopping recording script '${record_script_name}' (pid ${record_pid}) with SIGINT"
+    else
+        echo "stopping recording process ${record_pid} with SIGINT"
+    fi
+    signal_pid_and_children "INT" "${record_pid}" || die "failed to signal recording process ${record_pid}"
 
     local wait_seconds=0
     while is_pid_running "${record_pid}" && [[ "${wait_seconds}" -lt "${DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS}" ]]; do
@@ -1495,7 +1514,7 @@ stop_recording() {
 
     if is_pid_running "${record_pid}"; then
         echo "recording process ${record_pid} is still running after ${DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS}s; sending SIGTERM"
-        kill -TERM "${record_pid}" >/dev/null 2>&1 || true
+        signal_pid_and_children "TERM" "${record_pid}" || true
 
         wait_seconds=0
         while is_pid_running "${record_pid}" && [[ "${wait_seconds}" -lt "${DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS}" ]]; do

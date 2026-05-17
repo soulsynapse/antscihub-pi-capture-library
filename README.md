@@ -87,7 +87,7 @@ antcam focus
 - Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt` (defaults to `auto` if not set)
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
-- Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`)
+- Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.sh`)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
 - Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photo.sh` -> `photo-%05d.jpg`)

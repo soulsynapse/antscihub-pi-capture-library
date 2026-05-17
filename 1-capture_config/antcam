@@ -1317,20 +1317,25 @@ start_recording() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
     local capture_dir upload_dir record_script focus_value focus_file
-    local fps_value fps_file length_value length_file segment_value segment_file
+    local fps_value fps_file length_value length_file segment_value segment_file script_basename
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     record_script="$(resolve_recording_script_path "${requested_script_name}")"
+    script_basename="$(basename "${record_script}")"
     focus_value="$(read_focus_setting_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_value="$(read_fps_setting_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_value="$(read_length_setting_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
-    segment_value="$(read_segment_setting_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    if [[ "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
+        segment_value="$(read_segment_setting_for_home "${user_home}")"
+    else
+        segment_value=""
+    fi
 
     if [[ -f "${recording_state_file}" ]]; then
         existing_record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
@@ -1353,7 +1358,11 @@ start_recording() {
     echo "focus lens-position: ${focus_value}"
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
-    echo "recording segment: ${segment_value}"
+    if [[ -n "${segment_value}" ]]; then
+        echo "recording segment: ${segment_value}"
+    else
+        echo "recording segment: (unused by ${script_basename})"
+    fi
     echo "recording upload dir: ${upload_dir}"
     echo "recording state file: ${recording_state_file}"
 

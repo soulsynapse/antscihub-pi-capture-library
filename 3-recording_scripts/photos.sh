@@ -4,7 +4,7 @@ set -euo pipefail
 capture_dir="${ANTCAM_CAPTURE_DIR:-${1:-$(pwd)}}"
 
 log() {
-    echo "[photo] $*" >&2
+    echo "[photos] $*" >&2
 }
 
 is_valid_lens_position_value() {
@@ -15,12 +15,6 @@ is_valid_lens_position_value() {
 is_auto_focus_value() {
     local value="${1:-}"
     [[ "${value,,}" == "auto" ]]
-}
-
-is_valid_fps_value() {
-    local value="$1"
-    [[ "${value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
-    awk -v v="${value}" 'BEGIN { exit (v > 0 ? 0 : 1) }'
 }
 
 normalize_duration_value() {
@@ -71,20 +65,37 @@ duration_to_milliseconds() {
     printf '%s\n' "${total_ms}"
 }
 
-fps_to_interval_milliseconds() {
-    local fps_value="$1"
-    awk -v fps="${fps_value}" '
-        BEGIN {
-            if (fps <= 0) {
-                exit 1
-            }
-            ms = int((1000 / fps) + 0.5)
-            if (ms < 1) {
-                ms = 1
-            }
-            printf "%d\n", ms
-        }
-    '
+now_epoch_milliseconds() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+        return 0
+    fi
+
+    local now_seconds
+    now_seconds="$(date +%s)"
+    printf '%s\n' "$((now_seconds * 1000))"
+}
+
+sleep_milliseconds() {
+    local sleep_ms="$1"
+    if [[ "${sleep_ms}" -le 0 ]]; then
+        return 0
+    fi
+
+    local sleep_seconds
+    sleep_seconds="$(awk -v ms="${sleep_ms}" 'BEGIN { printf "%.3f\n", ms / 1000 }')"
+    sleep "${sleep_seconds}"
+}
+
+sleep_until_epoch_milliseconds() {
+    local target_ms="$1"
+    local now_ms remaining_ms
+    now_ms="$(now_epoch_milliseconds)"
+    remaining_ms=$((target_ms - now_ms))
+    sleep_milliseconds "${remaining_ms}"
 }
 
 resolve_focus_file_path() {
@@ -95,20 +106,20 @@ resolve_focus_file_path() {
     printf '%s\n' "${capture_dir%/}/config/focus-lens-position.txt"
 }
 
-resolve_fps_file_path() {
-    if [[ -n "${ANTCAM_FPS_VALUE_FILE:-}" ]]; then
-        printf '%s\n' "${ANTCAM_FPS_VALUE_FILE}"
-        return 0
-    fi
-    printf '%s\n' "${capture_dir%/}/config/recording-fps.txt"
-}
-
 resolve_length_file_path() {
     if [[ -n "${ANTCAM_LENGTH_VALUE_FILE:-}" ]]; then
         printf '%s\n' "${ANTCAM_LENGTH_VALUE_FILE}"
         return 0
     fi
     printf '%s\n' "${capture_dir%/}/config/recording-length.txt"
+}
+
+resolve_loop_file_path() {
+    if [[ -n "${ANTCAM_LOOP_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_LOOP_VALUE_FILE}"
+        return 0
+    fi
+    printf '%s\n' "${capture_dir%/}/config/recording-loop.txt"
 }
 
 resolve_upload_dir_path() {
@@ -138,10 +149,10 @@ resolve_session_hostname() {
 
 focus_value="${ANTCAM_FOCUS_LENS_POSITION:-}"
 focus_file="$(resolve_focus_file_path)"
-fps_value="${ANTCAM_RECORDING_FPS:-}"
-fps_file="$(resolve_fps_file_path)"
 length_value="${ANTCAM_RECORDING_LENGTH:-}"
 length_file="$(resolve_length_file_path)"
+loop_value="${ANTCAM_RECORDING_LOOP:-}"
+loop_file="$(resolve_loop_file_path)"
 
 if [[ -z "${focus_value}" ]]; then
     if [[ -f "${focus_file}" ]]; then
@@ -159,20 +170,6 @@ elif ! is_valid_lens_position_value "${focus_value}"; then
     exit 3
 fi
 
-if [[ -z "${fps_value}" ]]; then
-    if [[ -f "${fps_file}" ]]; then
-        fps_value="$(head -n 1 "${fps_file}" | tr -d '[:space:]' || true)"
-    else
-        fps_value="1"
-    fi
-fi
-
-is_valid_fps_value "${fps_value}" || {
-    log "invalid recording fps value: ${fps_value}"
-    log "set it with: antcam set fps <value>"
-    exit 4
-}
-
 if [[ -z "${length_value}" ]]; then
     if [[ -f "${length_file}" ]]; then
         length_value="$(head -n 1 "${length_file}" | tr -d '[:space:]' || true)"
@@ -185,12 +182,28 @@ length_ms="$(duration_to_milliseconds "${length_value}" || true)"
 if [[ -z "${length_ms}" ]]; then
     log "invalid recording length value: ${length_value}"
     log "set it with: antcam set length <duration> (example: 30h, 10m, 45s)"
+    exit 4
+fi
+
+if [[ -z "${loop_value}" ]]; then
+    if [[ -f "${loop_file}" ]]; then
+        loop_value="$(head -n 1 "${loop_file}" | tr -d '[:space:]' || true)"
+    else
+        loop_value="1m"
+    fi
+fi
+loop_value="$(normalize_duration_value "${loop_value}")"
+loop_ms="$(duration_to_milliseconds "${loop_value}" || true)"
+if [[ -z "${loop_ms}" || "${loop_ms}" -le 0 ]]; then
+    log "invalid recording loop value: ${loop_value}"
+    log "set it with: antcam set loop <duration> (example: 1m, 30s, 2h)"
     exit 5
 fi
 
-interval_ms="$(fps_to_interval_milliseconds "${fps_value}" || true)"
-if [[ -z "${interval_ms}" || "${interval_ms}" -lt 1 ]]; then
-    log "could not derive photo interval from fps value: ${fps_value}"
+minimum_loop_ms=10000
+if [[ "${loop_ms}" -lt "${minimum_loop_ms}" ]]; then
+    log "recording loop value is too small for photos: ${loop_value}"
+    log "set loop >= 10s for photos"
     exit 6
 fi
 
@@ -211,7 +224,6 @@ session_timestamp="$(date +%Y-%m-%d_%H-%M-%S)"
 session_hostname="$(resolve_session_hostname)"
 session_dir="${upload_dir%/}/${session_timestamp}__${session_hostname}"
 mkdir -p "${session_dir}"
-output_pattern="${session_dir}/photo-%05d.jpg"
 
 log "Using still command: ${still_cmd[0]}"
 if is_auto_focus_value "${focus_value}"; then
@@ -220,23 +232,41 @@ else
     log "Focus lens-position: ${focus_value}"
 fi
 log "Recording length: ${length_value} (${length_ms} ms)"
-log "Capture rate: ${fps_value} fps"
-log "Capture interval: ${interval_ms} ms"
+log "Loop interval: ${loop_value} (${loop_ms} ms)"
 log "Session folder: ${session_dir}"
-log "Output pattern: ${output_pattern}"
+log "Output pattern: ${session_dir}/photos-%05d.jpg"
 
-still_args=(
-    --nopreview
-    --timeout "${length_ms}"
-    --timelapse "${interval_ms}"
-    --encoding jpg
-)
-
-if ! is_auto_focus_value "${focus_value}"; then
-    still_args+=(--lens-position "${focus_value}")
+start_epoch_ms="$(now_epoch_milliseconds)"
+end_epoch_ms=0
+if [[ "${length_ms}" -gt 0 ]]; then
+    end_epoch_ms=$((start_epoch_ms + length_ms))
 fi
 
-still_args+=(--output "${output_pattern}")
+capture_index=0
+while true; do
+    target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
+    sleep_until_epoch_milliseconds "${target_epoch_ms}"
 
-exec "${still_cmd[@]}" \
-    "${still_args[@]}"
+    now_ms="$(now_epoch_milliseconds)"
+    if [[ "${end_epoch_ms}" -gt 0 && "${now_ms}" -ge "${end_epoch_ms}" ]]; then
+        break
+    fi
+
+    output_file="$(printf "%s/photos-%05d.jpg" "${session_dir}" "${capture_index}")"
+    log "Starting photo index=${capture_index} output=${output_file}"
+
+    still_args=(
+        --nopreview
+        --immediate
+        --encoding jpg
+    )
+
+    if ! is_auto_focus_value "${focus_value}"; then
+        still_args+=(--lens-position "${focus_value}")
+    fi
+
+    still_args+=(--output "${output_file}")
+    "${still_cmd[@]}" "${still_args[@]}"
+
+    capture_index=$((capture_index + 1))
+done

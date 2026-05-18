@@ -16,11 +16,14 @@ DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
 LENGTH_SETTINGS_RELATIVE_PATH="${ANTCAM_LENGTH_SETTINGS_RELATIVE_PATH:-${DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
 SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_LOOP_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-loop.txt"
+LOOP_SETTINGS_RELATIVE_PATH="${ANTCAM_LOOP_SETTINGS_RELATIVE_PATH:-${DEFAULT_LOOP_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
 RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
+DEFAULT_RECORDING_LOOP="${ANTCAM_DEFAULT_RECORDING_LOOP:-1m}"
 DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS:-20}"
 DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS:-10}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
@@ -50,11 +53,13 @@ Usage:
   antcam set fps <value>
   antcam set length <duration>
   antcam set segment <duration>
+  antcam set loop <duration>
   antcam report
   antcam report focus
   antcam report fps
   antcam report length
   antcam report segment
+  antcam report loop
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -66,7 +71,7 @@ Examples:
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start video
-  antcam start photo
+  antcam start photos
   antcam stop
   antcam focus
   antcam set focus 7.5
@@ -74,10 +79,12 @@ Examples:
   antcam set fps 2
   antcam set length 30h
   antcam set segment 10m
+  antcam set loop 1m
   antcam report focus
   antcam report fps
   antcam report length
   antcam report segment
+  antcam report loop
 EOF
 }
 
@@ -261,6 +268,24 @@ resolve_segment_value_file_for_home() {
     local desktop_dir
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
     printf '%s\n' "${desktop_dir%/}/${SEGMENT_SETTINGS_RELATIVE_PATH#./}"
+}
+
+resolve_loop_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_LOOP_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_LOOP_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${LOOP_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${LOOP_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${LOOP_SETTINGS_RELATIVE_PATH#./}"
 }
 
 resolve_recording_state_file_for_home() {
@@ -1076,6 +1101,23 @@ read_segment_setting_for_home() {
     printf '%s\n' "$(normalize_duration_value "${segment_value}")"
 }
 
+read_loop_setting_for_home() {
+    local user_home="$1"
+    local loop_file loop_value loop_ms
+    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${loop_file}" ]]; then
+        printf '%s\n' "${DEFAULT_RECORDING_LOOP}"
+        return 0
+    fi
+
+    loop_value="$(head -n 1 "${loop_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    is_valid_duration_value "${loop_value}" || die "invalid loop value in ${loop_file}: ${loop_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+    loop_ms="$(duration_to_milliseconds "${loop_value}")"
+    [[ "${loop_ms}" -gt 0 ]] || die "invalid loop value in ${loop_file}: ${loop_value} (must be greater than 0)"
+    printf '%s\n' "$(normalize_duration_value "${loop_value}")"
+}
+
 set_focus_setting_for_home() {
     local user_home="$1"
     local focus_value="$2"
@@ -1139,6 +1181,23 @@ set_segment_setting_for_home() {
     mkdir -p "${segment_dir}"
     printf '%s\n' "${normalized_segment_value}" > "${segment_file}"
     printf '%s\n' "${segment_file}"
+}
+
+set_loop_setting_for_home() {
+    local user_home="$1"
+    local loop_value="$2"
+    local normalized_loop_value loop_ms
+    normalized_loop_value="$(normalize_duration_value "${loop_value}")"
+    is_valid_duration_value "${normalized_loop_value}" || die "invalid loop value: ${loop_value} (expected format like 30h, 10m, 45s, or 1h30m)"
+    loop_ms="$(duration_to_milliseconds "${normalized_loop_value}")"
+    [[ "${loop_ms}" -gt 0 ]] || die "invalid loop value: ${loop_value} (must be greater than 0)"
+
+    local loop_file loop_dir
+    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    loop_dir="$(dirname "${loop_file}")"
+    mkdir -p "${loop_dir}"
+    printf '%s\n' "${normalized_loop_value}" > "${loop_file}"
+    printf '%s\n' "${loop_file}"
 }
 
 read_recording_state_field() {
@@ -1249,6 +1308,18 @@ set_segment_value() {
     echo "segment settings file: ${segment_file}"
 }
 
+set_loop_value() {
+    local loop_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for loop settings"
+
+    local loop_file normalized_loop
+    loop_file="$(set_loop_setting_for_home "${user_home}" "${loop_value}")"
+    normalized_loop="$(read_loop_setting_for_home "${user_home}")"
+    echo "recording loop set to ${normalized_loop}"
+    echo "loop settings file: ${loop_file}"
+}
+
 report_focus_value() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for focus settings"
@@ -1273,18 +1344,25 @@ report_segment_value() {
     read_segment_setting_for_home "${user_home}"
 }
 
+report_loop_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for loop settings"
+    read_loop_setting_for_home "${user_home}"
+}
+
 report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
     local capture_dir upload_dir focus_file focus_value state_file
-    local fps_file fps_value length_file length_value segment_file segment_value
+    local fps_file fps_value length_file length_value segment_file segment_value loop_file loop_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
 
     if [[ -f "${focus_file}" ]]; then
@@ -1311,6 +1389,12 @@ report_capture_settings() {
         segment_value="${DEFAULT_RECORDING_SEGMENT} (default)"
     fi
 
+    if [[ -f "${loop_file}" ]]; then
+        loop_value="$(head -n 1 "${loop_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    else
+        loop_value="${DEFAULT_RECORDING_LOOP} (default)"
+    fi
+
     echo "capture_dir=${capture_dir}"
     echo "upload_dir=${upload_dir}"
     echo "recording_script_dir=${RECORDING_SCRIPT_DIR}"
@@ -1322,6 +1406,8 @@ report_capture_settings() {
     echo "recording_length=${length_value}"
     echo "segment_settings_file=${segment_file}"
     echo "recording_segment=${segment_value}"
+    echo "loop_settings_file=${loop_file}"
+    echo "recording_loop=${loop_value}"
     echo "recording_state_file=${state_file}"
 }
 
@@ -1331,7 +1417,8 @@ start_recording() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
 
     local capture_dir upload_dir record_script focus_value focus_file
-    local fps_value fps_file length_value length_file segment_value segment_file script_basename
+    local fps_value fps_file length_value length_file segment_value segment_file
+    local loop_value loop_file script_basename
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
@@ -1344,6 +1431,8 @@ start_recording() {
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_value="$(read_length_setting_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
+    loop_value="$(read_loop_setting_for_home "${user_home}")"
+    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
     if [[ "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
         segment_value="$(read_segment_setting_for_home "${user_home}")"
@@ -1372,6 +1461,7 @@ start_recording() {
     echo "focus lens-position: ${focus_value}"
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
+    echo "recording loop: ${loop_value}"
     if [[ -n "${segment_value}" ]]; then
         echo "recording segment: ${segment_value}"
     else
@@ -1405,6 +1495,8 @@ start_recording() {
             ANTCAM_RECORDING_FPS="${fps_value}" \
             ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
             ANTCAM_RECORDING_LENGTH="${length_value}" \
+            ANTCAM_LOOP_VALUE_FILE="${loop_file}" \
+            ANTCAM_RECORDING_LOOP="${loop_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
             bash "${record_script}"
@@ -1754,7 +1846,7 @@ main() {
             ;;
         set)
             shift
-            [[ $# -ge 1 ]] || die "usage: antcam set <focus|fps|length|segment> <value>"
+            [[ $# -ge 1 ]] || die "usage: antcam set <focus|fps|length|segment|loop> <value>"
             case "$1" in
                 focus)
                     shift
@@ -1775,6 +1867,11 @@ main() {
                     shift
                     [[ $# -eq 1 ]] || die "usage: antcam set segment <duration>"
                     set_segment_value "$1"
+                    ;;
+                loop)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam set loop <duration>"
+                    set_loop_value "$1"
                     ;;
                 *)
                     die "unknown set target: $1"
@@ -1812,6 +1909,11 @@ main() {
                     shift
                     [[ $# -eq 0 ]] || die "usage: antcam report segment"
                     report_segment_value
+                    ;;
+                loop)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam report loop"
+                    report_loop_value
                     ;;
                 *)
                     die "unknown report target: $1"

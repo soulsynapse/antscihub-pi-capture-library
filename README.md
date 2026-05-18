@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
+2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam set loop`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
 3. Continuous upload of completed files from Desktop to remote storage via `rclone`
 
 ## Repository Layout
@@ -71,10 +71,12 @@ antcam set focus <lens-position|auto>
 antcam set fps <value>
 antcam set length <duration>
 antcam set segment <duration>
+antcam set loop <duration>
 antcam report focus
 antcam report fps
 antcam report length
 antcam report segment
+antcam report loop
 antcam start <recording-script-name>
 antcam stop
 antcam focus
@@ -88,9 +90,10 @@ antcam focus
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.sh`)
+- Reads loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (defaults to `1m`)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photo.sh` -> `photo-%05d.jpg`)
+- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photos.sh` -> `photos-%05d.jpg`)
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
@@ -98,8 +101,8 @@ antcam focus
 
 Bundled recording scripts:
 
-- `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment (`antcam set length`, `antcam set segment`), and focus from saved `lens-position` or `auto`
-- `photo.sh` -> configurable fps still-photo capture (`antcam set fps <value>`) and recording length (`antcam set length`), ignores segment setting, and uses focus from saved `lens-position` or `auto`
+- `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment/loop (`antcam set length`, `antcam set segment`, `antcam set loop`), and focus from saved `lens-position` or `auto`
+- `photos.sh` -> loop-driven still-photo capture (`antcam set loop <duration>`, minimum `10s`) with configurable length (`antcam set length`) and focus from saved `lens-position` or `auto`
 
 `antcam focus` resolves the active user's Desktop path and then:
 

@@ -71,6 +71,39 @@ duration_to_milliseconds() {
     printf '%s\n' "${total_ms}"
 }
 
+now_epoch_milliseconds() {
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+        return 0
+    fi
+
+    local now_seconds
+    now_seconds="$(date +%s)"
+    printf '%s\n' "$((now_seconds * 1000))"
+}
+
+sleep_milliseconds() {
+    local sleep_ms="$1"
+    if [[ "${sleep_ms}" -le 0 ]]; then
+        return 0
+    fi
+
+    local sleep_seconds
+    sleep_seconds="$(awk -v ms="${sleep_ms}" 'BEGIN { printf "%.3f\n", ms / 1000 }')"
+    sleep "${sleep_seconds}"
+}
+
+sleep_until_epoch_milliseconds() {
+    local target_ms="$1"
+    local now_ms remaining_ms
+    now_ms="$(now_epoch_milliseconds)"
+    remaining_ms=$((target_ms - now_ms))
+    sleep_milliseconds "${remaining_ms}"
+}
+
 resolve_focus_file_path() {
     if [[ -n "${ANTCAM_FOCUS_VALUE_FILE:-}" ]]; then
         printf '%s\n' "${ANTCAM_FOCUS_VALUE_FILE}"
@@ -101,6 +134,14 @@ resolve_segment_file_path() {
         return 0
     fi
     printf '%s\n' "${capture_dir%/}/config/recording-segment.txt"
+}
+
+resolve_loop_file_path() {
+    if [[ -n "${ANTCAM_LOOP_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_LOOP_VALUE_FILE}"
+        return 0
+    fi
+    printf '%s\n' "${capture_dir%/}/config/recording-loop.txt"
 }
 
 resolve_upload_dir_path() {
@@ -136,6 +177,8 @@ length_value="${ANTCAM_RECORDING_LENGTH:-}"
 length_file="$(resolve_length_file_path)"
 segment_value="${ANTCAM_RECORDING_SEGMENT:-}"
 segment_file="$(resolve_segment_file_path)"
+loop_value="${ANTCAM_RECORDING_LOOP:-}"
+loop_file="$(resolve_loop_file_path)"
 
 if [[ -z "${focus_value}" ]]; then
     if [[ -f "${focus_file}" ]]; then
@@ -197,6 +240,27 @@ if [[ -z "${segment_ms}" || "${segment_ms}" -le 0 ]]; then
     exit 6
 fi
 
+if [[ -z "${loop_value}" ]]; then
+    if [[ -f "${loop_file}" ]]; then
+        loop_value="$(head -n 1 "${loop_file}" | tr -d '[:space:]' || true)"
+    else
+        loop_value="1m"
+    fi
+fi
+loop_value="$(normalize_duration_value "${loop_value}")"
+loop_ms="$(duration_to_milliseconds "${loop_value}" || true)"
+if [[ -z "${loop_ms}" || "${loop_ms}" -le 0 ]]; then
+    log "invalid recording loop value: ${loop_value}"
+    log "set it with: antcam set loop <duration> (example: 1m, 30s, 2h)"
+    exit 7
+fi
+
+if [[ "${segment_ms}" -gt "${loop_ms}" ]]; then
+    log "recording segment (${segment_value}) cannot exceed loop interval (${loop_value})"
+    log "set segment <= loop to keep loop-aligned start times"
+    exit 8
+fi
+
 video_cmd=()
 if command -v rpicam-vid >/dev/null 2>&1; then
     video_cmd=(rpicam-vid)
@@ -214,7 +278,6 @@ session_timestamp="$(date +%Y-%m-%d_%H-%M-%S)"
 session_hostname="$(resolve_session_hostname)"
 session_dir="${upload_dir%/}/${session_timestamp}__${session_hostname}"
 mkdir -p "${session_dir}"
-output_pattern="${session_dir}/video-%05d.h264"
 
 log "Using video command: ${video_cmd[0]}"
 if is_auto_focus_value "${focus_value}"; then
@@ -224,24 +287,55 @@ else
 fi
 log "Recording length: ${length_value} (${length_ms} ms)"
 log "Chunk length: ${segment_value} (${segment_ms} ms)"
+log "Loop interval: ${loop_value} (${loop_ms} ms)"
 log "Frame rate: ${fps_value} fps"
 log "Session folder: ${session_dir}"
-log "Output pattern: ${output_pattern}"
+log "Output pattern: ${session_dir}/video-%05d.h264"
 
-video_args=(
-    --nopreview
-    --timeout "${length_ms}"
-    --framerate "${fps_value}"
-    --segment "${segment_ms}"
-    --codec h264
-    --inline
-)
-
-if ! is_auto_focus_value "${focus_value}"; then
-    video_args+=(--lens-position "${focus_value}")
+start_epoch_ms="$(now_epoch_milliseconds)"
+end_epoch_ms=0
+if [[ "${length_ms}" -gt 0 ]]; then
+    end_epoch_ms=$((start_epoch_ms + length_ms))
 fi
 
-video_args+=(--output "${output_pattern}")
+clip_index=0
+while true; do
+    target_epoch_ms=$((start_epoch_ms + (clip_index * loop_ms)))
+    sleep_until_epoch_milliseconds "${target_epoch_ms}"
 
-exec "${video_cmd[@]}" \
-    "${video_args[@]}"
+    now_ms="$(now_epoch_milliseconds)"
+    if [[ "${end_epoch_ms}" -gt 0 && "${now_ms}" -ge "${end_epoch_ms}" ]]; then
+        break
+    fi
+
+    clip_timeout_ms="${segment_ms}"
+    if [[ "${end_epoch_ms}" -gt 0 ]]; then
+        remaining_ms=$((end_epoch_ms - now_ms))
+        if [[ "${remaining_ms}" -le 0 ]]; then
+            break
+        fi
+        if [[ "${clip_timeout_ms}" -gt "${remaining_ms}" ]]; then
+            clip_timeout_ms="${remaining_ms}"
+        fi
+    fi
+
+    output_file="$(printf "%s/video-%05d.h264" "${session_dir}" "${clip_index}")"
+    log "Starting clip index=${clip_index} timeout=${clip_timeout_ms}ms output=${output_file}"
+
+    video_args=(
+        --nopreview
+        --timeout "${clip_timeout_ms}"
+        --framerate "${fps_value}"
+        --codec h264
+        --inline
+    )
+
+    if ! is_auto_focus_value "${focus_value}"; then
+        video_args+=(--lens-position "${focus_value}")
+    fi
+
+    video_args+=(--output "${output_file}")
+
+    "${video_cmd[@]}" "${video_args[@]}"
+    clip_index=$((clip_index + 1))
+done

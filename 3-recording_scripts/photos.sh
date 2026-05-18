@@ -65,6 +65,31 @@ duration_to_milliseconds() {
     printf '%s\n' "${total_ms}"
 }
 
+normalize_loop_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value loop_ms
+    normalized_value="$(normalize_duration_value "${raw_value}")"
+    [[ -n "${normalized_value}" ]] || return 1
+
+    if [[ "${normalized_value}" == "none" || "${normalized_value}" == "0" ]]; then
+        printf '%s\n' "none"
+        return 0
+    fi
+
+    loop_ms="$(duration_to_milliseconds "${normalized_value}" || true)"
+    [[ -n "${loop_ms}" ]] || return 1
+    if [[ "${loop_ms}" -le 0 ]]; then
+        printf '%s\n' "none"
+    else
+        printf '%s\n' "${normalized_value}"
+    fi
+}
+
+is_loop_disabled_value() {
+    local value="${1:-}"
+    [[ "${value}" == "none" ]]
+}
+
 now_epoch_milliseconds() {
     if command -v python3 >/dev/null 2>&1; then
         python3 - <<'PY'
@@ -192,19 +217,33 @@ if [[ -z "${loop_value}" ]]; then
         loop_value="1m"
     fi
 fi
+loop_raw_value="${loop_value}"
 loop_value="$(normalize_duration_value "${loop_value}")"
-loop_ms="$(duration_to_milliseconds "${loop_value}" || true)"
-if [[ -z "${loop_ms}" || "${loop_ms}" -le 0 ]]; then
-    log "invalid recording loop value: ${loop_value}"
-    log "set it with: antcam set loop <duration> (example: 1m, 30s, 2h)"
+loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
+if [[ -z "${loop_value}" ]]; then
+    log "invalid recording loop value: ${loop_raw_value}"
+    log "set it with: antcam set loop <duration|none|0> (example: 1m, 30s, 2h, none)"
     exit 5
 fi
 
-minimum_loop_ms=10000
-if [[ "${loop_ms}" -lt "${minimum_loop_ms}" ]]; then
-    log "recording loop value is too small for photos: ${loop_value}"
-    log "set loop >= 10s for photos"
-    exit 6
+loop_enabled="true"
+loop_ms=0
+if is_loop_disabled_value "${loop_value}"; then
+    loop_enabled="false"
+else
+    loop_ms="$(duration_to_milliseconds "${loop_value}" || true)"
+    if [[ -z "${loop_ms}" || "${loop_ms}" -le 0 ]]; then
+        log "invalid recording loop value: ${loop_raw_value}"
+        log "set it with: antcam set loop <duration|none|0> (example: 1m, 30s, 2h, none)"
+        exit 5
+    fi
+
+    minimum_loop_ms=10000
+    if [[ "${loop_ms}" -lt "${minimum_loop_ms}" ]]; then
+        log "recording loop value is too small for photos: ${loop_value}"
+        log "set loop >= 10s for photos"
+        exit 6
+    fi
 fi
 
 still_cmd=()
@@ -232,7 +271,11 @@ else
     log "Focus lens-position: ${focus_value}"
 fi
 log "Recording length: ${length_value} (${length_ms} ms)"
-log "Loop interval: ${loop_value} (${loop_ms} ms)"
+if [[ "${loop_enabled}" == "true" ]]; then
+    log "Loop interval: ${loop_value} (${loop_ms} ms)"
+else
+    log "Loop interval: none (loop scheduling disabled; one photo per run)"
+fi
 log "Session folder: ${session_dir}"
 log "Output pattern: ${session_dir}/photos-%05d.jpg"
 
@@ -244,8 +287,20 @@ fi
 
 capture_index=0
 while true; do
-    target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
-    sleep_until_epoch_milliseconds "${target_epoch_ms}"
+    if [[ "${loop_enabled}" == "true" ]]; then
+        now_ms="$(now_epoch_milliseconds)"
+        expected_index=$(((now_ms - start_epoch_ms + loop_ms - 1) / loop_ms))
+        if [[ "${expected_index}" -gt "${capture_index}" ]]; then
+            skipped_slots=$((expected_index - capture_index))
+            log "scheduler behind by ${skipped_slots} slot(s); skipping ahead to preserve start-time alignment"
+            capture_index="${expected_index}"
+        fi
+
+        target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
+        sleep_until_epoch_milliseconds "${target_epoch_ms}"
+    elif [[ "${capture_index}" -gt 0 ]]; then
+        break
+    fi
 
     now_ms="$(now_epoch_milliseconds)"
     if [[ "${end_epoch_ms}" -gt 0 && "${now_ms}" -ge "${end_epoch_ms}" ]]; then

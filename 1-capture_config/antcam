@@ -53,7 +53,7 @@ Usage:
   antcam set fps <value>
   antcam set length <duration>
   antcam set segment <duration>
-  antcam set loop <duration>
+  antcam set loop <duration|none|0>
   antcam report
   antcam report focus
   antcam report fps
@@ -80,6 +80,7 @@ Examples:
   antcam set length 30h
   antcam set segment 10m
   antcam set loop 1m
+  antcam set loop none
   antcam report focus
   antcam report fps
   antcam report length
@@ -382,6 +383,27 @@ is_valid_fps_value() {
 is_valid_duration_value() {
     local value="${1:-}"
     duration_to_milliseconds "${value}" >/dev/null 2>&1
+}
+
+normalize_loop_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value loop_ms
+    normalized_value="$(normalize_duration_value "${raw_value}")"
+    [[ -n "${normalized_value}" ]] || return 1
+
+    if [[ "${normalized_value}" == "none" || "${normalized_value}" == "0" ]]; then
+        printf '%s\n' "none"
+        return 0
+    fi
+
+    is_valid_duration_value "${normalized_value}" || return 1
+    loop_ms="$(duration_to_milliseconds "${normalized_value}" || true)"
+    [[ -n "${loop_ms}" ]] || return 1
+    if [[ "${loop_ms}" -le 0 ]]; then
+        printf '%s\n' "none"
+    else
+        printf '%s\n' "${normalized_value}"
+    fi
 }
 
 is_pid_value() {
@@ -1103,19 +1125,20 @@ read_segment_setting_for_home() {
 
 read_loop_setting_for_home() {
     local user_home="$1"
-    local loop_file loop_value loop_ms
+    local loop_file loop_value normalized_loop_value
     loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
 
     if [[ ! -f "${loop_file}" ]]; then
-        printf '%s\n' "${DEFAULT_RECORDING_LOOP}"
+        normalized_loop_value="$(normalize_loop_setting_value "${DEFAULT_RECORDING_LOOP}" || true)"
+        [[ -n "${normalized_loop_value}" ]] || die "invalid default loop value: ${DEFAULT_RECORDING_LOOP} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+        printf '%s\n' "${normalized_loop_value}"
         return 0
     fi
 
     loop_value="$(head -n 1 "${loop_file}" 2>/dev/null | tr -d '[:space:]' || true)"
-    is_valid_duration_value "${loop_value}" || die "invalid loop value in ${loop_file}: ${loop_value} (expected format like 30h, 10m, 45s, or 1h30m)"
-    loop_ms="$(duration_to_milliseconds "${loop_value}")"
-    [[ "${loop_ms}" -gt 0 ]] || die "invalid loop value in ${loop_file}: ${loop_value} (must be greater than 0)"
-    printf '%s\n' "$(normalize_duration_value "${loop_value}")"
+    normalized_loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
+    [[ -n "${normalized_loop_value}" ]] || die "invalid loop value in ${loop_file}: ${loop_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+    printf '%s\n' "${normalized_loop_value}"
 }
 
 set_focus_setting_for_home() {
@@ -1186,11 +1209,9 @@ set_segment_setting_for_home() {
 set_loop_setting_for_home() {
     local user_home="$1"
     local loop_value="$2"
-    local normalized_loop_value loop_ms
-    normalized_loop_value="$(normalize_duration_value "${loop_value}")"
-    is_valid_duration_value "${normalized_loop_value}" || die "invalid loop value: ${loop_value} (expected format like 30h, 10m, 45s, or 1h30m)"
-    loop_ms="$(duration_to_milliseconds "${normalized_loop_value}")"
-    [[ "${loop_ms}" -gt 0 ]] || die "invalid loop value: ${loop_value} (must be greater than 0)"
+    local normalized_loop_value
+    normalized_loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
+    [[ -n "${normalized_loop_value}" ]] || die "invalid loop value: ${loop_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
 
     local loop_file loop_dir
     loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
@@ -1390,9 +1411,11 @@ report_capture_settings() {
     fi
 
     if [[ -f "${loop_file}" ]]; then
-        loop_value="$(head -n 1 "${loop_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+        loop_value="$(read_loop_setting_for_home "${user_home}")"
     else
-        loop_value="${DEFAULT_RECORDING_LOOP} (default)"
+        loop_value="$(normalize_loop_setting_value "${DEFAULT_RECORDING_LOOP}" || true)"
+        [[ -n "${loop_value}" ]] || die "invalid default loop value: ${DEFAULT_RECORDING_LOOP} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+        loop_value="${loop_value} (default)"
     fi
 
     echo "capture_dir=${capture_dir}"
@@ -1870,7 +1893,7 @@ main() {
                     ;;
                 loop)
                     shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set loop <duration>"
+                    [[ $# -eq 1 ]] || die "usage: antcam set loop <duration|none|0>"
                     set_loop_value "$1"
                     ;;
                 *)

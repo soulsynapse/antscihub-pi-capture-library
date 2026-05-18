@@ -71,7 +71,7 @@ antcam set focus <lens-position|auto>
 antcam set fps <value>
 antcam set length <duration>
 antcam set segment <duration>
-antcam set loop <duration>
+antcam set loop <duration|none|0>
 antcam report focus
 antcam report fps
 antcam report length
@@ -90,7 +90,7 @@ antcam focus
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.sh`)
-- Reads loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (defaults to `1m`)
+- Reads loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (defaults to `1m`; accepts `none`/`0` to disable loop scheduling)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
 - Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photos.sh` -> `photos-%05d.jpg`)
@@ -102,7 +102,7 @@ antcam focus
 Bundled recording scripts:
 
 - `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment/loop (`antcam set length`, `antcam set segment`, `antcam set loop`), and focus from saved `lens-position` or `auto`
-- `photos.sh` -> loop-driven still-photo capture (`antcam set loop <duration>`, minimum `10s`) with configurable length (`antcam set length`) and focus from saved `lens-position` or `auto`
+- `photos.sh` -> loop-driven still-photo capture (`antcam set loop <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
 
 `antcam focus` resolves the active user's Desktop path and then:
 

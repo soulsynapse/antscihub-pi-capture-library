@@ -18,7 +18,7 @@ antcam set focus <lens-position|auto>
 antcam set fps <value>
 antcam set length <duration>
 antcam set segment <duration>
-antcam set loop <duration>
+antcam set loop <duration|none|0>
 antcam report focus
 antcam report fps
 antcam report length
@@ -64,7 +64,9 @@ Current bundled profiles:
 - `antcam set fps <value>` writes the fps setting file used by recording scripts
 - `antcam set length <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam set segment <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
-- `antcam set loop <duration>` writes start-time aligned loop interval used by recording scripts (examples: `1m`, `30s`, `2h`)
+- `antcam set loop <duration|none|0>` writes the loop interval used by recording scripts
+- Positive loop values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
+- `none` or `0` disables loop scheduling
 - `antcam report focus` returns the saved focus value (or `auto` default)
 - `antcam report fps` returns the saved fps value (or default)
 - `antcam report length` returns the saved recording length (or default)

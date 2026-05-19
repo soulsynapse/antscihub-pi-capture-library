@@ -282,6 +282,23 @@ fi
 log "Session folder: ${session_dir}"
 log "Output pattern: ${session_dir}/photos-%05d.jpg"
 
+still_args=(
+    --nopreview
+    --immediate
+    --encoding jpg
+)
+if ! is_auto_focus_value "${focus_value}"; then
+    still_args+=(--lens-position "${focus_value}")
+fi
+
+if [[ "${loop_enabled}" != "true" ]]; then
+    # Hard one-shot path: when loop scheduling is disabled, capture exactly one image and exit.
+    output_file="$(printf "%s/photos-%05d.jpg" "${session_dir}" 0)"
+    log "Starting photo index=0 output=${output_file}"
+    "${still_cmd[@]}" "${still_args[@]}" --output "${output_file}"
+    exit 0
+fi
+
 start_epoch_ms="$(now_epoch_milliseconds)"
 end_epoch_ms=0
 if [[ "${length_ms}" -gt 0 ]]; then
@@ -290,21 +307,16 @@ fi
 
 capture_index=0
 while true; do
-    if [[ "${loop_enabled}" == "true" ]]; then
-        now_ms="$(now_epoch_milliseconds)"
-        expected_index=$(((now_ms - start_epoch_ms + loop_ms - 1) / loop_ms))
-        if [[ "${expected_index}" -gt "${capture_index}" ]]; then
-            skipped_slots=$((expected_index - capture_index))
-            log "scheduler behind by ${skipped_slots} slot(s); skipping ahead to preserve start-time alignment"
-            capture_index="${expected_index}"
-        fi
-
-        target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
-        sleep_until_epoch_milliseconds "${target_epoch_ms}"
-    elif [[ "${capture_index}" -gt 0 ]]; then
-        # Loop disabled means strict one-shot behavior for photos.
-        break
+    now_ms="$(now_epoch_milliseconds)"
+    expected_index=$(((now_ms - start_epoch_ms + loop_ms - 1) / loop_ms))
+    if [[ "${expected_index}" -gt "${capture_index}" ]]; then
+        skipped_slots=$((expected_index - capture_index))
+        log "scheduler behind by ${skipped_slots} slot(s); skipping ahead to preserve start-time alignment"
+        capture_index="${expected_index}"
     fi
+
+    target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
+    sleep_until_epoch_milliseconds "${target_epoch_ms}"
 
     now_ms="$(now_epoch_milliseconds)"
     if [[ "${end_epoch_ms}" -gt 0 && "${now_ms}" -ge "${end_epoch_ms}" ]]; then
@@ -313,19 +325,7 @@ while true; do
 
     output_file="$(printf "%s/photos-%05d.jpg" "${session_dir}" "${capture_index}")"
     log "Starting photo index=${capture_index} output=${output_file}"
-
-    still_args=(
-        --nopreview
-        --immediate
-        --encoding jpg
-    )
-
-    if ! is_auto_focus_value "${focus_value}"; then
-        still_args+=(--lens-position "${focus_value}")
-    fi
-
-    still_args+=(--output "${output_file}")
-    "${still_cmd[@]}" "${still_args[@]}"
+    "${still_cmd[@]}" "${still_args[@]}" --output "${output_file}"
 
     capture_index=$((capture_index + 1))
 done

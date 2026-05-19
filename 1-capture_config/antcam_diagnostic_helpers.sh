@@ -258,15 +258,18 @@ report_upload_worker_repeat_summary_for_home() {
 }
 
 report_diagnostic_payload() {
-    local user_home
+    local user_home effective_user
     user_home="$(resolve_effective_home)" || die "could not resolve user home for diagnostic"
+    effective_user="$(resolve_effective_user || true)"
+    [[ -n "${effective_user}" ]] || effective_user="$(id -un)"
 
-    local capture_dir upload_dir queue_db state_file upload_worker_log_file
+    local capture_dir upload_dir queue_db state_file recording_last_start_state_file upload_worker_log_file
     local focus_file fps_file length_file segment_file loop_file
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    recording_last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
     upload_worker_log_file="${user_home%/}/.local/state/antscihub-upload/antscihub-upload.log"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
@@ -306,9 +309,10 @@ report_diagnostic_payload() {
         capture_subshell_output service_journal service_journal_rc journalctl -u "${DEFAULT_UPLOAD_SERVICE_NAME}" -n 120 --no-pager
     fi
 
-    local upload_worker_log_tail recording_state_tail
+    local upload_worker_log_tail recording_state_tail recording_last_start_state_tail
     upload_worker_log_tail="$(read_file_tail_for_payload "${upload_worker_log_file}" 120)"
     recording_state_tail="$(read_file_tail_for_payload "${state_file}" 80)"
+    recording_last_start_state_tail="$(read_file_tail_for_payload "${recording_last_start_state_file}" 120)"
 
     local upload_worker_processes upload_worker_processes_rc
     capture_subshell_output upload_worker_processes upload_worker_processes_rc report_upload_worker_process_snapshot
@@ -413,6 +417,7 @@ report_diagnostic_payload() {
     orphan_worker_pids="$(truncate_text_for_payload "${orphan_worker_pids}" 2000)"
     legacy_upload_unit_scan="$(truncate_text_for_payload "${legacy_upload_unit_scan}" 12000)"
     recording_state_tail="$(truncate_text_for_payload "${recording_state_tail}" 12000)"
+    recording_last_start_state_tail="$(truncate_text_for_payload "${recording_last_start_state_tail}" 12000)"
     focus_file_text="$(truncate_text_for_payload "${focus_file_text}" 4000)"
     fps_file_text="$(truncate_text_for_payload "${fps_file_text}" 4000)"
     length_file_text="$(truncate_text_for_payload "${length_file_text}" 4000)"
@@ -433,14 +438,16 @@ report_diagnostic_payload() {
     payload+=",\"service\":\"antcam-cli\""
     payload+=",\"topic\":\"$(json_escape "${topic}")\""
     payload+=",\"message\":\"AntCam diagnostic payload\""
-    payload+=",\"diagnostic_version\":\"2\""
+    payload+=",\"diagnostic_version\":\"3\""
     payload+=",\"host\":\"$(json_escape "${hostname_value}")\""
     payload+=",\"kernel\":\"$(json_escape "${kernel_value}")\""
+    payload+=",\"effective_user\":\"$(json_escape "${effective_user}")\""
     payload+=",\"effective_home\":\"$(json_escape "${user_home}")\""
     payload+=",\"capture_dir\":\"$(json_escape "${capture_dir}")\""
     payload+=",\"upload_dir\":\"$(json_escape "${upload_dir}")\""
     payload+=",\"queue_db\":\"$(json_escape "${queue_db}")\""
     payload+=",\"recording_state_file\":\"$(json_escape "${state_file}")\""
+    payload+=",\"recording_last_start_state_file\":\"$(json_escape "${recording_last_start_state_file}")\""
     payload+=",\"upload_worker_log_file\":\"$(json_escape "${upload_worker_log_file}")\""
     payload+=",\"capture_report_rc\":\"$(json_escape "${capture_rc}")\""
     payload+=",\"upload_settings_report_rc\":\"$(json_escape "${upload_settings_rc}")\""
@@ -490,6 +497,7 @@ report_diagnostic_payload() {
     payload+=",\"legacy_upload_units_raw\":\"$(json_escape "${legacy_upload_unit_scan}")\""
     payload+=",\"upload_worker_log_tail_raw\":\"$(json_escape "${upload_worker_log_tail}")\""
     payload+=",\"recording_state_tail_raw\":\"$(json_escape "${recording_state_tail}")\""
+    payload+=",\"recording_last_start_state_tail_raw\":\"$(json_escape "${recording_last_start_state_tail}")\""
     payload+=",\"focus_file\":\"$(json_escape "${focus_file}")\""
     payload+=",\"focus_file_raw\":\"$(json_escape "${focus_file_text}")\""
     payload+=",\"fps_file\":\"$(json_escape "${fps_file}")\""
@@ -514,4 +522,3 @@ report_diagnostic_payload() {
 
     die "failed to write diagnostic payload file"
 }
-

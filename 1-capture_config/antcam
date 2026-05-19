@@ -20,6 +20,8 @@ DEFAULT_LOOP_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-loop.txt"
 LOOP_SETTINGS_RELATIVE_PATH="${ANTCAM_LOOP_SETTINGS_RELATIVE_PATH:-${DEFAULT_LOOP_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
 RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
+DEFAULT_RECORDING_LAST_START_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-last-start-context.env"
+RECORDING_LAST_START_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_LAST_START_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_LAST_START_STATE_RELATIVE_PATH}}"
 DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-profile.txt"
 UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-retention.txt"
@@ -187,11 +189,50 @@ home_for_user() {
     printf '%s\n' "${user_home}"
 }
 
+resolve_upload_service_user() {
+    local service_user=""
+    command -v systemctl >/dev/null 2>&1 || return 1
+
+    service_user="$(systemctl show "${DEFAULT_UPLOAD_SERVICE_NAME}" -p User --value 2>/dev/null || true)"
+    service_user="$(printf '%s' "${service_user}" | tr -d '[:space:]')"
+    [[ -n "${service_user}" ]] || return 1
+    [[ "${service_user}" != "root" ]] || return 1
+    printf '%s\n' "${service_user}"
+}
+
+resolve_effective_user() {
+    if [[ -n "${ANTCAM_EFFECTIVE_USER:-}" ]]; then
+        printf '%s\n' "${ANTCAM_EFFECTIVE_USER}"
+        return 0
+    fi
+
+    if [[ "$(id -u)" -eq 0 ]]; then
+        if [[ -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+            printf '%s\n' "${SUDO_USER}"
+            return 0
+        fi
+
+        local service_user
+        if service_user="$(resolve_upload_service_user)"; then
+            printf '%s\n' "${service_user}"
+            return 0
+        fi
+    fi
+
+    id -un
+}
+
 resolve_effective_home() {
-    if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
-        local sudo_home
-        if sudo_home="$(home_for_user "${SUDO_USER}")"; then
-            printf '%s\n' "${sudo_home}"
+    if [[ -n "${ANTCAM_EFFECTIVE_HOME:-}" ]]; then
+        printf '%s\n' "${ANTCAM_EFFECTIVE_HOME}"
+        return 0
+    fi
+
+    local effective_user effective_home
+    effective_user="$(resolve_effective_user || true)"
+    if [[ -n "${effective_user}" ]]; then
+        if effective_home="$(home_for_user "${effective_user}")"; then
+            printf '%s\n' "${effective_home}"
             return 0
         fi
     fi
@@ -204,6 +245,18 @@ resolve_effective_home() {
     local current_user
     current_user="$(id -un)"
     home_for_user "${current_user}"
+}
+
+is_service_execution_context() {
+    if [[ -n "${INVOCATION_ID:-}" || -n "${JOURNAL_STREAM:-}" ]]; then
+        return 0
+    fi
+
+    if [[ "$(id -u)" -eq 0 && ( -z "${SUDO_USER:-}" || "${SUDO_USER}" == "root" ) ]]; then
+        return 0
+    fi
+
+    return 1
 }
 
 resolve_desktop_dir_for_home() {
@@ -358,6 +411,37 @@ resolve_recording_state_file_for_home() {
     local desktop_dir
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
     printf '%s\n' "${desktop_dir%/}/${RECORDING_STATE_RELATIVE_PATH#./}"
+}
+
+resolve_recording_last_start_state_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_RECORDING_LAST_START_STATE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_RECORDING_LAST_START_STATE_FILE}"
+        return 0
+    fi
+
+    if [[ "${RECORDING_LAST_START_STATE_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${RECORDING_LAST_START_STATE_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${RECORDING_LAST_START_STATE_RELATIVE_PATH#./}"
+}
+
+write_recording_last_start_context_for_home() {
+    local user_home="$1"
+    local context_payload="$2"
+    local context_file context_dir context_tmp
+    context_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
+    context_dir="$(dirname "${context_file}")"
+    mkdir -p "${context_dir}"
+    context_tmp="$(mktemp "${context_dir}/.recording-last-start.XXXXXX")"
+    printf '%s\n' "${context_payload}" > "${context_tmp}"
+    mv -f "${context_tmp}" "${context_file}"
+    printf '%s\n' "${context_file}"
 }
 
 resolve_upload_setting_file_for_home() {
@@ -1555,7 +1639,7 @@ report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
-    local capture_dir upload_dir focus_file focus_value state_file
+    local capture_dir upload_dir focus_file focus_value state_file last_start_state_file
     local fps_file fps_value length_file length_value segment_file segment_value loop_file loop_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
@@ -1565,6 +1649,7 @@ report_capture_settings() {
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
     loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
 
     if [[ -f "${focus_file}" ]]; then
         focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
@@ -1612,30 +1697,51 @@ report_capture_settings() {
     echo "loop_settings_file=${loop_file}"
     echo "recording_loop=${loop_value}"
     echo "recording_state_file=${state_file}"
+    echo "recording_last_start_state_file=${last_start_state_file}"
 }
 
 start_recording() {
     local requested_script_name="$1"
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for recording path"
+    local effective_user
+    effective_user="$(resolve_effective_user || true)"
+    [[ -n "${effective_user}" ]] || effective_user="$(id -un)"
 
     local capture_dir upload_dir record_script focus_value focus_file
     local fps_value fps_file length_value length_file segment_value segment_file
     local loop_value loop_file script_basename photos_one_shot_guard
+    local length_source loop_source strict_service_context
+    local recording_last_start_state_file last_start_context_payload
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    recording_last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
     record_script="$(resolve_recording_script_path "${requested_script_name}")"
     script_basename="$(basename "${record_script}")"
     focus_value="$(read_focus_setting_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_value="$(read_fps_setting_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
-    length_value="$(read_length_setting_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
-    loop_value="$(read_loop_setting_for_home "${user_home}")"
     loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    if [[ -f "${length_file}" ]]; then
+        length_source="file"
+    else
+        length_source="default"
+    fi
+    if [[ -f "${loop_file}" ]]; then
+        loop_source="file"
+    else
+        loop_source="default"
+    fi
+    length_value="$(read_length_setting_for_home "${user_home}")"
+    loop_value="$(read_loop_setting_for_home "${user_home}")"
+    strict_service_context="false"
+    if is_service_execution_context; then
+        strict_service_context="true"
+    fi
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
     if [[ "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
         segment_value="$(read_segment_setting_for_home "${user_home}")"
@@ -1644,6 +1750,10 @@ start_recording() {
     fi
     photos_one_shot_guard="false"
     if [[ "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
+        if [[ "${strict_service_context}" == "true" && "${loop_source}" == "default" ]]; then
+            die "photos start refused in service context: loop settings file missing at ${loop_file}. set loop explicitly first (for example: antcam loop set none)"
+        fi
+
         if [[ "${loop_value}" == "none" ]]; then
             # Compatibility guard: force one-shot for photos when loop is disabled,
             # including older deployed photos.sh variants.
@@ -1651,6 +1761,38 @@ start_recording() {
             photos_one_shot_guard="true"
         fi
     fi
+
+    last_start_context_payload="$(
+        cat <<EOF
+timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+effective_user=${effective_user}
+effective_home=${user_home}
+invoking_user=$(id -un)
+invoking_uid=$(id -u)
+service_context=${strict_service_context}
+invocation_id=${INVOCATION_ID:-}
+requested_script_name=${requested_script_name}
+resolved_script_path=${record_script}
+resolved_script_basename=${script_basename}
+capture_dir=${capture_dir}
+upload_dir=${upload_dir}
+focus_file=${focus_file}
+focus_value=${focus_value}
+fps_file=${fps_file}
+fps_value=${fps_value}
+length_file=${length_file}
+length_value=${length_value}
+length_source=${length_source}
+segment_file=${segment_file}
+segment_value=${segment_value}
+loop_file=${loop_file}
+loop_value=${loop_value}
+loop_source=${loop_source}
+photos_one_shot_guard=${photos_one_shot_guard}
+recording_state_file=${recording_state_file}
+EOF
+    )"
+    write_recording_last_start_context_for_home "${user_home}" "${last_start_context_payload}" >/dev/null 2>&1 || true
 
     if [[ -f "${recording_state_file}" ]]; then
         existing_record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
@@ -1669,14 +1811,18 @@ start_recording() {
     chmod +x "${record_script}" >/dev/null 2>&1 || true
 
     echo "capture directory: ${capture_dir}"
+    echo "effective user/home: ${effective_user} / ${user_home}"
     echo "recording script: ${record_script}"
     echo "focus lens-position: ${focus_value}"
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
+    echo "recording length source: ${length_source}"
     if [[ "${photos_one_shot_guard}" == "true" ]]; then
         echo "photos one-shot guard: enabled (loop=none forces length=0s)"
     fi
     echo "recording loop: ${loop_value}"
+    echo "recording loop source: ${loop_source}"
+    echo "service context: ${strict_service_context}"
     if [[ -n "${segment_value}" ]]; then
         echo "recording segment: ${segment_value}"
     else
@@ -1684,6 +1830,7 @@ start_recording() {
     fi
     echo "recording upload dir: ${upload_dir}"
     echo "recording state file: ${recording_state_file}"
+    echo "recording last-start context file: ${recording_last_start_state_file}"
 
     publish_recording_event \
         "recording_start" \

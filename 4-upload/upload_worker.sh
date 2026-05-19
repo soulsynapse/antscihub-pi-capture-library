@@ -1028,15 +1028,21 @@ register_artifact_if_needed() {
 
     existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
     if [[ -z "${existing_id}" ]]; then
+        existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' AND inode=${inode} AND size_bytes=${size_bytes} ORDER BY id DESC LIMIT 1;")"
+    fi
+    if [[ -z "${existing_id}" ]]; then
         existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' ORDER BY id DESC LIMIT 1;")"
     fi
 
     if [[ -z "${existing_id}" ]]; then
         db_exec "
-INSERT INTO artifacts (file_key, relative_path, full_path, inode, size_bytes, mtime_epoch, status, retry_count, next_retry_epoch, last_error, discovered_at_epoch, updated_at_epoch, last_seen_epoch)
+INSERT OR IGNORE INTO artifacts (file_key, relative_path, full_path, inode, size_bytes, mtime_epoch, status, retry_count, next_retry_epoch, last_error, discovered_at_epoch, updated_at_epoch, last_seen_epoch)
 VALUES ('$(sql_escape "${file_key}")', '$(sql_escape "${relative_path}")', '$(sql_escape "${file}")', ${inode}, ${size_bytes}, ${mtime_epoch}, 'QUEUED', 0, 0, '', ${current_epoch}, ${current_epoch}, ${current_epoch});
 "
         existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
+        if [[ -z "${existing_id}" ]]; then
+            existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' AND inode=${inode} AND size_bytes=${size_bytes} ORDER BY id DESC LIMIT 1;")"
+        fi
     else
         db_exec "
 UPDATE artifacts

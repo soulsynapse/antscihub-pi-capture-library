@@ -229,9 +229,11 @@ class UploadWorker:
         self.seen_cache_max_entries = max(1000, _as_int("SEEN_CACHE_MAX_ENTRIES", 50000))
         self.stability_cache_max_entries = max(1000, _as_int("STABILITY_CACHE_MAX_ENTRIES", 50000))
         self.max_scan_files_per_loop = max(1, _as_int("MAX_SCAN_FILES_PER_LOOP", 500))
-        self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 200))
+        self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 50))
+        self.max_queued_attempts_per_loop = max(1, _as_int("MAX_QUEUED_ATTEMPTS_PER_LOOP", 10))
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
+        self.rate_limit_cooldown_seconds = max(30, _as_int("RATE_LIMIT_COOLDOWN_SECONDS", 300))
         if self.attempt_log_max_rows < 0:
             self.attempt_log_max_rows = 0
 
@@ -256,6 +258,8 @@ class UploadWorker:
         self.scan_dir_queue: Deque[str] = deque()
         self.scan_file_queue: Deque[str] = deque()
         self.last_attempt_log_prune_epoch = 0
+        self.global_retry_pause_until_epoch = 0
+        self.last_global_retry_pause_notice_epoch = 0
         self.running = True
 
         self._lock_handle = None
@@ -967,34 +971,28 @@ CREATE TABLE IF NOT EXISTS attempt_log (
         return f"{self.current_settings.remote_name}:{relative_path}"
 
     def remote_path_exists(self, remote_target: str) -> Tuple[bool, str]:
-        command = [
-            "rclone",
-            "lsf",
-            "--files-only",
-            "--max-depth",
-            "1",
-            "--contimeout",
-            f"{self.rclone_connect_timeout_seconds}s",
-            "--timeout",
-            f"{self.rclone_io_timeout_seconds}s",
-            remote_target,
-        ]
-        try:
-            result = subprocess.run(
-                command,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.rclone_lsf_timeout_seconds,
-            )
-        except subprocess.TimeoutExpired:
+        rc, timed_out, output_text = self._run_command_with_log(
+            [
+                "rclone",
+                "lsf",
+                "--files-only",
+                "--max-depth",
+                "1",
+                "--contimeout",
+                f"{self.rclone_connect_timeout_seconds}s",
+                "--timeout",
+                f"{self.rclone_io_timeout_seconds}s",
+                remote_target,
+            ],
+            timeout_seconds=self.rclone_lsf_timeout_seconds,
+        )
+        if timed_out:
             return False, "rclone_lsf_timeout"
-        except Exception:
+        if rc != 0:
+            if self._looks_like_rate_limited(output_text):
+                return False, "rclone_rate_limited"
             return False, "rclone_lsf_failed"
-
-        if result.returncode != 0:
-            return False, "rclone_lsf_failed"
-        return bool(result.stdout.strip()), ""
+        return bool((output_text or "").strip()), ""
 
     def calculate_backoff(self, attempt: int) -> int:
         delay = self.retry_base_delay_seconds * (2 ** max(attempt - 1, 0))
@@ -1033,6 +1031,12 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                 event_reason = final_error
             else:
                 backoff = self.calculate_backoff(new_retry_count)
+                if self._is_rate_limited_error(final_error):
+                    backoff = max(backoff, self.rate_limit_cooldown_seconds)
+                    self.global_retry_pause_until_epoch = max(
+                        self.global_retry_pause_until_epoch,
+                        current_epoch + self.rate_limit_cooldown_seconds,
+                    )
                 next_retry_epoch = current_epoch + backoff
                 self.db_exec(
                     "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",
@@ -1180,6 +1184,30 @@ WHERE id=?;
         return any(hint in lowered for hint in hints)
 
     @staticmethod
+    def _looks_like_rate_limited(output_text: str) -> bool:
+        lowered = output_text.lower()
+        hints = (
+            "rate limit",
+            "rate-limit",
+            "too many requests",
+            "http error 429",
+            "status code 429",
+            "quota exceeded",
+            "userratelimitexceeded",
+            "throttl",
+            "slow down",
+            "retry later",
+        )
+        return any(hint in lowered for hint in hints)
+
+    @staticmethod
+    def _is_rate_limited_error(reason: str) -> bool:
+        return reason in {
+            "rclone_rate_limited",
+            "remote_rate_limited",
+        }
+
+    @staticmethod
     def _file_size(file_path: str) -> int:
         try:
             return int(os.path.getsize(file_path))
@@ -1216,6 +1244,8 @@ WHERE id=?;
                 timeout_seconds=self.rclone_lsf_timeout_seconds,
             )
             if size_rc != 0:
+                if self._looks_like_rate_limited(output_text):
+                    return False, "rclone_rate_limited"
                 return False, "rclone_lsjson_failed"
             try:
                 parsed = json.loads(output_text or "{}")
@@ -1265,6 +1295,10 @@ WHERE id=?;
                 if exists_ok:
                     return True, "target_cloud_exists", destination_label, remote_target, file_size, True
                 return False, exists_reason, "", "", file_size, False
+            if self._looks_like_rate_limited(output_text):
+                return False, "rclone_rate_limited", "", "", file_size, False
+            if remote_exists_reason == "rclone_rate_limited":
+                return False, "remote_rate_limited", "", "", file_size, False
             if remote_exists_reason == "rclone_lsf_timeout":
                 return False, "rclone_lsf_timeout", "", "", file_size, False
             return False, "rclone_copy_failed", "", "", file_size, False
@@ -1665,13 +1699,12 @@ WHERE id IN (
     def get_due_artifacts(self, current_epoch: int) -> List[sqlite3.Row]:
         assert self.conn is not None
         self.conn.row_factory = sqlite3.Row
-        cursor = self.conn.execute(
+        retry_cursor = self.conn.execute(
             """
 SELECT id, full_path, relative_path, size_bytes, status
 FROM artifacts
-WHERE status='QUEUED' OR (status='RETRY_WAIT' AND next_retry_epoch <= ?)
+WHERE status='RETRY_WAIT' AND next_retry_epoch <= ?
 ORDER BY
-    CASE status WHEN 'RETRY_WAIT' THEN 0 ELSE 1 END ASC,
     next_retry_epoch ASC,
     discovered_at_epoch ASC,
     id ASC
@@ -1679,7 +1712,24 @@ LIMIT ?;
 """,
             (current_epoch, self.max_due_attempts_per_loop),
         )
-        return cursor.fetchall()
+        rows = list(retry_cursor.fetchall())
+        remaining = self.max_due_attempts_per_loop - len(rows)
+        if remaining <= 0:
+            return rows
+
+        queued_limit = min(remaining, self.max_queued_attempts_per_loop)
+        queued_cursor = self.conn.execute(
+            """
+SELECT id, full_path, relative_path, size_bytes, status
+FROM artifacts
+WHERE status='QUEUED'
+ORDER BY discovered_at_epoch ASC, id ASC
+LIMIT ?;
+""",
+            (queued_limit,),
+        )
+        rows.extend(list(queued_cursor.fetchall()))
+        return rows
 
     def resolve_due_artifact_path(self, full_path: str, relative_path: str) -> str:
         if full_path and os.path.isfile(full_path):
@@ -1695,6 +1745,13 @@ LIMIT ?;
         return ""
 
     def process_due_artifacts(self, current_epoch: int) -> None:
+        if self.global_retry_pause_until_epoch > current_epoch:
+            remaining = self.global_retry_pause_until_epoch - current_epoch
+            if current_epoch - self.last_global_retry_pause_notice_epoch >= 60:
+                self.log("WARN", f"Global retry pause active for {remaining}s due to rate limiting")
+                self.last_global_retry_pause_notice_epoch = current_epoch
+            return
+
         rows = self.get_due_artifacts(current_epoch)
         for row in rows:
             if not self.running:

@@ -99,11 +99,11 @@ antcam focus check
 - Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt` (defaults to `auto` if not set)
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
-- Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.sh`)
+- Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.py`)
 - Reads loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (defaults to `1m`; accepts `none`/`0` to disable loop scheduling)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.sh` -> `video-%05d.h264`, `photos.sh` -> `photos-%05d.jpg`)
+- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.py` -> `video-%05d.h264`, `photos.py` -> `photos-%05d.jpg`)
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
@@ -111,8 +111,8 @@ antcam focus check
 
 Bundled recording scripts:
 
-- `video.sh` -> configurable fps video (`antcam fps set <value>`, default `1`), configurable length/segment/loop (`antcam length set`, `antcam segment set`, `antcam loop set`), and focus from saved `lens-position` or `auto`
-- `photos.sh` -> loop-driven still-photo capture (`antcam loop set <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
+- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), configurable length/segment/loop (`antcam length set`, `antcam segment set`, `antcam loop set`), and focus from saved `lens-position` or `auto`
+- `photos.py` (with `photos.sh` retained as a compatibility launcher) -> loop-driven still-photo capture (`antcam loop set <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
 
 `antcam focus check` resolves the active user's Desktop path and then:
 

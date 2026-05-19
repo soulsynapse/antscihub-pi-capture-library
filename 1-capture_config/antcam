@@ -835,12 +835,17 @@ resolve_recording_script_path() {
     fi
     (( ${#search_dirs[@]} > 0 )) || die "recording script directories not found: ${RECORDING_SCRIPT_DIR}, ${repo_dir}"
 
-    local script_dir direct_path shell_path
+    local script_dir direct_path python_path shell_path
     for script_dir in "${search_dirs[@]}"; do
         direct_path="${script_dir}/${requested_name}"
+        python_path="${script_dir}/${requested_name}.py"
         shell_path="${script_dir}/${requested_name}.sh"
         if [[ -f "${direct_path}" ]]; then
             printf '%s\n' "${direct_path}"
+            return 0
+        fi
+        if [[ -f "${python_path}" ]]; then
+            printf '%s\n' "${python_path}"
             return 0
         fi
         if [[ -f "${shell_path}" ]]; then
@@ -1743,13 +1748,13 @@ start_recording() {
         strict_service_context="true"
     fi
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
-    if [[ "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
+    if [[ "${script_basename}" == "video.py" || "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
         segment_value="$(read_segment_setting_for_home "${user_home}")"
     else
         segment_value=""
     fi
     photos_one_shot_guard="false"
-    if [[ "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
+    if [[ "${script_basename}" == "photos.py" || "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
         if [[ "${strict_service_context}" == "true" && "${loop_source}" == "default" ]]; then
             die "photos start refused in service context: loop settings file missing at ${loop_file}. set loop explicitly first (for example: antcam loop set none)"
         fi
@@ -1861,7 +1866,7 @@ EOF
             ANTCAM_RECORDING_LOOP="${loop_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
-            bash "${record_script}"
+            "${record_script}"
     ) >> "${record_console_log}" 2>&1 &
     record_pid="$!"
 

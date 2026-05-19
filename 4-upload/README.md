@@ -82,12 +82,18 @@ While running:
 8. The worker does not rebuild a full recursive list each loop.
 9. For each scanned file candidate, run filter/maturity/stability/queue logic below.
 10. If paused, emit one `paused` event and skip upload attempts.
-11. If not paused, fetch due artifacts from SQLite and attempt up to `MAX_DUE_ATTEMPTS_PER_LOOP`.
-12. Sleep `SCAN_INTERVAL`.
+11. If not paused, enforce global retry pause (when active due to rate limiting) and skip attempts until pause expires.
+12. If not paused and no global retry pause, fetch due artifacts from SQLite and attempt:
+13. up to `MAX_DUE_ATTEMPTS_PER_LOOP` total
+14. with `RETRY_WAIT` due rows first
+15. then `QUEUED` rows capped by `MAX_QUEUED_ATTEMPTS_PER_LOOP`
+16. Sleep `SCAN_INTERVAL`.
 
 `SCAN_INTERVAL` default: `10` seconds.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
-`MAX_DUE_ATTEMPTS_PER_LOOP` default: `200`.
+`MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
+`MAX_QUEUED_ATTEMPTS_PER_LOOP` default: `10`.
+`RATE_LIMIT_COOLDOWN_SECONDS` default: `300`.
 
 ## Candidate File Filters
 
@@ -170,14 +176,12 @@ If found:
 
 When not paused, due rows are selected with:
 
-- `status='QUEUED'`
-- or `status='RETRY_WAIT' AND next_retry_epoch <= now`
-- ordered by:
-- `RETRY_WAIT` before `QUEUED`
-- then `next_retry_epoch ASC`
-- then `discovered_at_epoch ASC`
-- then `id ASC`
-- limited to `MAX_DUE_ATTEMPTS_PER_LOOP`
+- First query `status='RETRY_WAIT' AND next_retry_epoch <= now`
+- Ordered by `next_retry_epoch ASC`, then `discovered_at_epoch ASC`, then `id ASC`
+- Limited to `MAX_DUE_ATTEMPTS_PER_LOOP`
+- If room remains, query `status='QUEUED'`
+- Ordered by `discovered_at_epoch ASC`, then `id ASC`
+- `QUEUED` rows additionally capped by `MAX_QUEUED_ATTEMPTS_PER_LOOP`
 
 Per due row:
 
@@ -254,7 +258,8 @@ Behavior:
 6. If copy fails but output text matches immutable/existing hints, do the same remote size validation before success.
 7. If size validation fails, return explicit failure reasons such as `remote_destination_conflict` or `rclone_lsjson_*`.
 8. Else if earlier lsf timed out -> `rclone_lsf_timeout`.
-9. Else -> `rclone_copy_failed`.
+9. If command output indicates provider throttling/rate-limit -> `rclone_rate_limited` (or `remote_rate_limited` from pre-check).
+10. Else -> `rclone_copy_failed`.
 
 ## Success Commit
 
@@ -297,14 +302,17 @@ After all targets fail:
 6. Emit `dead_letter`.
 7. Else:
 8. Backoff = `RETRY_BASE_DELAY_SECONDS * 2^(attempt-1)` capped by `RETRY_MAX_DELAY_SECONDS`.
-9. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff`, set `last_error`, set `updated_at_epoch`.
-10. Emit `retry` with reason `retry_backoff_<N>s`.
+9. If `final_error` is rate-limit (`rclone_rate_limited|remote_rate_limited`), enforce minimum backoff of `RATE_LIMIT_COOLDOWN_SECONDS`.
+10. If `final_error` is rate-limit, set global retry pause until `now + RATE_LIMIT_COOLDOWN_SECONDS`.
+11. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff`, set `last_error`, set `updated_at_epoch`.
+12. Emit `retry` with reason `retry_backoff_<N>s`.
 
 Defaults:
 
 - `MAX_RETRIES=5`
 - `RETRY_BASE_DELAY_SECONDS=30`
 - `RETRY_MAX_DELAY_SECONDS=600`
+- `RATE_LIMIT_COOLDOWN_SECONDS=300`
 
 ## Exception Handling Around Attempts
 

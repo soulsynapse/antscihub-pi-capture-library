@@ -96,6 +96,16 @@ require_inputs() {
         log_error "No recording scripts found in: $RECORDING_SCRIPT_SOURCE_DIR"
         exit 1
     fi
+
+    if [[ ! -f "${RECORDING_SCRIPT_SOURCE_DIR}/video.py" ]]; then
+        log_error "Missing video python worker: ${RECORDING_SCRIPT_SOURCE_DIR}/video.py"
+        exit 1
+    fi
+
+    if [[ ! -f "${RECORDING_SCRIPT_SOURCE_DIR}/photos.py" ]]; then
+        log_error "Missing photos python worker: ${RECORDING_SCRIPT_SOURCE_DIR}/photos.py"
+        exit 1
+    fi
 }
 
 determine_upload_user() {
@@ -221,8 +231,10 @@ install_camera_cli() {
     log_info "Installing recording scripts to ${RECORDING_SCRIPT_TARGET_DIR}"
     mkdir -p "${RECORDING_SCRIPT_TARGET_DIR}"
     rm -f "${RECORDING_SCRIPT_TARGET_DIR}"/*.sh
+    rm -f "${RECORDING_SCRIPT_TARGET_DIR}"/*.py
     cp -a "${RECORDING_SCRIPT_SOURCE_DIR}/." "${RECORDING_SCRIPT_TARGET_DIR}/"
     find "${RECORDING_SCRIPT_TARGET_DIR}" -type f -name '*.sh' -exec chmod 0755 {} +
+    find "${RECORDING_SCRIPT_TARGET_DIR}" -type f -name '*.py' -exec chmod 0755 {} +
 
     if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
         log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"

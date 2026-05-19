@@ -18,6 +18,7 @@ import json
 import os
 import random
 import re
+import shlex as _shlex
 import shutil
 import signal
 import socket
@@ -25,6 +26,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
@@ -222,6 +224,9 @@ class UploadWorker:
         self.rclone_copy_timeout_seconds = max(30, _as_int("RCLONE_COPY_TIMEOUT_SECONDS", 1800))
         self.rclone_connect_timeout_seconds = max(5, _as_int("RCLONE_CONNECT_TIMEOUT_SECONDS", 15))
         self.rclone_io_timeout_seconds = max(10, _as_int("RCLONE_IO_TIMEOUT_SECONDS", 120))
+        self.file_identity_sample_bytes = max(4096, _as_int("FILE_IDENTITY_SAMPLE_BYTES", 65536))
+        self.seen_cache_max_entries = max(1000, _as_int("SEEN_CACHE_MAX_ENTRIES", 50000))
+        self.stability_cache_max_entries = max(1000, _as_int("STABILITY_CACHE_MAX_ENTRIES", 50000))
 
         self.device_id_cache: Optional[str] = None
         self.mqtt_publish_warning_emitted = False
@@ -240,10 +245,12 @@ class UploadWorker:
         )
         self.seen_file_detections: Dict[str, bool] = {}
         self.seen_file_exclusions: Dict[str, bool] = {}
+        self.file_stability_observations: Dict[str, Tuple[int, int]] = {}
         self.running = True
 
         self._lock_handle = None
         self.conn: Optional[sqlite3.Connection] = None
+        self._db_tx_depth = 0
 
     def _resolve_desktop_dir(self) -> str:
         home = _env("HOME", "")
@@ -620,7 +627,8 @@ class UploadWorker:
     def db_exec(self, sql: str, params: Sequence[object] = ()) -> None:
         assert self.conn is not None
         self.conn.execute(sql, tuple(params))
-        self.conn.commit()
+        if self._db_tx_depth == 0:
+            self.conn.commit()
 
     def db_query_one(self, sql: str, params: Sequence[object] = ()) -> Optional[sqlite3.Row]:
         assert self.conn is not None
@@ -628,6 +636,24 @@ class UploadWorker:
         cursor = self.conn.execute(sql, tuple(params))
         row = cursor.fetchone()
         return row
+
+    @contextmanager
+    def db_transaction(self):
+        assert self.conn is not None
+        if self._db_tx_depth == 0:
+            self.conn.execute("BEGIN IMMEDIATE;")
+        self._db_tx_depth += 1
+        try:
+            yield
+        except Exception:
+            self._db_tx_depth -= 1
+            if self._db_tx_depth == 0:
+                self.conn.rollback()
+            raise
+        else:
+            self._db_tx_depth -= 1
+            if self._db_tx_depth == 0:
+                self.conn.commit()
 
     def init_db(self) -> None:
         schema = """
@@ -682,6 +708,10 @@ CREATE TABLE IF NOT EXISTS attempt_log (
         self.conn.executescript(schema)
         self.conn.commit()
 
+    def normalize_artifact_status_values(self) -> None:
+        # Normalize legacy lowercase/mixed-case status values into canonical uppercase.
+        self.db_exec("UPDATE artifacts SET status=UPPER(status) WHERE status<>UPPER(status);")
+
     def archive_legacy_state(self) -> None:
         if os.path.isfile(self.legacy_processed_file):
             archive_name = f"{self.legacy_processed_file}.legacy.{_epoch_now()}"
@@ -692,27 +722,27 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                 pass
 
     def recover_inflight_after_unclean_shutdown(self) -> None:
-        row = self.db_query_one("SELECT COUNT(*) AS count FROM artifacts WHERE status='IN_FLIGHT';")
-        in_flight_count = int(row["count"] or 0) if row else 0
-        if in_flight_count <= 0:
+        assert self.conn is not None
+        self.conn.row_factory = sqlite3.Row
+        rows = self.conn.execute(
+            "SELECT id, relative_path, IFNULL(size_bytes, 0) AS size_bytes FROM artifacts WHERE status='IN_FLIGHT';"
+        ).fetchall()
+        if not rows:
             return
 
         now = _epoch_now()
-        self.db_exec(
-            """
-UPDATE artifacts
-SET status='RETRY_WAIT',
-    next_retry_epoch=?,
-    last_error=CASE
-        WHEN last_error='' THEN 'recovered_after_unclean_shutdown'
-        ELSE last_error
-    END,
-    updated_at_epoch=?
-WHERE status='IN_FLIGHT';
-""",
-            (now, now),
-        )
-        self.log("WARN", f"Recovered {in_flight_count} in-flight artifact(s) after unclean shutdown")
+        for row in rows:
+            artifact_id = int(row["id"])
+            relative_path = str(row["relative_path"] or "")
+            size_bytes = str(row["size_bytes"] or 0)
+            self.schedule_retry_or_dead_letter(
+                artifact_id=artifact_id,
+                relative_path=relative_path,
+                size_bytes=size_bytes,
+                current_epoch=now,
+                final_error="recovered_after_unclean_shutdown",
+            )
+        self.log("WARN", f"Recovered {len(rows)} in-flight artifact(s) after unclean shutdown")
 
     def acquire_lock(self) -> None:
         os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
@@ -749,13 +779,36 @@ WHERE status='IN_FLIGHT';
         return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
     @staticmethod
-    def make_file_identity(file_path: str, relative_path: str) -> str:
+    def _trim_seen_cache(cache: Dict[str, bool], max_entries: int) -> None:
+        while len(cache) > max_entries:
+            cache.pop(next(iter(cache)))
+
+    def _sample_file_hash(self, file_path: str, size_bytes: int) -> str:
+        sample_bytes = self.file_identity_sample_bytes
+        try:
+            with open(file_path, "rb") as handle:
+                if size_bytes <= (sample_bytes * 2):
+                    data = handle.read()
+                else:
+                    head = handle.read(sample_bytes)
+                    handle.seek(max(size_bytes - sample_bytes, 0))
+                    tail = handle.read(sample_bytes)
+                    data = head + b"\x00" + tail
+        except Exception:
+            return "unreadable"
+        return hashlib.sha256(data).hexdigest()
+
+    def make_file_identity(self, file_path: str, relative_path: str) -> str:
         try:
             st = os.stat(file_path, follow_symlinks=False)
-            stat_fields = f"{st.st_ino}:{st.st_size}"
+            size_bytes = int(st.st_size)
+            mtime_ns = int(getattr(st, "st_mtime_ns", int(st.st_mtime * 1_000_000_000)))
+            stat_fields = f"{st.st_dev}:{size_bytes}:{mtime_ns}"
         except OSError:
-            stat_fields = "0:0"
-        return f"{relative_path}|{stat_fields}"
+            size_bytes = 0
+            stat_fields = "0:0:0"
+        sample_hash = self._sample_file_hash(file_path, size_bytes)
+        return f"{relative_path}|{stat_fields}|{sample_hash}"
 
     @staticmethod
     def make_file_detection_key(file_path: str, relative_path: str) -> str:
@@ -772,6 +825,7 @@ WHERE status='IN_FLIGHT';
         size = self._file_size(file_path)
         self.log("INFO", f"Detected file candidate: {relative_path} (size={size} bytes)")
         self.seen_file_detections[key] = True
+        self._trim_seen_cache(self.seen_file_detections, self.seen_cache_max_entries)
 
     @staticmethod
     def is_uploadable(basename: str) -> bool:
@@ -823,6 +877,7 @@ WHERE status='IN_FLIGHT';
             return
         self.log("DEBUG", f"Skipping excluded file: {relative_path} reason={reason}")
         self.seen_file_exclusions[key] = True
+        self._trim_seen_cache(self.seen_file_exclusions, self.seen_cache_max_entries)
 
     @classmethod
     def is_still_image(cls, basename: str) -> bool:
@@ -854,12 +909,19 @@ WHERE status='IN_FLIGHT';
         return self.file_stability_interval_default
 
     def is_file_stable(self, file_path: str, interval_seconds: int) -> bool:
-        initial_size = self._file_size(file_path)
-        time.sleep(max(interval_seconds, 0))
-        if not os.path.isfile(file_path):
+        current_size = self._file_size(file_path)
+        now = _epoch_now()
+        prior = self.file_stability_observations.get(file_path)
+        self.file_stability_observations[file_path] = (current_size, now)
+        while len(self.file_stability_observations) > self.stability_cache_max_entries:
+            self.file_stability_observations.pop(next(iter(self.file_stability_observations)))
+
+        if prior is None:
             return False
-        final_size = self._file_size(file_path)
-        return initial_size == final_size
+        prior_size, first_seen_epoch = prior
+        if current_size != prior_size:
+            return False
+        return (now - first_seen_epoch) >= max(interval_seconds, 0)
 
     def init_open_file_check_tool(self) -> None:
         if _cmd_exists("lsof"):
@@ -928,6 +990,51 @@ WHERE status='IN_FLIGHT';
         delay = self.retry_base_delay_seconds * (2 ** max(attempt - 1, 0))
         return min(delay, self.retry_max_delay_seconds)
 
+    def schedule_retry_or_dead_letter(
+        self,
+        artifact_id: int,
+        relative_path: str,
+        size_bytes: str,
+        current_epoch: int,
+        final_error: str,
+    ) -> None:
+        event_status = ""
+        event_attempt = ""
+        event_reason = ""
+
+        with self.db_transaction():
+            state_row = self.db_query_one("SELECT status, retry_count FROM artifacts WHERE id=?;", (artifact_id,))
+            if state_row is None:
+                return
+
+            current_status = str(state_row["status"] or "").upper()
+            if current_status in {"SHIPPED", "PRUNED", "DEAD_LETTER"}:
+                return
+
+            retry_count = int(state_row["retry_count"] or 0)
+            new_retry_count = retry_count + 1
+            if new_retry_count >= self.max_retries:
+                self.db_exec(
+                    "UPDATE artifacts SET status='DEAD_LETTER', retry_count=?, next_retry_epoch=0, last_error=?, updated_at_epoch=? WHERE id=?;",
+                    (new_retry_count, final_error, current_epoch, artifact_id),
+                )
+                event_status = "dead_letter"
+                event_attempt = str(new_retry_count)
+                event_reason = final_error
+            else:
+                backoff = self.calculate_backoff(new_retry_count)
+                next_retry_epoch = current_epoch + backoff
+                self.db_exec(
+                    "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",
+                    (new_retry_count, next_retry_epoch, final_error, current_epoch, artifact_id),
+                )
+                event_status = "retry"
+                event_attempt = str(new_retry_count)
+                event_reason = f"retry_backoff_{backoff}s"
+
+        if event_status:
+            self.emit_upload_event(event_status, relative_path, "", size_bytes, event_attempt, event_reason, "")
+
     def set_artifact_target_status(
         self,
         artifact_id: int,
@@ -972,18 +1079,6 @@ VALUES (?, ?, ?, ?, ?, ?);
         current_epoch = _epoch_now()
 
         existing = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
-        if existing is None:
-            existing = self.db_query_one(
-                "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? AND status='SHIPPED' ORDER BY id DESC LIMIT 1;",
-                (relative_path, inode, size_bytes),
-            )
-        if existing is None:
-            existing = self.db_query_one(
-                "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? ORDER BY id DESC LIMIT 1;",
-                (relative_path, inode, size_bytes),
-            )
-        if existing is None:
-            existing = self.db_query_one("SELECT id FROM artifacts WHERE relative_path=? ORDER BY id DESC LIMIT 1;", (relative_path,))
 
         if existing is None:
             self.db_exec(
@@ -996,11 +1091,6 @@ INSERT OR IGNORE INTO artifacts (
                 (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, current_epoch),
             )
             row = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
-            if row is None:
-                row = self.db_query_one(
-                    "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? ORDER BY id DESC LIMIT 1;",
-                    (relative_path, inode, size_bytes),
-                )
             if row is None:
                 raise RuntimeError(f"unable to register artifact for {relative_path}")
             return int(row["id"]), True
@@ -1027,8 +1117,8 @@ WHERE id=?;
         row = self.db_query_one("SELECT status, next_retry_epoch FROM artifacts WHERE id=?;", (artifact_id,))
         if row is None:
             return False
-        status = str(row["status"] or "")
-        if status in {"SHIPPED", "PRUNED", "DEAD_LETTER"}:
+        status = str(row["status"] or "").upper()
+        if status in {"SHIPPED", "PRUNED", "DEAD_LETTER", "IN_FLIGHT"}:
             return False
         if status == "RETRY_WAIT":
             next_retry = int(row["next_retry_epoch"] or 0)
@@ -1098,9 +1188,45 @@ WHERE id=?;
         if not self.current_settings.remote_path:
             destination_label = f"{self.current_settings.remote_name}:"
 
+        def cloud_exists_and_matches_size() -> Tuple[bool, str]:
+            size_rc, _timed_out, output_text = self._run_command_with_log(
+                [
+                    "rclone",
+                    "lsjson",
+                    "--stat",
+                    "--files-only",
+                    "--no-mimetype",
+                    "--no-modtime",
+                    "--contimeout",
+                    f"{self.rclone_connect_timeout_seconds}s",
+                    "--timeout",
+                    f"{self.rclone_io_timeout_seconds}s",
+                    remote_target,
+                ],
+                timeout_seconds=self.rclone_lsf_timeout_seconds,
+            )
+            if size_rc != 0:
+                return False, "rclone_lsjson_failed"
+            try:
+                parsed = json.loads(output_text or "{}")
+            except Exception:
+                return False, "rclone_lsjson_parse_failed"
+            item = parsed[0] if isinstance(parsed, list) and parsed else parsed
+            if not isinstance(item, dict) or item.get("IsDir"):
+                return False, "rclone_lsjson_not_file"
+            remote_size = item.get("Size")
+            if not isinstance(remote_size, int):
+                return False, "rclone_lsjson_no_size"
+            if remote_size != file_size:
+                return False, "remote_destination_conflict"
+            return True, ""
+
         remote_exists, remote_exists_reason = self.remote_path_exists(remote_target)
         if remote_exists:
-            return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+            exists_ok, exists_reason = cloud_exists_and_matches_size()
+            if exists_ok:
+                return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+            return False, exists_reason, "", "", file_size, False
 
         rc, timed_out, output_text = self._run_command_with_log(
             [
@@ -1125,7 +1251,10 @@ WHERE id=?;
             return False, "rclone_timeout", "", "", file_size, False
         if rc != 0:
             if self._looks_like_rclone_existing_destination(output_text):
-                return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+                exists_ok, exists_reason = cloud_exists_and_matches_size()
+                if exists_ok:
+                    return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+                return False, exists_reason, "", "", file_size, False
             if remote_exists_reason == "rclone_lsf_timeout":
                 return False, "rclone_lsf_timeout", "", "", file_size, False
             return False, "rclone_copy_failed", "", "", file_size, False
@@ -1136,6 +1265,8 @@ WHERE id=?;
         local_target = self.current_settings.local_target
         if not local_target:
             return False, "local_target_unset", "", "", self._file_size(file_path), False
+        if self.is_path_within_upload_dir(local_target):
+            return False, "local_target_inside_upload_dir", "", "", self._file_size(file_path), False
         if not os.path.isdir(local_target):
             return False, "local_target_missing", "", "", self._file_size(file_path), False
         if not os.access(local_target, os.W_OK):
@@ -1143,14 +1274,21 @@ WHERE id=?;
 
         target_path = os.path.join(local_target, relative_path)
         target_dir = os.path.dirname(target_path)
-        os.makedirs(target_dir, exist_ok=True)
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+        except Exception:
+            return False, "local_target_mkdir_failed", "", "", self._file_size(file_path), False
         source_size = self._file_size(file_path)
 
         if os.path.isfile(target_path):
             target_size = self._file_size(target_path)
             if source_size == target_size:
-                destination_label = f"local:{local_target}"
-                return True, "target_local_exists", destination_label, target_path, source_size, True
+                source_hash = self._sample_file_hash(file_path, source_size)
+                target_hash = self._sample_file_hash(target_path, target_size)
+                if source_hash == target_hash and source_hash != "unreadable":
+                    destination_label = f"local:{local_target}"
+                    return True, "target_local_exists", destination_label, target_path, source_size, True
+                return False, "local_destination_conflict", "", "", source_size, False
             return False, "local_destination_conflict", "", "", source_size, False
 
         tmp_path = f"{target_path}.tmp.{os.getpid()}.{random.randint(1000, 999999)}"
@@ -1193,10 +1331,11 @@ WHERE id=?;
             if target == "local":
                 ok, reason, dest_label, dest_path, file_size, already_present = self.ship_to_local_target(file_path, relative_path)
                 if ok:
-                    self.set_artifact_target_status(artifact_id, "local", "SUCCESS", "", current_epoch, current_epoch)
-                    self.insert_attempt_log(artifact_id, "local", "success", 0, dest_path, current_epoch)
-                    self.db_exec(
-                        """
+                    with self.db_transaction():
+                        self.set_artifact_target_status(artifact_id, "local", "SUCCESS", "", current_epoch, current_epoch)
+                        self.insert_attempt_log(artifact_id, "local", "success", 0, dest_path, current_epoch)
+                        self.db_exec(
+                            """
 UPDATE artifacts
 SET status='SHIPPED',
     retry_count=0,
@@ -1208,25 +1347,27 @@ SET status='SHIPPED',
     profile_at_ship=?
 WHERE id=?;
 """,
-                        (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
-                    )
+                            (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
+                        )
                     self.emit_upload_event("shipped", relative_path, dest_path, str(file_size), "", reason, "")
                     if already_present:
                         self.log("INFO", f"Local destination already had file; treated as shipped: {relative_path}")
                     return True
 
-                self.set_artifact_target_status(artifact_id, "local", "FAILED", reason, current_epoch, 0)
-                self.insert_attempt_log(artifact_id, "local", "failed", 1, reason, current_epoch)
+                with self.db_transaction():
+                    self.set_artifact_target_status(artifact_id, "local", "FAILED", reason, current_epoch, 0)
+                    self.insert_attempt_log(artifact_id, "local", "failed", 1, reason, current_epoch)
                 self.emit_upload_event("failed", relative_path, f"local:{self.current_settings.local_target}", size_bytes, "", reason, "1")
                 final_error = reason
                 continue
 
             ok, reason, dest_label, dest_path, file_size, already_present = self.ship_to_cloud_target(file_path, relative_path)
             if ok:
-                self.set_artifact_target_status(artifact_id, "cloud", "SUCCESS", "", current_epoch, current_epoch)
-                self.insert_attempt_log(artifact_id, "cloud", "success", 0, dest_path, current_epoch)
-                self.db_exec(
-                    """
+                with self.db_transaction():
+                    self.set_artifact_target_status(artifact_id, "cloud", "SUCCESS", "", current_epoch, current_epoch)
+                    self.insert_attempt_log(artifact_id, "cloud", "success", 0, dest_path, current_epoch)
+                    self.db_exec(
+                        """
 UPDATE artifacts
 SET status='SHIPPED',
     retry_count=0,
@@ -1238,15 +1379,16 @@ SET status='SHIPPED',
     profile_at_ship=?
 WHERE id=?;
 """,
-                    (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
-                )
+                        (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
+                    )
                 self.emit_upload_event("shipped", relative_path, dest_path, str(file_size), "", reason, "")
                 if already_present:
                     self.log("INFO", f"Cloud destination already had file; treated as shipped: {relative_path}")
                 return True
 
-            self.set_artifact_target_status(artifact_id, "cloud", "FAILED", reason, current_epoch, 0)
-            self.insert_attempt_log(artifact_id, "cloud", "failed", 1, reason, current_epoch)
+            with self.db_transaction():
+                self.set_artifact_target_status(artifact_id, "cloud", "FAILED", reason, current_epoch, 0)
+                self.insert_attempt_log(artifact_id, "cloud", "failed", 1, reason, current_epoch)
             self.emit_upload_event(
                 "failed",
                 relative_path,
@@ -1258,38 +1400,27 @@ WHERE id=?;
             )
             final_error = reason
 
-        retry_row = self.db_query_one("SELECT retry_count FROM artifacts WHERE id=?;", (artifact_id,))
-        retry_count = int(retry_row["retry_count"] or 0) if retry_row else 0
-        new_retry_count = retry_count + 1
-
-        if new_retry_count >= self.max_retries:
-            self.db_exec(
-                "UPDATE artifacts SET status='DEAD_LETTER', retry_count=?, next_retry_epoch=0, last_error=?, updated_at_epoch=? WHERE id=?;",
-                (new_retry_count, final_error, current_epoch, artifact_id),
-            )
-            self.emit_upload_event("dead_letter", relative_path, "", size_bytes, str(new_retry_count), final_error, "")
-        else:
-            backoff = self.calculate_backoff(new_retry_count)
-            next_retry_epoch = current_epoch + backoff
-            self.db_exec(
-                "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",
-                (new_retry_count, next_retry_epoch, final_error, current_epoch, artifact_id),
-            )
-            self.emit_upload_event(
-                "retry",
-                relative_path,
-                "",
-                size_bytes,
-                str(new_retry_count),
-                f"retry_backoff_{backoff}s",
-                "",
-            )
+        self.schedule_retry_or_dead_letter(
+            artifact_id=artifact_id,
+            relative_path=relative_path,
+            size_bytes=size_bytes,
+            current_epoch=current_epoch,
+            final_error=final_error,
+        )
         return False
 
     def is_path_within_upload_dir(self, path_value: str) -> bool:
         file_real = os.path.realpath(path_value)
         upload_real = os.path.realpath(self.upload_dir)
         return file_real == upload_real or file_real.startswith(upload_real + os.sep)
+
+    def is_path_within_local_target(self, path_value: str) -> bool:
+        local_target = self.current_settings.local_target
+        if not local_target:
+            return False
+        local_real = os.path.realpath(local_target)
+        path_real = os.path.realpath(path_value)
+        return path_real == local_real or path_real.startswith(local_real + os.sep)
 
     def spool_usage_percent(self) -> int:
         try:
@@ -1314,7 +1445,14 @@ WHERE id=?;
 
         self.emit_upload_event("protect_stop", "", "", "unknown", "", "disk_threshold_reached", "")
         try:
-            rc = subprocess.run(self.upload_stop_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+            stop_args = _shlex.split(self.upload_stop_command)
+        except ValueError:
+            stop_args = []
+        try:
+            if not stop_args:
+                rc = 1
+            else:
+                rc = subprocess.run(stop_args, shell=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
         except Exception:
             rc = 1
 
@@ -1414,6 +1552,7 @@ WHERE id=?;
         self.acquire_lock()
         self.db_open()
         self.init_db()
+        self.normalize_artifact_status_values()
         self.recover_inflight_after_unclean_shutdown()
         self.archive_legacy_state()
         self.refresh_runtime_settings()
@@ -1480,6 +1619,10 @@ WHERE id=?;
                     if not self.is_uploadable(basename):
                         continue
 
+                    if self.is_path_within_local_target(file_path):
+                        self.log_file_excluded_once(file_path, relative_path, "local_target_tree_excluded")
+                        continue
+
                     reason = self.excluded_reason_for_path(relative_path, basename)
                     if reason:
                         self.log_file_excluded_once(file_path, relative_path, reason)
@@ -1536,7 +1679,17 @@ WHERE id=?;
                         continue
 
                     self.pause_notice_emitted = False
-                    self.attempt_ship_artifact(artifact_id, file_path, relative_path, now)
+                    try:
+                        self.attempt_ship_artifact(artifact_id, file_path, relative_path, now)
+                    except Exception as exc:
+                        self.log("ERROR", f"Unhandled upload attempt exception for {relative_path}: {exc}")
+                        self.schedule_retry_or_dead_letter(
+                            artifact_id=artifact_id,
+                            relative_path=relative_path,
+                            size_bytes=str(self._file_size(file_path)),
+                            current_epoch=now,
+                            final_error=f"unexpected_exception_{type(exc).__name__}",
+                        )
 
                 time.sleep(max(self.scan_interval, 1))
         finally:

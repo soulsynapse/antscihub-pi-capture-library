@@ -84,7 +84,7 @@ While running:
 10. If paused, emit one `paused` event and skip upload attempts.
 11. If not paused, enforce global retry pause (when active due to rate limiting) and skip attempts until pause expires.
 12. If not paused and no global retry pause, repeatedly choose the oldest pending candidate set and upload oldest-ready:
-13. candidates are `QUEUED` plus due `RETRY_WAIT` (`next_retry_epoch <= now`), ordered by `mtime_epoch`, then `discovered_at_epoch`, then `id`.
+13. candidates are due `QUEUED` and due `RETRY_WAIT` (`next_retry_epoch <= now`), ordered by `mtime_epoch`, then `discovered_at_epoch`, then `id`.
 14. if oldest candidate is still being written/not stable/open/not mature, skip it for now and keep checking the next oldest candidate.
 15. attempt one oldest-ready artifact, then re-query and continue until no eligible progress remains for this cycle.
 16. Sleep `SCAN_INTERVAL`.
@@ -93,6 +93,7 @@ While running:
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
 `RATE_LIMIT_COOLDOWN_SECONDS` default: `300`.
+`INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `30`.
 
 ## Candidate File Filters
 
@@ -163,8 +164,9 @@ Registration lookup order:
 
 If not found:
 
-- Insert new row as `status='QUEUED'`, retry_count `0`, next_retry_epoch `0`.
-- Emit `queued` event.
+- Insert new row as `status='QUEUED'`, retry_count `0`, next_retry_epoch `now + jitter`.
+- `jitter` is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..30`).
+- Emit `queued` event with reason `artifact_registered_jitter_<N>s`.
 
 If found:
 
@@ -175,7 +177,7 @@ If found:
 
 When not paused, due rows are selected with:
 
-- `status='QUEUED'` OR (`status='RETRY_WAIT'` AND `next_retry_epoch <= now`)
+- (`status='QUEUED'` AND `next_retry_epoch <= now`) OR (`status='RETRY_WAIT'` AND `next_retry_epoch <= now`)
 - ordered by `mtime_epoch ASC`, then `discovered_at_epoch ASC`, then `id ASC`
 - limited per fetch by `MAX_DUE_ATTEMPTS_PER_LOOP`
 - worker iterates that ordered list and picks the first candidate that is actually ready to upload.
@@ -198,7 +200,7 @@ Per due row:
 `can_attempt_artifact_now()` returns `false` when:
 
 - status is `SHIPPED`, `PRUNED`, `DEAD_LETTER`, or `IN_FLIGHT`
-- status is `RETRY_WAIT` and `next_retry_epoch > now`
+- status is `QUEUED` or `RETRY_WAIT` and `next_retry_epoch > now`
 
 Otherwise it returns `true`.
 

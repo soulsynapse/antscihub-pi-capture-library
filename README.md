@@ -170,15 +170,16 @@ The upload worker:
 5. Waits for minimum age + size stability
    - still images: `3s` age + `3s` stability
    - `state.env` and `*.log`: `5m` age
-6. Ships by copy only (no source-file move in normal flow)
+6. Applies first-attempt jitter for newly queued artifacts (`0-30s` by default, configurable)
+7. Ships by copy only (no source-file move in normal flow)
    - cloud: `rclone copyto`
    - local target: atomic local copy (temp -> final)
-7. Uses upload profiles (`field`, `cloud`, `local`) for routing
-8. Applies retention policy:
+8. Uses upload profiles (`field`, `cloud`, `local`) for routing
+9. Applies retention policy:
    - `protect`: stop active recording at high watermark
    - `rolling`: prune oldest shipped files from 80% down to 70%
-9. Retries failures with exponential backoff and marks dead-letter when exhausted
-10. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, encrypted payloads)
+10. Retries failures with exponential backoff and marks dead-letter when exhausted
+11. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, encrypted payloads)
 
 ## State Paths
 

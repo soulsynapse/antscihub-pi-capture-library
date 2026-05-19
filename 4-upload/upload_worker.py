@@ -1896,6 +1896,10 @@ LIMIT ?;
                 f"io={self.rclone_io_timeout_seconds}s"
             ),
         )
+        self.log(
+            "INFO",
+            f"Initial upload jitter: 0-{self.initial_upload_jitter_max_seconds}s before first attempt",
+        )
 
     def run(self) -> int:
         signal.signal(signal.SIGTERM, self._handle_signal)

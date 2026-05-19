@@ -20,12 +20,36 @@ DEFAULT_LOOP_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-loop.txt"
 LOOP_SETTINGS_RELATIVE_PATH="${ANTCAM_LOOP_SETTINGS_RELATIVE_PATH:-${DEFAULT_LOOP_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
 RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-profile.txt"
+UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-retention.txt"
+UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_PAUSED_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-paused.txt"
+UPLOAD_PAUSED_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_PAUSED_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_PAUSED_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_LOCAL_TARGET_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-local-target.txt"
+UPLOAD_LOCAL_TARGET_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_LOCAL_TARGET_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_LOCAL_TARGET_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_RCLONE_REMOTE_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-rclone-remote.txt"
+UPLOAD_RCLONE_REMOTE_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_RCLONE_REMOTE_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_RCLONE_REMOTE_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_RCLONE_PATH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-rclone-path.txt"
+UPLOAD_RCLONE_PATH_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_RCLONE_PATH_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_RCLONE_PATH_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-high-watermark-percent.txt"
+UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-low-watermark-percent.txt"
+UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
 DEFAULT_RECORDING_LOOP="${ANTCAM_DEFAULT_RECORDING_LOOP:-1m}"
+DEFAULT_UPLOAD_PROFILE="${ANTCAM_DEFAULT_UPLOAD_PROFILE:-field}"
+DEFAULT_UPLOAD_RETENTION="${ANTCAM_DEFAULT_UPLOAD_RETENTION:-protect}"
+DEFAULT_UPLOAD_PAUSED="${ANTCAM_DEFAULT_UPLOAD_PAUSED:-false}"
+DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT="${ANTCAM_DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT:-80}"
+DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT="${ANTCAM_DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT:-70}"
 DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS:-20}"
 DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS:-10}"
+DEFAULT_UPLOAD_SERVICE_NAME="${ANTCAM_UPLOAD_SERVICE_NAME:-antscihub-upload.service}"
+DEFAULT_UPLOAD_STATE_RELATIVE_PATH=".local/state/antscihub-upload/queue.db"
+UPLOAD_STATE_RELATIVE_PATH="${ANTCAM_UPLOAD_STATE_RELATIVE_PATH:-${DEFAULT_UPLOAD_STATE_RELATIVE_PATH}}"
 FLEET_EVENT_TOPIC_TEMPLATE="${FLEET_EVENT_TOPIC_TEMPLATE:-fleet/report/{DEVICE_ID}}"
 FLEET_PUBLISH_BIN="${FLEET_PUBLISH_BIN:-fleet-publish}"
 MQTT_REPORT_BIN="${MQTT_REPORT_BIN:-mqtt_report.py}"
@@ -54,6 +78,20 @@ Usage:
   antcam set length <duration>
   antcam set segment <duration>
   antcam set loop <duration|none|0>
+  antcam upload set profile <field|cloud|local>
+  antcam upload set retention <protect|rolling>
+  antcam upload set local-target <path>
+  antcam upload set remote <rclone-remote>
+  antcam upload set remote-path <path>
+  antcam upload set watermark-high <percent>
+  antcam upload set watermark-low <percent>
+  antcam upload report
+  antcam upload report queue
+  antcam upload report targets
+  antcam upload pause
+  antcam upload resume
+  antcam upload reload
+  antcam upload prune --older-than <duration> [--dry-run]
   antcam report
   antcam report focus
   antcam report fps
@@ -81,6 +119,17 @@ Examples:
   antcam set segment 10m
   antcam set loop 1m
   antcam set loop none
+  antcam upload set profile field
+  antcam upload set retention rolling
+  antcam upload set local-target /mnt/antscihub
+  antcam upload set remote gdrive_personal
+  antcam upload set remote-path antscihub
+  antcam upload report
+  antcam upload report queue
+  antcam upload pause
+  antcam upload resume
+  antcam upload reload
+  antcam upload prune --older-than 72h --dry-run
   antcam report focus
   antcam report fps
   antcam report length
@@ -307,6 +356,82 @@ resolve_recording_state_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${RECORDING_STATE_RELATIVE_PATH#./}"
 }
 
+resolve_upload_setting_file_for_home() {
+    local user_home="$1"
+    local override_value="$2"
+    local relative_path="$3"
+
+    if [[ -n "${override_value}" ]]; then
+        printf '%s\n' "${override_value}"
+        return 0
+    fi
+
+    if [[ "${relative_path}" == /* ]]; then
+        printf '%s\n' "${relative_path}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${relative_path#./}"
+}
+
+resolve_upload_profile_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_PROFILE_FILE:-}" "${UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_retention_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_RETENTION_FILE:-}" "${UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_paused_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_PAUSED_FILE:-}" "${UPLOAD_PAUSED_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_local_target_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_LOCAL_TARGET_FILE:-}" "${UPLOAD_LOCAL_TARGET_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_rclone_remote_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_RCLONE_REMOTE_FILE:-}" "${UPLOAD_RCLONE_REMOTE_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_rclone_path_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_RCLONE_PATH_FILE:-}" "${UPLOAD_RCLONE_PATH_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_high_watermark_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_HIGH_WATERMARK_FILE:-}" "${UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_low_watermark_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_LOW_WATERMARK_FILE:-}" "${UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH}"
+}
+
+resolve_upload_queue_db_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_UPLOAD_QUEUE_DB_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_UPLOAD_QUEUE_DB_FILE}"
+        return 0
+    fi
+
+    if [[ "${UPLOAD_STATE_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${UPLOAD_STATE_RELATIVE_PATH}"
+        return 0
+    fi
+
+    printf '%s\n' "${user_home%/}/${UPLOAD_STATE_RELATIVE_PATH#./}"
+}
+
 normalize_duration_value() {
     local input="${1:-}"
     input="${input//[[:space:]]/}"
@@ -404,6 +529,175 @@ normalize_loop_setting_value() {
     else
         printf '%s\n' "${normalized_value}"
     fi
+}
+
+normalize_upload_text_value() {
+    local value="${1:-}"
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/}"
+    value="${value## }"
+    value="${value%% }"
+    printf '%s\n' "${value}"
+}
+
+normalize_upload_profile_value() {
+    local value="${1:-}"
+    value="$(normalize_upload_text_value "${value}")"
+    value="${value,,}"
+    printf '%s\n' "${value}"
+}
+
+normalize_upload_retention_value() {
+    local value="${1:-}"
+    value="$(normalize_upload_text_value "${value}")"
+    value="${value,,}"
+    printf '%s\n' "${value}"
+}
+
+normalize_upload_boolean_value() {
+    local value="${1:-}"
+    value="$(normalize_upload_text_value "${value}")"
+    value="${value,,}"
+    case "${value}" in
+        1|true|yes|on)
+            printf '%s\n' "true"
+            ;;
+        0|false|no|off)
+            printf '%s\n' "false"
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+normalize_upload_watermark_value() {
+    local value="${1:-}"
+    value="$(normalize_upload_text_value "${value}")"
+    [[ "${value}" =~ ^[0-9]+$ ]] || return 1
+    if [[ "${value}" -lt 1 || "${value}" -gt 99 ]]; then
+        return 1
+    fi
+    printf '%s\n' "${value}"
+}
+
+is_valid_upload_profile_value() {
+    local value="${1:-}"
+    case "${value}" in
+        field|cloud|local)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_valid_upload_retention_value() {
+    local value="${1:-}"
+    case "${value}" in
+        protect|rolling)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_valid_upload_target_path_value() {
+    local value="${1:-}"
+    [[ -n "${value}" ]]
+}
+
+is_valid_upload_remote_value() {
+    local value="${1:-}"
+    [[ -n "${value}" ]]
+}
+
+is_valid_upload_remote_path_value() {
+    local value="${1:-}"
+    if [[ "${value}" == "." ]]; then
+        return 1
+    fi
+    return 0
+}
+
+read_setting_value_with_default() {
+    local setting_file="$1"
+    local default_value="$2"
+    local raw_value normalized_value
+
+    if [[ ! -f "${setting_file}" ]]; then
+        printf '%s\n' "${default_value}"
+        return 0
+    fi
+
+    raw_value="$(head -n 1 "${setting_file}" 2>/dev/null || true)"
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    if [[ -z "${normalized_value}" ]]; then
+        printf '%s\n' "${default_value}"
+    else
+        printf '%s\n' "${normalized_value}"
+    fi
+}
+
+write_setting_value() {
+    local setting_file="$1"
+    local setting_value="$2"
+    local setting_dir
+    setting_dir="$(dirname "${setting_file}")"
+    mkdir -p "${setting_dir}"
+    printf '%s\n' "${setting_value}" > "${setting_file}"
+    printf '%s\n' "${setting_file}"
+}
+
+require_sqlite3() {
+    command -v sqlite3 >/dev/null 2>&1 || die "sqlite3 is required for upload queue reports/prune"
+}
+
+sql_escape_single_quotes() {
+    local value="${1:-}"
+    value="${value//\'/\'\'}"
+    printf '%s' "${value}"
+}
+
+canonical_path_value() {
+    local input_path="$1"
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "$input_path" <<'PY' 2>/dev/null || true
+import os
+import sys
+print(os.path.realpath(sys.argv[1]))
+PY
+        return 0
+    fi
+
+    if command -v realpath >/dev/null 2>&1; then
+        realpath "${input_path}" 2>/dev/null || printf '%s\n' "${input_path}"
+        return 0
+    fi
+
+    printf '%s\n' "${input_path}"
+}
+
+is_path_within_directory() {
+    local check_path="$1"
+    local base_dir="$2"
+    local check_real base_real
+    check_real="$(canonical_path_value "${check_path}")"
+    base_real="$(canonical_path_value "${base_dir}")"
+    [[ -n "${check_real}" && -n "${base_real}" ]] || return 1
+
+    case "${check_real}" in
+        "${base_real}"|${base_real}/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 is_pid_value() {
@@ -1141,6 +1435,186 @@ read_loop_setting_for_home() {
     printf '%s\n' "${normalized_loop_value}"
 }
 
+read_upload_profile_for_home() {
+    local user_home="$1"
+    local setting_file profile_value
+    setting_file="$(resolve_upload_profile_file_for_home "${user_home}")"
+    profile_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_UPLOAD_PROFILE}")"
+    profile_value="$(normalize_upload_profile_value "${profile_value}")"
+    is_valid_upload_profile_value "${profile_value}" || die "invalid upload profile in ${setting_file}: ${profile_value} (expected field|cloud|local)"
+    printf '%s\n' "${profile_value}"
+}
+
+read_upload_retention_for_home() {
+    local user_home="$1"
+    local setting_file retention_value
+    setting_file="$(resolve_upload_retention_file_for_home "${user_home}")"
+    retention_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_UPLOAD_RETENTION}")"
+    retention_value="$(normalize_upload_retention_value "${retention_value}")"
+    is_valid_upload_retention_value "${retention_value}" || die "invalid upload retention in ${setting_file}: ${retention_value} (expected protect|rolling)"
+    printf '%s\n' "${retention_value}"
+}
+
+read_upload_paused_for_home() {
+    local user_home="$1"
+    local setting_file paused_value
+    setting_file="$(resolve_upload_paused_file_for_home "${user_home}")"
+    paused_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_UPLOAD_PAUSED}")"
+    paused_value="$(normalize_upload_boolean_value "${paused_value}" || true)"
+    [[ -n "${paused_value}" ]] || die "invalid upload paused flag in ${setting_file} (expected true|false)"
+    printf '%s\n' "${paused_value}"
+}
+
+read_upload_local_target_for_home() {
+    local user_home="$1"
+    local setting_file target_value
+    setting_file="$(resolve_upload_local_target_file_for_home "${user_home}")"
+    target_value="$(read_setting_value_with_default "${setting_file}" "")"
+    target_value="$(normalize_upload_text_value "${target_value}")"
+    printf '%s\n' "${target_value}"
+}
+
+read_upload_rclone_remote_for_home() {
+    local user_home="$1"
+    local setting_file remote_value
+    setting_file="$(resolve_upload_rclone_remote_file_for_home "${user_home}")"
+    remote_value="$(read_setting_value_with_default "${setting_file}" "")"
+    remote_value="$(normalize_upload_text_value "${remote_value}")"
+    printf '%s\n' "${remote_value}"
+}
+
+read_upload_rclone_path_for_home() {
+    local user_home="$1"
+    local setting_file path_value
+    setting_file="$(resolve_upload_rclone_path_file_for_home "${user_home}")"
+    path_value="$(read_setting_value_with_default "${setting_file}" "")"
+    path_value="$(normalize_upload_text_value "${path_value}")"
+    path_value="${path_value#/}"
+    path_value="${path_value%/}"
+    if [[ "${path_value}" == "." ]]; then
+        path_value=""
+    fi
+    printf '%s\n' "${path_value}"
+}
+
+read_upload_high_watermark_for_home() {
+    local user_home="$1"
+    local setting_file high_value
+    setting_file="$(resolve_upload_high_watermark_file_for_home "${user_home}")"
+    high_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT}")"
+    high_value="$(normalize_upload_watermark_value "${high_value}" || true)"
+    [[ -n "${high_value}" ]] || die "invalid upload high watermark in ${setting_file} (expected integer 1-99)"
+    printf '%s\n' "${high_value}"
+}
+
+read_upload_low_watermark_for_home() {
+    local user_home="$1"
+    local setting_file low_value
+    setting_file="$(resolve_upload_low_watermark_file_for_home "${user_home}")"
+    low_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT}")"
+    low_value="$(normalize_upload_watermark_value "${low_value}" || true)"
+    [[ -n "${low_value}" ]] || die "invalid upload low watermark in ${setting_file} (expected integer 1-99)"
+    printf '%s\n' "${low_value}"
+}
+
+set_upload_profile_for_home() {
+    local user_home="$1"
+    local profile_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_profile_value "${profile_value}")"
+    is_valid_upload_profile_value "${normalized_value}" || die "invalid upload profile: ${profile_value} (expected field|cloud|local)"
+    setting_file="$(resolve_upload_profile_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_retention_for_home() {
+    local user_home="$1"
+    local retention_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_retention_value "${retention_value}")"
+    is_valid_upload_retention_value "${normalized_value}" || die "invalid upload retention: ${retention_value} (expected protect|rolling)"
+    setting_file="$(resolve_upload_retention_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_paused_for_home() {
+    local user_home="$1"
+    local paused_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_boolean_value "${paused_value}" || true)"
+    [[ -n "${normalized_value}" ]] || die "invalid upload paused flag: ${paused_value} (expected true|false)"
+    setting_file="$(resolve_upload_paused_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_local_target_for_home() {
+    local user_home="$1"
+    local target_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_text_value "${target_value}")"
+    if [[ "${normalized_value,,}" == "none" ]]; then
+        normalized_value=""
+    fi
+    if [[ -n "${normalized_value}" ]] && ! is_valid_upload_target_path_value "${normalized_value}"; then
+        die "invalid upload local target: ${target_value}"
+    fi
+    setting_file="$(resolve_upload_local_target_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_rclone_remote_for_home() {
+    local user_home="$1"
+    local remote_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_text_value "${remote_value}")"
+    if [[ "${normalized_value,,}" == "none" ]]; then
+        normalized_value=""
+    fi
+    if [[ -n "${normalized_value}" ]] && ! is_valid_upload_remote_value "${normalized_value}"; then
+        die "invalid upload remote: ${remote_value}"
+    fi
+    setting_file="$(resolve_upload_rclone_remote_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_rclone_path_for_home() {
+    local user_home="$1"
+    local path_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_text_value "${path_value}")"
+    if [[ "${normalized_value,,}" == "none" ]]; then
+        normalized_value=""
+    fi
+    normalized_value="${normalized_value#/}"
+    normalized_value="${normalized_value%/}"
+    if [[ "${normalized_value}" == "." ]]; then
+        normalized_value=""
+    fi
+    is_valid_upload_remote_path_value "${normalized_value}" || die "invalid upload remote-path: ${path_value}"
+    setting_file="$(resolve_upload_rclone_path_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_high_watermark_for_home() {
+    local user_home="$1"
+    local high_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_watermark_value "${high_value}" || true)"
+    [[ -n "${normalized_value}" ]] || die "invalid upload watermark-high: ${high_value} (expected integer 1-99)"
+    setting_file="$(resolve_upload_high_watermark_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_upload_low_watermark_for_home() {
+    local user_home="$1"
+    local low_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_upload_watermark_value "${low_value}" || true)"
+    [[ -n "${normalized_value}" ]] || die "invalid upload watermark-low: ${low_value} (expected integer 1-99)"
+    setting_file="$(resolve_upload_low_watermark_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
 set_focus_setting_for_home() {
     local user_home="$1"
     local focus_value="$2"
@@ -1339,6 +1813,337 @@ set_loop_value() {
     normalized_loop="$(read_loop_setting_for_home "${user_home}")"
     echo "recording loop set to ${normalized_loop}"
     echo "loop settings file: ${loop_file}"
+}
+
+set_upload_profile_value() {
+    local profile_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload profile settings"
+
+    local profile_file normalized_profile
+    profile_file="$(set_upload_profile_for_home "${user_home}" "${profile_value}")"
+    normalized_profile="$(read_upload_profile_for_home "${user_home}")"
+    echo "upload profile set to ${normalized_profile}"
+    echo "upload profile settings file: ${profile_file}"
+}
+
+set_upload_retention_value() {
+    local retention_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload retention settings"
+
+    local retention_file normalized_retention
+    retention_file="$(set_upload_retention_for_home "${user_home}" "${retention_value}")"
+    normalized_retention="$(read_upload_retention_for_home "${user_home}")"
+    echo "upload retention set to ${normalized_retention}"
+    echo "upload retention settings file: ${retention_file}"
+}
+
+set_upload_local_target_value() {
+    local target_path="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload local target settings"
+
+    local target_file normalized_target
+    target_file="$(set_upload_local_target_for_home "${user_home}" "${target_path}")"
+    normalized_target="$(read_upload_local_target_for_home "${user_home}")"
+    echo "upload local target set to ${normalized_target}"
+    echo "upload local target settings file: ${target_file}"
+}
+
+set_upload_remote_value() {
+    local remote_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload remote settings"
+
+    local remote_file normalized_remote
+    remote_file="$(set_upload_rclone_remote_for_home "${user_home}" "${remote_value}")"
+    normalized_remote="$(read_upload_rclone_remote_for_home "${user_home}")"
+    echo "upload rclone remote set to ${normalized_remote}"
+    echo "upload rclone remote settings file: ${remote_file}"
+}
+
+set_upload_remote_path_value() {
+    local remote_path_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload remote-path settings"
+
+    local remote_path_file normalized_path
+    remote_path_file="$(set_upload_rclone_path_for_home "${user_home}" "${remote_path_value}")"
+    normalized_path="$(read_upload_rclone_path_for_home "${user_home}")"
+    if [[ -n "${normalized_path}" ]]; then
+        echo "upload rclone path set to ${normalized_path}"
+    else
+        echo "upload rclone path set to (remote root)"
+    fi
+    echo "upload rclone path settings file: ${remote_path_file}"
+}
+
+set_upload_watermark_high_value() {
+    local high_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload watermark settings"
+
+    local high_file normalized_high low_value
+    normalized_high="$(normalize_upload_watermark_value "${high_value}" || true)"
+    [[ -n "${normalized_high}" ]] || die "invalid upload watermark-high: ${high_value} (expected integer 1-99)"
+    low_value="$(read_upload_low_watermark_for_home "${user_home}")"
+    if [[ "${normalized_high}" -le "${low_value}" ]]; then
+        die "invalid watermark combination: high (${normalized_high}) must be greater than low (${low_value})"
+    fi
+    high_file="$(set_upload_high_watermark_for_home "${user_home}" "${normalized_high}")"
+    echo "upload high watermark set to ${normalized_high}%"
+    echo "upload high watermark settings file: ${high_file}"
+}
+
+set_upload_watermark_low_value() {
+    local low_value_input="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload watermark settings"
+
+    local low_file normalized_low high_value
+    normalized_low="$(normalize_upload_watermark_value "${low_value_input}" || true)"
+    [[ -n "${normalized_low}" ]] || die "invalid upload watermark-low: ${low_value_input} (expected integer 1-99)"
+    high_value="$(read_upload_high_watermark_for_home "${user_home}")"
+    if [[ "${normalized_low}" -ge "${high_value}" ]]; then
+        die "invalid watermark combination: low (${normalized_low}) must be less than high (${high_value})"
+    fi
+    low_file="$(set_upload_low_watermark_for_home "${user_home}" "${normalized_low}")"
+    echo "upload low watermark set to ${normalized_low}%"
+    echo "upload low watermark settings file: ${low_file}"
+}
+
+set_upload_pause_value() {
+    local pause_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload pause settings"
+
+    local pause_file normalized_pause
+    pause_file="$(set_upload_paused_for_home "${user_home}" "${pause_value}")"
+    normalized_pause="$(read_upload_paused_for_home "${user_home}")"
+    if [[ "${normalized_pause}" == "true" ]]; then
+        echo "upload worker is now paused"
+    else
+        echo "upload worker is now resumed"
+    fi
+    echo "upload pause settings file: ${pause_file}"
+}
+
+report_upload_settings() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload settings"
+
+    local upload_dir queue_db profile retention paused local_target remote_name remote_path
+    local high_watermark low_watermark profile_file retention_file paused_file
+    local local_target_file remote_file remote_path_file high_file low_file
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
+    profile="$(read_upload_profile_for_home "${user_home}")"
+    retention="$(read_upload_retention_for_home "${user_home}")"
+    paused="$(read_upload_paused_for_home "${user_home}")"
+    local_target="$(read_upload_local_target_for_home "${user_home}")"
+    remote_name="$(read_upload_rclone_remote_for_home "${user_home}")"
+    remote_path="$(read_upload_rclone_path_for_home "${user_home}")"
+    high_watermark="$(read_upload_high_watermark_for_home "${user_home}")"
+    low_watermark="$(read_upload_low_watermark_for_home "${user_home}")"
+    profile_file="$(resolve_upload_profile_file_for_home "${user_home}")"
+    retention_file="$(resolve_upload_retention_file_for_home "${user_home}")"
+    paused_file="$(resolve_upload_paused_file_for_home "${user_home}")"
+    local_target_file="$(resolve_upload_local_target_file_for_home "${user_home}")"
+    remote_file="$(resolve_upload_rclone_remote_file_for_home "${user_home}")"
+    remote_path_file="$(resolve_upload_rclone_path_file_for_home "${user_home}")"
+    high_file="$(resolve_upload_high_watermark_file_for_home "${user_home}")"
+    low_file="$(resolve_upload_low_watermark_file_for_home "${user_home}")"
+
+    echo "upload_dir=${upload_dir}"
+    echo "queue_db=${queue_db}"
+    echo "upload_profile=${profile}"
+    echo "upload_retention=${retention}"
+    echo "upload_paused=${paused}"
+    echo "upload_high_watermark_percent=${high_watermark}"
+    echo "upload_low_watermark_percent=${low_watermark}"
+    if [[ -n "${local_target}" ]]; then
+        echo "upload_local_target=${local_target}"
+    else
+        echo "upload_local_target=(unset)"
+    fi
+    if [[ -n "${remote_name}" ]]; then
+        if [[ -n "${remote_path}" ]]; then
+            echo "upload_rclone_target=${remote_name}:${remote_path}"
+        else
+            echo "upload_rclone_target=${remote_name}:"
+        fi
+    else
+        echo "upload_rclone_target=(unset)"
+    fi
+    echo "upload_profile_settings_file=${profile_file}"
+    echo "upload_retention_settings_file=${retention_file}"
+    echo "upload_paused_settings_file=${paused_file}"
+    echo "upload_local_target_settings_file=${local_target_file}"
+    echo "upload_rclone_remote_settings_file=${remote_file}"
+    echo "upload_rclone_path_settings_file=${remote_path_file}"
+    echo "upload_high_watermark_settings_file=${high_file}"
+    echo "upload_low_watermark_settings_file=${low_file}"
+}
+
+report_upload_targets() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload target report"
+
+    local profile local_target remote_name remote_path
+    profile="$(read_upload_profile_for_home "${user_home}")"
+    local_target="$(read_upload_local_target_for_home "${user_home}")"
+    remote_name="$(read_upload_rclone_remote_for_home "${user_home}")"
+    remote_path="$(read_upload_rclone_path_for_home "${user_home}")"
+
+    echo "upload_profile=${profile}"
+
+    if [[ -n "${local_target}" ]]; then
+        echo "local_target=${local_target}"
+        if [[ -d "${local_target}" ]]; then
+            if [[ -w "${local_target}" ]]; then
+                echo "local_target_status=ready"
+            else
+                echo "local_target_status=not_writable"
+            fi
+        else
+            echo "local_target_status=missing"
+        fi
+    else
+        echo "local_target=(unset)"
+        echo "local_target_status=unset"
+    fi
+
+    if [[ -n "${remote_name}" ]]; then
+        if [[ -n "${remote_path}" ]]; then
+            echo "cloud_target=${remote_name}:${remote_path}"
+        else
+            echo "cloud_target=${remote_name}:"
+        fi
+    else
+        echo "cloud_target=(unset)"
+    fi
+}
+
+report_upload_queue() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload queue report"
+
+    local queue_db
+    queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
+    echo "queue_db=${queue_db}"
+
+    if [[ ! -f "${queue_db}" ]]; then
+        echo "queue_status=not_initialized"
+        return 0
+    fi
+
+    require_sqlite3
+
+    local total_count
+    total_count="$(sqlite3 -noheader "${queue_db}" "SELECT COUNT(*) FROM artifacts;" 2>/dev/null || echo "0")"
+    echo "artifacts_total=${total_count}"
+
+    local status_line status_name status_count
+    while IFS='|' read -r status_name status_count; do
+        [[ -n "${status_name}" ]] || continue
+        echo "status_${status_name,,}=${status_count}"
+    done < <(sqlite3 -separator '|' -noheader "${queue_db}" "SELECT status, COUNT(*) FROM artifacts GROUP BY status ORDER BY status;" 2>/dev/null || true)
+
+    local now_epoch oldest_pending pending_age
+    now_epoch="$(date +%s)"
+    oldest_pending="$(sqlite3 -noheader "${queue_db}" "SELECT MIN(discovered_at_epoch) FROM artifacts WHERE status IN ('QUEUED','RETRY_WAIT','IN_FLIGHT');" 2>/dev/null || true)"
+    if [[ -n "${oldest_pending}" && "${oldest_pending}" != "0" ]]; then
+        pending_age=$((now_epoch - oldest_pending))
+        echo "oldest_pending_age_seconds=${pending_age}"
+    else
+        echo "oldest_pending_age_seconds=0"
+    fi
+}
+
+reload_upload_worker_service() {
+    local service_name="${DEFAULT_UPLOAD_SERVICE_NAME}"
+
+    if [[ "$(id -u)" -eq 0 ]]; then
+        systemctl restart "${service_name}"
+        echo "upload service restarted: ${service_name}"
+        return 0
+    fi
+
+    if command -v sudo >/dev/null 2>&1; then
+        sudo systemctl restart "${service_name}"
+        echo "upload service restarted: ${service_name}"
+        return 0
+    fi
+
+    die "cannot restart ${service_name} without root privileges or sudo"
+}
+
+prune_uploaded_files() {
+    local older_than_value="$1"
+    local dry_run="$2"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload prune"
+
+    local queue_db upload_dir
+    queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    require_sqlite3
+
+    local normalized_duration cutoff_ms cutoff_epoch now_epoch
+    normalized_duration="$(normalize_duration_value "${older_than_value}")"
+    is_valid_duration_value "${normalized_duration}" || die "invalid --older-than value: ${older_than_value} (expected format like 72h, 30m, 10s)"
+    cutoff_ms="$(duration_to_milliseconds "${normalized_duration}")"
+    [[ "${cutoff_ms}" -gt 0 ]] || die "--older-than must be greater than zero"
+    now_epoch="$(date +%s)"
+    cutoff_epoch=$((now_epoch - (cutoff_ms / 1000)))
+
+    if [[ ! -f "${queue_db}" ]]; then
+        echo "queue db not found: ${queue_db}"
+        return 0
+    fi
+
+    local candidate_rows
+    candidate_rows="$(sqlite3 -separator '|' -noheader "${queue_db}" "SELECT id, full_path, relative_path, IFNULL(size_bytes,0), IFNULL(first_shipped_epoch,0) FROM artifacts WHERE status='SHIPPED' AND IFNULL(first_shipped_epoch,0) > 0 AND first_shipped_epoch <= ${cutoff_epoch} ORDER BY first_shipped_epoch ASC;" 2>/dev/null || true)"
+
+    local pruned_count=0
+    local skipped_count=0
+    local row id full_path relative_path size_bytes shipped_epoch
+    while IFS= read -r row; do
+        [[ -n "${row}" ]] || continue
+        IFS='|' read -r id full_path relative_path size_bytes shipped_epoch <<< "${row}"
+
+        if [[ -z "${full_path}" ]]; then
+            skipped_count=$((skipped_count + 1))
+            continue
+        fi
+
+        if ! is_path_within_directory "${full_path}" "${upload_dir}"; then
+            echo "skipping unsafe prune path outside upload dir: ${full_path}" >&2
+            skipped_count=$((skipped_count + 1))
+            continue
+        fi
+
+        if [[ "${dry_run}" == "true" ]]; then
+            echo "dry-run prune candidate: ${relative_path} (${size_bytes} bytes)"
+            pruned_count=$((pruned_count + 1))
+            continue
+        fi
+
+        if [[ -f "${full_path}" ]]; then
+            rm -f "${full_path}"
+        fi
+
+        sqlite3 "${queue_db}" "UPDATE artifacts SET status='PRUNED', updated_at_epoch=${now_epoch}, pruned_at_epoch=${now_epoch}, last_error='' WHERE id=${id};" >/dev/null 2>&1 || true
+        echo "pruned: ${relative_path}"
+        pruned_count=$((pruned_count + 1))
+    done <<< "${candidate_rows}"
+
+    if [[ "${dry_run}" == "true" ]]; then
+        echo "dry-run prune candidates=${pruned_count} skipped=${skipped_count}"
+    else
+        echo "prune completed pruned=${pruned_count} skipped=${skipped_count}"
+    fi
 }
 
 report_focus_value() {
@@ -1866,6 +2671,121 @@ main() {
             shift
             [[ $# -eq 0 ]] || die "focus takes no arguments"
             start_focus_check
+            ;;
+        upload)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam upload <set|report|pause|resume|reload|prune> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -ge 2 ]] || die "usage: antcam upload set <profile|retention|local-target|remote|remote-path|watermark-high|watermark-low> <value>"
+                    case "$1" in
+                        profile)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set profile <field|cloud|local>"
+                            set_upload_profile_value "$1"
+                            ;;
+                        retention)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set retention <protect|rolling>"
+                            set_upload_retention_value "$1"
+                            ;;
+                        local-target)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set local-target <path>"
+                            set_upload_local_target_value "$1"
+                            ;;
+                        remote)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set remote <rclone-remote>"
+                            set_upload_remote_value "$1"
+                            ;;
+                        remote-path)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set remote-path <path>"
+                            set_upload_remote_path_value "$1"
+                            ;;
+                        watermark-high)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set watermark-high <percent>"
+                            set_upload_watermark_high_value "$1"
+                            ;;
+                        watermark-low)
+                            shift
+                            [[ $# -eq 1 ]] || die "usage: antcam upload set watermark-low <percent>"
+                            set_upload_watermark_low_value "$1"
+                            ;;
+                        *)
+                            die "unknown upload set target: $1"
+                            ;;
+                    esac
+                    ;;
+                report)
+                    shift
+                    if [[ $# -eq 0 ]]; then
+                        report_upload_settings
+                        return 0
+                    fi
+                    case "$1" in
+                        queue)
+                            shift
+                            [[ $# -eq 0 ]] || die "usage: antcam upload report queue"
+                            report_upload_queue
+                            ;;
+                        targets)
+                            shift
+                            [[ $# -eq 0 ]] || die "usage: antcam upload report targets"
+                            report_upload_targets
+                            ;;
+                        *)
+                            die "unknown upload report target: $1"
+                            ;;
+                    esac
+                    ;;
+                pause)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam upload pause"
+                    set_upload_pause_value "true"
+                    ;;
+                resume)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam upload resume"
+                    set_upload_pause_value "false"
+                    ;;
+                reload)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam upload reload"
+                    reload_upload_worker_service
+                    ;;
+                prune)
+                    shift
+                    [[ $# -ge 2 ]] || die "usage: antcam upload prune --older-than <duration> [--dry-run]"
+                    local older_than_value=""
+                    local dry_run="false"
+                    while [[ $# -gt 0 ]]; do
+                        case "$1" in
+                            --older-than)
+                                shift
+                                [[ $# -ge 1 ]] || die "usage: antcam upload prune --older-than <duration> [--dry-run]"
+                                older_than_value="$1"
+                                shift
+                                ;;
+                            --dry-run)
+                                dry_run="true"
+                                shift
+                                ;;
+                            *)
+                                die "unknown upload prune option: $1"
+                                ;;
+                        esac
+                    done
+                    [[ -n "${older_than_value}" ]] || die "usage: antcam upload prune --older-than <duration> [--dry-run]"
+                    prune_uploaded_files "${older_than_value}" "${dry_run}"
+                    ;;
+                *)
+                    die "unknown upload command: $1"
+                    ;;
+            esac
             ;;
         set)
             shift

@@ -4,7 +4,7 @@ Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
 2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam set loop`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
-3. Continuous upload of completed files from Desktop to remote storage via `rclone`
+3. Store-and-forward upload control (`antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
 
@@ -72,6 +72,15 @@ antcam set fps <value>
 antcam set length <duration>
 antcam set segment <duration>
 antcam set loop <duration|none|0>
+antcam upload set profile <field|cloud|local>
+antcam upload set retention <protect|rolling>
+antcam upload report
+antcam upload report queue
+antcam upload report targets
+antcam upload pause
+antcam upload resume
+antcam upload reload
+antcam upload prune --older-than <duration> [--dry-run]
 antcam report focus
 antcam report fps
 antcam report length
@@ -128,6 +137,19 @@ systemctl status antscihub-upload.service
 journalctl -u antscihub-upload.service -f
 ```
 
+Upload control via `antcam`:
+
+```bash
+antcam upload set profile <field|cloud|local>
+antcam upload set retention <protect|rolling>
+antcam upload report
+antcam upload report queue
+antcam upload report targets
+antcam upload pause
+antcam upload resume
+antcam upload prune --older-than 72h --dry-run
+```
+
 ## Operational Defaults
 
 - Remote: `gdrive_personal`
@@ -139,17 +161,21 @@ journalctl -u antscihub-upload.service -f
 The upload worker:
 
 1. Resolves Desktop and watches `<desktop>/5-UPLOAD`
-2. Skips hidden files, temp files (`~*`), and `.MOVED` files
-3. Waits for minimum age + size stability
-   - `state.env` and `*.log` files require 5 minutes of inactivity before upload
-4. Uploads with `rclone moveto`, preserving folder structure
-   - Exception: files under any `config/` path component are uploaded via `rclone copyto` and left untouched locally
-5. Writes `<filename>.MOVED` with destination metadata
-   - Exception: no `.MOVED` placeholder is written for `config/` path files
-6. Retries failures with exponential backoff
-7. Adds machine suffix on remote-name conflicts
-8. Tracks processed files by file identity
-9. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, encrypted payloads)
+2. Treats `<desktop>/5-UPLOAD` as immutable spool input
+3. Skips hidden files, temp files (`~*`), and legacy `.MOVED` files
+4. Persists queue lifecycle in `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/queue.db`
+5. Waits for minimum age + size stability
+   - still images: `3s` age + `3s` stability
+   - `state.env` and `*.log`: `5m` age
+6. Ships by copy only (no source-file move in normal flow)
+   - cloud: `rclone copyto`
+   - local target: atomic local copy (temp -> final)
+7. Uses upload profiles (`field`, `cloud`, `local`) for routing
+8. Applies retention policy:
+   - `protect`: stop active recording at high watermark
+   - `rolling`: prune oldest shipped files from 80% down to 70%
+9. Retries failures with exponential backoff and marks dead-letter when exhausted
+10. Emits upload status events to stdout and Fleet report topics (`fleet/report/{DEVICE_ID}`, encrypted payloads)
 
 ## State Paths
 

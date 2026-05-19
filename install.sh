@@ -209,6 +209,9 @@ write_upload_unit() {
     local upload_user="$1"
     local upload_home="$2"
     local upload_dir="$3"
+    local upload_parent upload_config_dir
+    upload_parent="$(dirname "${upload_dir}")"
+    upload_config_dir="${upload_parent}/4-CAPTURE/config"
 
     cat > "${UPLOAD_SERVICE_PATH}" <<EOF
 [Unit]
@@ -225,6 +228,11 @@ Environment="HOME=${upload_home}"
 Environment="RCLONE_REMOTE=${DEFAULT_REMOTE}"
 Environment="RCLONE_PATH=${DEFAULT_REMOTE_PATH}"
 Environment="UPLOAD_DIR=${upload_dir}"
+Environment="UPLOAD_CONFIG_DIR=${upload_config_dir}"
+Environment="UPLOAD_PROFILE=field"
+Environment="UPLOAD_RETENTION=protect"
+Environment="UPLOAD_HIGH_WATERMARK_PERCENT=80"
+Environment="UPLOAD_LOW_WATERMARK_PERCENT=70"
 # Optional overrides for orchestrator event publishing:
 # Environment="DEVICE_ID=pi-0123"
 # Environment="FLEET_DEVICE_ID=pi-0123"
@@ -364,6 +372,14 @@ main() {
     log_info "  antcam start photos"
     log_info "  antcam stop"
     log_info "  antcam focus"
+    log_info "  antcam upload set profile field"
+    log_info "  antcam upload set retention protect"
+    log_info "  antcam upload report"
+    log_info "  antcam upload report queue"
+    log_info "  antcam upload report targets"
+    log_info "  antcam upload pause"
+    log_info "  antcam upload resume"
+    log_info "  antcam upload prune --older-than 72h --dry-run"
     log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"
     log_info "  journalctl -u ${UPLOAD_SERVICE_NAME} -n 100"

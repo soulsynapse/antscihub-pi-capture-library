@@ -19,6 +19,20 @@ antcam set fps <value>
 antcam set length <duration>
 antcam set segment <duration>
 antcam set loop <duration|none|0>
+antcam upload set profile <field|cloud|local>
+antcam upload set retention <protect|rolling>
+antcam upload set local-target <path>
+antcam upload set remote <rclone-remote>
+antcam upload set remote-path <path>
+antcam upload set watermark-high <percent>
+antcam upload set watermark-low <percent>
+antcam upload report
+antcam upload report queue
+antcam upload report targets
+antcam upload pause
+antcam upload resume
+antcam upload reload
+antcam upload prune --older-than <duration> [--dry-run]
 antcam report focus
 antcam report fps
 antcam report length
@@ -67,6 +81,16 @@ Current bundled profiles:
 - `antcam set loop <duration|none|0>` writes the loop interval used by recording scripts
 - Positive loop values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
 - `none` or `0` disables loop scheduling
+- `antcam upload set profile <field|cloud|local>` selects destination routing mode for store-and-forward uploader
+- `antcam upload set retention <protect|rolling>` controls threshold behavior (`protect` stops recording, `rolling` prunes shipped files)
+- `antcam upload set local-target <path>` sets attached-drive/local destination path (`none` to unset)
+- `antcam upload set remote <rclone-remote>` sets cloud remote (`none` to unset)
+- `antcam upload set remote-path <path>` sets remote subpath (`none` or empty for remote root)
+- `antcam upload set watermark-high <percent>` and `... watermark-low <percent>` set spool thresholds (defaults `80`/`70`)
+- `antcam upload report`, `report queue`, and `report targets` expose upload config and queue state
+- `antcam upload pause` / `resume` toggles upload processing without stopping the service
+- `antcam upload reload` restarts `antscihub-upload.service`
+- `antcam upload prune --older-than <duration> [--dry-run]` prunes old shipped artifacts from spool
 - `antcam report focus` returns the saved focus value (or `auto` default)
 - `antcam report fps` returns the saved fps value (or default)
 - `antcam report length` returns the saved recording length (or default)

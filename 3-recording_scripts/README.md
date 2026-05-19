@@ -51,9 +51,9 @@ Bundled recording scripts:
   - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam fps set <value>`, defaults to `1`)
   - Records at 1080p by default (`1920x1080` via `--width/--height`; override with `ANTCAM_VIDEO_WIDTH` and `ANTCAM_VIDEO_HEIGHT`)
   - Uses configurable length (`antcam length set <duration>`, default `0s`), segment size (`antcam segment set <duration>`, default `1m`), and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
-  - Starts each clip on loop-aligned schedule from script start time
-  - Requires `segment <= loop` to preserve aligned start schedule
-  - If loop is `none` or `0`, loop scheduling is disabled and clips run back-to-back
+  - Runs a single long-lived `rpicam-vid`/`libcamera-vid` process with `--segment` to avoid per-clip startup loss
+  - If loop is enabled, loop must exactly match segment (for example, `segment=1m` and `loop=1m`)
+  - If loop is `none` or `0`, loop scheduling is disabled and segment mode writes contiguous clips
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
 - `photos.py` (invoked via `photos.sh` launcher)
   - Runs `rpicam-still`/`libcamera-still` still capture

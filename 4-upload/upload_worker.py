@@ -233,6 +233,7 @@ class UploadWorker:
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
         self.rate_limit_cooldown_seconds = max(30, _as_int("RATE_LIMIT_COOLDOWN_SECONDS", 300))
+        self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 30))
         if self.attempt_log_max_rows < 0:
             self.attempt_log_max_rows = 0
 
@@ -1093,12 +1094,14 @@ VALUES (?, ?, ?, ?, ?, ?);
 """
         self.db_exec(sql, (artifact_id, target_name, current_epoch, action, exit_code, message))
 
-    def register_artifact_if_needed(self, file_path: str, relative_path: str, file_key: str) -> Tuple[int, bool]:
+    def register_artifact_if_needed(self, file_path: str, relative_path: str, file_key: str) -> Tuple[int, bool, int]:
         st = os.stat(file_path, follow_symlinks=False)
         inode = int(st.st_ino)
         size_bytes = int(st.st_size)
         mtime_epoch = int(st.st_mtime)
         current_epoch = _epoch_now()
+        initial_jitter_seconds = random.randint(0, self.initial_upload_jitter_max_seconds)
+        first_attempt_epoch = current_epoch + initial_jitter_seconds
 
         existing = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
 
@@ -1108,14 +1111,25 @@ VALUES (?, ?, ?, ?, ?, ?);
 INSERT OR IGNORE INTO artifacts (
     file_key, relative_path, full_path, inode, size_bytes, mtime_epoch, status,
     retry_count, next_retry_epoch, last_error, discovered_at_epoch, updated_at_epoch, last_seen_epoch
-) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', 0, 0, '', ?, ?, ?);
+) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', 0, ?, '', ?, ?, ?);
 """,
-                (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, current_epoch),
+                (
+                    file_key,
+                    relative_path,
+                    file_path,
+                    inode,
+                    size_bytes,
+                    mtime_epoch,
+                    first_attempt_epoch,
+                    current_epoch,
+                    current_epoch,
+                    current_epoch,
+                ),
             )
             row = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
             if row is None:
                 raise RuntimeError(f"unable to register artifact for {relative_path}")
-            return int(row["id"]), True
+            return int(row["id"]), True, initial_jitter_seconds
 
         artifact_id = int(existing["id"])
         self.db_exec(
@@ -1133,7 +1147,7 @@ WHERE id=?;
 """,
             (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, artifact_id),
         )
-        return artifact_id, False
+        return artifact_id, False, 0
 
     def can_attempt_artifact_now(self, artifact_id: int, current_epoch: int) -> bool:
         row = self.db_query_one("SELECT status, next_retry_epoch FROM artifacts WHERE id=?;", (artifact_id,))
@@ -1142,10 +1156,9 @@ WHERE id=?;
         status = str(row["status"] or "").upper()
         if status in {"SHIPPED", "PRUNED", "DEAD_LETTER", "IN_FLIGHT"}:
             return False
-        if status == "RETRY_WAIT":
-            next_retry = int(row["next_retry_epoch"] or 0)
-            if next_retry > current_epoch:
-                return False
+        next_retry = int(row["next_retry_epoch"] or 0)
+        if status in {"RETRY_WAIT", "QUEUED"} and next_retry > current_epoch:
+            return False
         return True
 
     def _run_command_with_log(self, args: Sequence[str], timeout_seconds: int) -> Tuple[int, bool, str]:
@@ -1688,7 +1701,9 @@ WHERE id IN (
 
         file_identity = self.make_file_identity(file_path, relative_path)
         file_key = self.hash_text(file_identity)
-        artifact_id, was_new = self.register_artifact_if_needed(file_path, relative_path, file_key)
+        artifact_id, was_new, initial_jitter_seconds = self.register_artifact_if_needed(
+            file_path, relative_path, file_key
+        )
         if not was_new:
             return
 
@@ -1700,7 +1715,7 @@ WHERE id IN (
             "",
             str(size),
             "",
-            "artifact_registered",
+            f"artifact_registered_jitter_{initial_jitter_seconds}s",
             "",
         )
 
@@ -1711,14 +1726,14 @@ WHERE id IN (
             """
 SELECT id, full_path, relative_path, size_bytes, status, next_retry_epoch
 FROM artifacts
-WHERE status='QUEUED' OR (status='RETRY_WAIT' AND next_retry_epoch <= ?)
+WHERE (status='QUEUED' AND next_retry_epoch <= ?) OR (status='RETRY_WAIT' AND next_retry_epoch <= ?)
 ORDER BY
     mtime_epoch ASC,
     discovered_at_epoch ASC,
     id ASC
 LIMIT ?;
 """,
-            (current_epoch, self.max_due_attempts_per_loop),
+            (current_epoch, current_epoch, self.max_due_attempts_per_loop),
         )
         return list(cursor.fetchall())
 

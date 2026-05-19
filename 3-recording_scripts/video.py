@@ -14,7 +14,6 @@ import shutil
 import socket
 import subprocess
 import sys
-import time
 from pathlib import Path
 from typing import Optional
 
@@ -94,21 +93,6 @@ def parse_positive_int(raw_value: str) -> Optional[int]:
     if value <= 0:
         return None
     return value
-
-
-def now_epoch_milliseconds() -> int:
-    return int(time.time() * 1000)
-
-
-def sleep_milliseconds(sleep_ms: int) -> None:
-    if sleep_ms <= 0:
-        return
-    time.sleep(sleep_ms / 1000.0)
-
-
-def sleep_until_epoch_milliseconds(target_ms: int) -> None:
-    remaining_ms = target_ms - now_epoch_milliseconds()
-    sleep_milliseconds(remaining_ms)
 
 
 def read_value_with_default(file_path: Path, default: str) -> str:
@@ -264,9 +248,12 @@ def main() -> int:
             log("set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)")
             return 7
 
-    if loop_enabled and segment_ms > loop_ms:
-        log(f"recording segment ({segment_value}) cannot exceed loop interval ({loop_value})")
-        log("set segment <= loop to keep loop-aligned start times")
+    if loop_enabled and segment_ms != loop_ms:
+        log(
+            "video capture now uses rpicam segment mode; "
+            f"loop ({loop_value}) must equal segment ({segment_value}) or be disabled"
+        )
+        log("set loop to match segment, or set loop to none")
         return 8
 
     video_cmd = choose_video_command()
@@ -291,66 +278,40 @@ def main() -> int:
     if loop_enabled:
         log(f"Loop interval: {loop_value} ({loop_ms} ms)")
     else:
-        log("Loop interval: none (loop scheduling disabled; clips start immediately after each clip)")
+        log("Loop interval: none (segment mode writes contiguous clips)")
     log(f"Frame rate: {fps_value} fps")
     log(f"Resolution: {width_value}x{height_value}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {session_dir}/video-%05d.h264")
+    log("Recording mode: single rpicam process with --segment (avoids per-clip startup loss)")
 
-    start_epoch_ms = now_epoch_milliseconds()
-    end_epoch_ms = start_epoch_ms + length_ms if length_ms > 0 else 0
+    capture_timeout_ms = length_ms if length_ms > 0 else 0
+    video_args = [
+        "--nopreview",
+        "--timeout",
+        str(capture_timeout_ms),
+        "--framerate",
+        fps_value,
+        "--codec",
+        "h264",
+        "--inline",
+        "--width",
+        str(width_value),
+        "--height",
+        str(height_value),
+        "--segment",
+        str(segment_ms),
+        "--output",
+        str(session_dir / "video-%05d.h264"),
+    ]
+    if not is_auto_focus_value(focus_value):
+        video_args.extend(["--lens-position", focus_value])
 
-    clip_index = 0
-    while True:
-        if loop_enabled:
-            now_ms = now_epoch_milliseconds()
-            expected_index = (now_ms - start_epoch_ms + loop_ms - 1) // loop_ms
-            if expected_index > clip_index:
-                skipped_slots = expected_index - clip_index
-                log(f"scheduler behind by {skipped_slots} slot(s); skipping ahead to preserve start-time alignment")
-                clip_index = expected_index
-            target_epoch_ms = start_epoch_ms + (clip_index * loop_ms)
-            sleep_until_epoch_milliseconds(target_epoch_ms)
-
-        now_ms = now_epoch_milliseconds()
-        if end_epoch_ms > 0 and now_ms >= end_epoch_ms:
-            break
-
-        clip_timeout_ms = segment_ms
-        if end_epoch_ms > 0:
-            remaining_ms = end_epoch_ms - now_ms
-            if remaining_ms <= 0:
-                break
-            if clip_timeout_ms > remaining_ms:
-                clip_timeout_ms = remaining_ms
-
-        output_file = session_dir / f"video-{clip_index:05d}.h264"
-        log(f"Starting clip index={clip_index} timeout={clip_timeout_ms}ms output={output_file}")
-
-        video_args = [
-            "--nopreview",
-            "--timeout",
-            str(clip_timeout_ms),
-            "--framerate",
-            fps_value,
-            "--codec",
-            "h264",
-            "--inline",
-            "--width",
-            str(width_value),
-            "--height",
-            str(height_value),
-        ]
-        if not is_auto_focus_value(focus_value):
-            video_args.extend(["--lens-position", focus_value])
-        video_args.extend(["--output", str(output_file)])
-
-        rc = run_capture(video_cmd, video_args)
-        if rc != 0:
-            return rc
-        clip_index += 1
-
-    return 0
+    log(
+        "Starting segmented capture: "
+        f"timeout={capture_timeout_ms}ms segment={segment_ms}ms output={session_dir / 'video-%05d.h264'}"
+    )
+    return run_capture(video_cmd, video_args)
 
 
 if __name__ == "__main__":

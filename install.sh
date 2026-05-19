@@ -368,6 +368,7 @@ main() {
     log_info "  antcam length report"
     log_info "  antcam segment report"
     log_info "  antcam loop report"
+    log_info "  antcam capture report"
     log_info "  antcam start video"
     log_info "  antcam start photos"
     log_info "  antcam stop"

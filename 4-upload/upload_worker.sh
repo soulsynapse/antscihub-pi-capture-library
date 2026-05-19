@@ -110,6 +110,7 @@ MAX_RETRIES="${MAX_RETRIES:-5}"
 SCAN_INTERVAL="${SCAN_INTERVAL:-10}"
 MIN_FILE_AGE_DEFAULT="${MIN_FILE_AGE_DEFAULT:-30}"
 MIN_FILE_AGE_STILL_IMAGE="${MIN_FILE_AGE_STILL_IMAGE:-3}"
+MIN_FILE_AGE_VIDEO="${MIN_FILE_AGE_VIDEO:-120}"
 MIN_FILE_AGE_STATE_AND_LOG="${MIN_FILE_AGE_STATE_AND_LOG:-300}"
 FILE_STABILITY_CHECK_INTERVAL_DEFAULT="${FILE_STABILITY_CHECK_INTERVAL_DEFAULT:-10}"
 FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE="${FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE:-3}"
@@ -122,6 +123,7 @@ DEVICE_ID_CACHE_READY="false"
 MQTT_PUBLISH_WARNING_EMITTED="false"
 SETTINGS_WARNING_EMITTED="false"
 PAUSE_NOTICE_EMITTED="false"
+OPEN_FILE_CHECK_TOOL=""
 
 CURRENT_UPLOAD_PROFILE=""
 CURRENT_UPLOAD_RETENTION=""
@@ -715,11 +717,38 @@ is_uploadable() {
     return 0
 }
 
+is_excluded_runtime_config_file() {
+    local relative_path="$1"
+    local lower_relative="${relative_path,,}"
+
+    case "${lower_relative}" in
+        config/state.env|*/config/state.env|config/capture.log|*/config/capture.log)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 is_still_image() {
     local basename="$1"
     local lower_basename="${basename,,}"
     case "${lower_basename}" in
         *.jpg|*.jpeg|*.png|*.tif|*.tiff|*.bmp|*.gif|*.webp|*.heic|*.heif|*.dng|*.cr2|*.cr3|*.nef|*.arw|*.orf|*.rw2|*.raf)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_video_file() {
+    local basename="$1"
+    local lower_basename="${basename,,}"
+    case "${lower_basename}" in
+        *.h264|*.h265|*.hevc|*.mp4|*.mov|*.mkv|*.avi|*.mts|*.m2ts|*.ts|*.webm|*.mjpeg|*.yuv)
             return 0
             ;;
         *)
@@ -747,6 +776,8 @@ required_min_age_for_file() {
         echo "${MIN_FILE_AGE_STATE_AND_LOG}"
     elif is_still_image "${basename}"; then
         echo "${MIN_FILE_AGE_STILL_IMAGE}"
+    elif is_video_file "${basename}"; then
+        echo "${MIN_FILE_AGE_VIDEO}"
     else
         echo "${MIN_FILE_AGE_DEFAULT}"
     fi
@@ -775,6 +806,32 @@ is_file_stable() {
 
     final_size="$(stat -c %s "${file}" 2>/dev/null || echo 0)"
     [[ "${initial_size}" -eq "${final_size}" ]]
+}
+
+init_open_file_check_tool() {
+    if command -v lsof >/dev/null 2>&1; then
+        OPEN_FILE_CHECK_TOOL="lsof"
+    elif command -v fuser >/dev/null 2>&1; then
+        OPEN_FILE_CHECK_TOOL="fuser"
+    else
+        OPEN_FILE_CHECK_TOOL="none"
+        log "WARN" "No lsof/fuser found; open-file detection is disabled"
+    fi
+}
+
+is_file_currently_open() {
+    local file="$1"
+    case "${OPEN_FILE_CHECK_TOOL}" in
+        lsof)
+            lsof -t -- "${file}" >/dev/null 2>&1
+            ;;
+        fuser)
+            fuser "${file}" >/dev/null 2>&1
+            ;;
+        *)
+            return 1
+            ;;
+    esac
 }
 
 profile_targets_for_attempt() {
@@ -808,81 +865,17 @@ remote_path_exists() {
     [[ -n "${listing//[[:space:]]/}" ]]
 }
 
-build_conflict_relative_path() {
-    local relative_path="$1"
-    local attempt="$2"
-    local dir_part=""
-    local file_part="${relative_path}"
-    local stem="${file_part}"
-    local ext=""
-    local suffix="__${MACHINE_SUFFIX}"
-
-    if (( attempt > 1 )); then
-        suffix="${suffix}-${attempt}"
-    fi
-
-    if [[ "${relative_path}" == */* ]]; then
-        dir_part="${relative_path%/*}"
-        file_part="${relative_path##*/}"
-    fi
-
-    if [[ "${file_part}" == *.* && "${file_part}" != .* ]]; then
-        stem="${file_part%.*}"
-        ext=".${file_part##*.}"
-    else
-        stem="${file_part}"
-    fi
-
-    if [[ -n "${dir_part}" ]]; then
-        printf '%s/%s%s%s' "${dir_part}" "${stem}" "${suffix}" "${ext}"
-    else
-        printf '%s%s%s' "${stem}" "${suffix}" "${ext}"
-    fi
-}
-
 resolve_remote_target() {
     local relative_path="$1"
-    local selected_relative="${relative_path}"
     local selected_target
-    selected_target="$(build_remote_target "${selected_relative}")"
-
-    if ! remote_path_exists "${selected_target}"; then
-        printf '%s|%s' "${selected_relative}" "${selected_target}"
-        return 0
-    fi
-
-    local attempt=1
-    while true; do
-        selected_relative="$(build_conflict_relative_path "${relative_path}" "${attempt}")"
-        selected_target="$(build_remote_target "${selected_relative}")"
-        if ! remote_path_exists "${selected_target}"; then
-            printf '%s|%s' "${selected_relative}" "${selected_target}"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-    done
+    selected_target="$(build_remote_target "${relative_path}")"
+    printf '%s|%s' "${relative_path}" "${selected_target}"
 }
 
 resolve_local_target_path() {
     local relative_path="$1"
-    local selected_relative="${relative_path}"
-    local selected_target="${CURRENT_UPLOAD_LOCAL_TARGET%/}/${selected_relative}"
-
-    if [[ ! -e "${selected_target}" ]]; then
-        printf '%s|%s' "${selected_relative}" "${selected_target}"
-        return 0
-    fi
-
-    local attempt=1
-    while true; do
-        selected_relative="$(build_conflict_relative_path "${relative_path}" "${attempt}")"
-        selected_target="${CURRENT_UPLOAD_LOCAL_TARGET%/}/${selected_relative}"
-        if [[ ! -e "${selected_target}" ]]; then
-            printf '%s|%s' "${selected_relative}" "${selected_target}"
-            return 0
-        fi
-        attempt=$((attempt + 1))
-    done
+    local selected_target="${CURRENT_UPLOAD_LOCAL_TARGET%/}/${relative_path}"
+    printf '%s|%s' "${relative_path}" "${selected_target}"
 }
 
 calculate_backoff() {
@@ -1014,6 +1007,18 @@ ship_to_cloud_target() {
     remote_target="${selection#*|}"
     file_size="$(stat -c %s "${file}" 2>/dev/null || echo 0)"
 
+    if remote_path_exists "${remote_target}"; then
+        SHIP_DESTINATION="${CURRENT_UPLOAD_RCLONE_REMOTE}:${CURRENT_UPLOAD_RCLONE_PATH}"
+        if [[ -z "${CURRENT_UPLOAD_RCLONE_PATH}" ]]; then
+            SHIP_DESTINATION="${CURRENT_UPLOAD_RCLONE_REMOTE}:"
+        fi
+        SHIP_DESTINATION_PATH="${remote_target}"
+        SHIP_SELECTED_RELATIVE="${selected_relative}"
+        SHIP_FILE_SIZE="${file_size}"
+        SHIP_ALREADY_PRESENT="true"
+        return 0
+    fi
+
     if ! rclone copyto "${file}" "${remote_target}" --immutable --progress --stats=0 2>&1 | tee -a "${LOG_FILE}"; then
         SHIP_FAILURE_REASON="rclone_copy_failed"
         return 1
@@ -1026,6 +1031,7 @@ ship_to_cloud_target() {
     SHIP_DESTINATION_PATH="${remote_target}"
     SHIP_SELECTED_RELATIVE="${selected_relative}"
     SHIP_FILE_SIZE="${file_size}"
+    SHIP_ALREADY_PRESENT="false"
     return 0
 }
 
@@ -1055,6 +1061,24 @@ ship_to_local_target() {
     target_dir="$(dirname "${target_path}")"
     mkdir -p "${target_dir}"
 
+    if [[ -f "${target_path}" ]]; then
+        local source_size target_size
+        source_size="$(stat -c %s "${file}" 2>/dev/null || echo 0)"
+        target_size="$(stat -c %s "${target_path}" 2>/dev/null || echo -1)"
+
+        if [[ "${source_size}" -eq "${target_size}" ]]; then
+            SHIP_DESTINATION="local:${CURRENT_UPLOAD_LOCAL_TARGET}"
+            SHIP_DESTINATION_PATH="${target_path}"
+            SHIP_SELECTED_RELATIVE="${selected_relative}"
+            SHIP_FILE_SIZE="${source_size}"
+            SHIP_ALREADY_PRESENT="true"
+            return 0
+        fi
+
+        SHIP_FAILURE_REASON="local_destination_conflict"
+        return 1
+    fi
+
     tmp_path="${target_path}.tmp.$$.${RANDOM}"
     if ! cp -p "${file}" "${tmp_path}"; then
         rm -f "${tmp_path}" >/dev/null 2>&1 || true
@@ -1073,6 +1097,7 @@ ship_to_local_target() {
     SHIP_DESTINATION_PATH="${target_path}"
     SHIP_SELECTED_RELATIVE="${selected_relative}"
     SHIP_FILE_SIZE="${file_size}"
+    SHIP_ALREADY_PRESENT="false"
     return 0
 }
 
@@ -1097,6 +1122,7 @@ attempt_ship_artifact() {
         SHIP_DESTINATION_PATH=""
         SHIP_SELECTED_RELATIVE=""
         SHIP_FILE_SIZE="0"
+        SHIP_ALREADY_PRESENT="false"
 
         if [[ "${target}" == "local" ]]; then
             if ship_to_local_target "${file}" "${relative_path}"; then
@@ -1115,6 +1141,9 @@ SET status='SHIPPED',
 WHERE id=${artifact_id};
 "
                 emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "target_local" ""
+                if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
+                    log "INFO" "Local destination already had file; treated as shipped: ${relative_path}"
+                fi
                 return 0
             fi
             set_artifact_target_status "${artifact_id}" "local" "FAILED" "${SHIP_FAILURE_REASON}" "${current_epoch}" 0
@@ -1138,6 +1167,9 @@ SET status='SHIPPED',
 WHERE id=${artifact_id};
 "
                 emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "target_cloud" ""
+                if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
+                    log "INFO" "Cloud destination already had file; treated as shipped: ${relative_path}"
+                fi
                 return 0
             fi
             set_artifact_target_status "${artifact_id}" "cloud" "FAILED" "${SHIP_FAILURE_REASON}" "${current_epoch}" 0
@@ -1302,6 +1334,7 @@ require_sqlite3
 init_db
 archive_legacy_state
 refresh_runtime_settings
+init_open_file_check_tool
 
 log "INFO" "Upload worker starting"
 log "INFO" "Spool dir: ${UPLOAD_DIR}"
@@ -1329,6 +1362,10 @@ while true; do
             continue
         fi
 
+        if is_excluded_runtime_config_file "${relative_path}"; then
+            continue
+        fi
+
         log_file_detected_once "${file}" "${relative_path}"
 
         mtime="$(stat -c %Y "${file}" 2>/dev/null || echo 0)"
@@ -1337,6 +1374,10 @@ while true; do
 
         required_min_age="$(required_min_age_for_file "${basename}")"
         if [[ "${age}" -lt "${required_min_age}" ]]; then
+            continue
+        fi
+
+        if is_file_currently_open "${file}"; then
             continue
         fi
 

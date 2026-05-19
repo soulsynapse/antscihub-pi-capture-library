@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam loop set`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
+2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam loop set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam focus check`)
 3. Store-and-forward upload control (`antcam upload set ...`, `antcam upload report ...`, `antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
@@ -81,6 +81,7 @@ antcam upload pause
 antcam upload resume
 antcam upload reload
 antcam upload prune --older-than <duration> [--dry-run]
+antcam capture report
 antcam focus report
 antcam fps report
 antcam length report

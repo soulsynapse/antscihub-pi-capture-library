@@ -2505,7 +2505,7 @@ start_recording() {
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
             bash "${record_script}"
-    ) > >(tee "${record_console_log}") 2>&1 &
+    ) >> "${record_console_log}" 2>&1 &
     record_pid="$!"
 
     if ! write_recording_state_for_home "${user_home}" "${record_pid}" "${capture_dir}" "${record_script}" "${requested_script_name}"; then

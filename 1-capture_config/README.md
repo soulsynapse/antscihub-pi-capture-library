@@ -33,6 +33,7 @@ antcam upload pause
 antcam upload resume
 antcam upload reload
 antcam upload prune --older-than <duration> [--dry-run]
+antcam capture report
 antcam focus report
 antcam fps report
 antcam length report
@@ -87,11 +88,12 @@ Current bundled profiles:
 - `antcam upload set remote <rclone-remote>` sets cloud remote (`none` to unset)
 - `antcam upload set remote-path <path>` sets remote subpath (`none` or empty for remote root)
 - `antcam upload set watermark-high <percent>` and `... watermark-low <percent>` set spool thresholds (defaults `80`/`70`)
-- `antcam upload report`, `report upload queue`, and `report upload targets` expose upload config and queue state
+- `antcam upload report`, `antcam upload report queue`, and `antcam upload report targets` expose upload config and queue state
 - `antcam upload report` and `antcam upload report targets` fall back to `antscihub-upload.service` environment defaults (for example `RCLONE_REMOTE`) when Desktop config files are unset
 - `antcam upload pause` / `resume` toggles upload processing without stopping the service
 - `antcam upload reload` restarts `antscihub-upload.service`
 - `antcam upload prune --older-than <duration> [--dry-run]` prunes old shipped artifacts from spool
+- `antcam capture report` returns a consolidated capture+recording settings report
 - `antcam focus report` returns the saved focus value (or `auto` default)
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
@@ -106,6 +108,6 @@ Current bundled profiles:
 - `antcam focus check` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
 - `antcam focus check` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
 - `antcam focus check` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` as `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
-- If the autofocus helper fails, `antcam focus` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- If the autofocus helper fails, `antcam focus check` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI, profile files, focus helper, and recording scripts

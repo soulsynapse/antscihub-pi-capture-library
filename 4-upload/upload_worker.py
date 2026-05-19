@@ -221,6 +221,7 @@ class UploadWorker:
         self.protect_stop_cooldown_seconds = _as_int("PROTECT_STOP_COOLDOWN_SECONDS", 300)
         self.retry_base_delay_seconds = _as_int("RETRY_BASE_DELAY_SECONDS", 30)
         self.retry_max_delay_seconds = _as_int("RETRY_MAX_DELAY_SECONDS", 600)
+        self.retry_jitter_max_seconds = max(0, _as_int("RETRY_JITTER_MAX_SECONDS", 30))
         self.rclone_lsf_timeout_seconds = max(5, _as_int("RCLONE_LSF_TIMEOUT_SECONDS", 20))
         self.rclone_copy_timeout_seconds = max(30, _as_int("RCLONE_COPY_TIMEOUT_SECONDS", 1800))
         self.rclone_connect_timeout_seconds = max(5, _as_int("RCLONE_CONNECT_TIMEOUT_SECONDS", 15))
@@ -1022,7 +1023,9 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                         self.global_retry_pause_until_epoch,
                         current_epoch + self.rate_limit_cooldown_seconds,
                     )
-                next_retry_epoch = current_epoch + backoff
+                retry_jitter_seconds = random.randint(0, self.retry_jitter_max_seconds)
+                retry_delay_seconds = backoff + retry_jitter_seconds
+                next_retry_epoch = current_epoch + retry_delay_seconds
                 self.db_exec(
                     "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",
                     (new_retry_count, next_retry_epoch, final_error, current_epoch, artifact_id),
@@ -1030,6 +1033,8 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                 event_status = "retry"
                 event_attempt = str(new_retry_count)
                 event_reason = f"retry_backoff_{backoff}s"
+                if retry_jitter_seconds > 0:
+                    event_reason = f"{event_reason}_jitter_{retry_jitter_seconds}s"
 
         if event_status:
             self.emit_upload_event(event_status, relative_path, "", size_bytes, event_attempt, event_reason, "")
@@ -1958,6 +1963,10 @@ LIMIT ?;
         self.log(
             "INFO",
             f"Initial upload jitter: 0-{self.initial_upload_jitter_max_seconds}s before first attempt",
+        )
+        self.log(
+            "INFO",
+            f"Retry jitter: 0-{self.retry_jitter_max_seconds}s added to retry backoff delays",
         )
 
     def run(self) -> int:

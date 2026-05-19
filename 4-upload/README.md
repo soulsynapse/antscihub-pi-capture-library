@@ -321,15 +321,17 @@ After all targets fail:
 7. Else:
 8. Backoff = `RETRY_BASE_DELAY_SECONDS * 2^(attempt-1)` capped by `RETRY_MAX_DELAY_SECONDS`.
 9. If `final_error` is rate-limit (`rclone_rate_limited`), enforce minimum backoff of `RATE_LIMIT_COOLDOWN_SECONDS`.
-10. If `final_error` is rate-limit, set global retry pause until `now + RATE_LIMIT_COOLDOWN_SECONDS`.
-11. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff`, set `last_error`, set `updated_at_epoch`.
-12. Emit `retry` with reason `retry_backoff_<N>s`.
+10. Compute retry jitter as random integer seconds in `[0, RETRY_JITTER_MAX_SECONDS]` (default `0..30`).
+11. If `final_error` is rate-limit, set global retry pause until `now + RATE_LIMIT_COOLDOWN_SECONDS`.
+12. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff+jitter`, set `last_error`, set `updated_at_epoch`.
+13. Emit `retry` with reason `retry_backoff_<N>s` (and `_jitter_<N>s` when jitter > 0).
 
 Defaults:
 
 - `MAX_RETRIES=5`
 - `RETRY_BASE_DELAY_SECONDS=30`
 - `RETRY_MAX_DELAY_SECONDS=600`
+- `RETRY_JITTER_MAX_SECONDS=30`
 - `RATE_LIMIT_COOLDOWN_SECONDS=300`
 
 ## Exception Handling Around Attempts

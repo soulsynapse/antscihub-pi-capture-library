@@ -732,6 +732,10 @@ report_upload_queue() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for upload queue report"
 
+    local paused_flag
+    paused_flag="$(read_upload_effective_paused_for_home "${user_home}" 2>/dev/null || echo "unknown")"
+    echo "upload_paused=${paused_flag}"
+
     local queue_db
     queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
     echo "queue_db=${queue_db}"
@@ -761,6 +765,29 @@ report_upload_queue() {
         echo "oldest_pending_age_seconds=${pending_age}"
     else
         echo "oldest_pending_age_seconds=0"
+    fi
+
+    local due_now_count
+    due_now_count="$(sqlite3 -noheader "${queue_db}" "SELECT COUNT(*) FROM artifacts WHERE status='QUEUED' OR (status='RETRY_WAIT' AND next_retry_epoch <= ${now_epoch});" 2>/dev/null || echo "0")"
+    echo "artifacts_due_now=${due_now_count}"
+
+    local oldest_pending_row pending_id pending_status pending_path pending_next_retry pending_last_error pending_retry_wait
+    oldest_pending_row="$(sqlite3 -separator '|' -noheader "${queue_db}" "SELECT id, status, IFNULL(relative_path,''), IFNULL(next_retry_epoch,0), IFNULL(last_error,'') FROM artifacts WHERE status IN ('QUEUED','RETRY_WAIT','IN_FLIGHT') ORDER BY discovered_at_epoch ASC, id ASC LIMIT 1;" 2>/dev/null || true)"
+    if [[ -n "${oldest_pending_row}" ]]; then
+        IFS='|' read -r pending_id pending_status pending_path pending_next_retry pending_last_error <<< "${oldest_pending_row}"
+        echo "oldest_pending_id=${pending_id}"
+        echo "oldest_pending_status=${pending_status}"
+        echo "oldest_pending_path=${pending_path}"
+        echo "oldest_pending_last_error=${pending_last_error}"
+        if [[ "${pending_status}" == "RETRY_WAIT" ]]; then
+            pending_retry_wait=$((pending_next_retry - now_epoch))
+            if [[ "${pending_retry_wait}" -lt 0 ]]; then
+                pending_retry_wait=0
+            fi
+            echo "oldest_pending_retry_wait_seconds=${pending_retry_wait}"
+        else
+            echo "oldest_pending_retry_wait_seconds=0"
+        fi
     fi
 }
 
@@ -848,4 +875,3 @@ prune_uploaded_files() {
         echo "prune completed pruned=${pruned_count} skipped=${skipped_count}"
     fi
 }
-

@@ -1,6 +1,7 @@
 # Upload (Store-and-Forward)
 
-`upload_worker.sh` implements a spool-and-ship upload model.
+`upload_worker.py` is the primary spool-and-ship worker.
+`upload_worker.sh` remains as a thin launcher entrypoint for systemd compatibility.
 
 - Spool source: `<desktop>/5-UPLOAD`
 - Queue state: `${XDG_STATE_HOME:-~/.local/state}/antscihub-upload/queue.db`
@@ -14,6 +15,12 @@
 - Upload path is copy-only:
   - Cloud: `rclone copyto`
   - Local target: local atomic copy (temp + rename)
+- Abrupt restart recovery:
+  - `IN_FLIGHT` rows are moved back to retry state on startup.
+  - SQLite uses durable journal settings (`WAL` + `synchronous=FULL`).
+- Network resilience:
+  - rclone existence checks and copy operations use explicit timeouts.
+  - Failed attempts are retried with exponential backoff.
 
 ## Profiles
 

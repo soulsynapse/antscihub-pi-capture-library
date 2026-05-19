@@ -1,0 +1,1565 @@
+#!/usr/bin/env python3
+"""AntSciHub upload worker (hybrid Python rewrite).
+
+Store-and-forward spool shipper:
+- Scans <desktop>/5-UPLOAD
+- Tracks artifact lifecycle in SQLite
+- Ships by copy (rclone/local)
+- Applies protect/rolling retention policies
+"""
+
+from __future__ import annotations
+
+import datetime as _dt
+import fcntl
+import fnmatch
+import hashlib
+import json
+import os
+import random
+import re
+import shutil
+import signal
+import socket
+import sqlite3
+import subprocess
+import sys
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def _as_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+def _timestamp_local() -> str:
+    return _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _timestamp_utc_iso() -> str:
+    return _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _epoch_now() -> int:
+    return int(time.time())
+
+
+def _normalize_text(value: str) -> str:
+    return value.replace("\r", "").replace("\n", "")
+
+
+def _sanitize_machine_suffix(value: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]", "_", value)
+    cleaned = re.sub(r"__+", "_", cleaned)
+    cleaned = cleaned.strip("_")
+    return cleaned or "unknown-machine"
+
+
+def _is_truthy(value: str) -> Optional[bool]:
+    lowered = value.strip().lower()
+    if lowered in {"1", "true", "yes", "on"}:
+        return True
+    if lowered in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
+def _first_path_entry(value: str) -> str:
+    # systemd can provide colon-separated directory lists for managed dirs.
+    return value.split(":", 1)[0]
+
+
+def _cmd_exists(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+@dataclass
+class RuntimeSettings:
+    profile: str
+    retention: str
+    paused: bool
+    local_target: str
+    remote_name: str
+    remote_path: str
+    high_watermark: int
+    low_watermark: int
+
+
+class UploadWorker:
+    STILL_IMAGE_PATTERNS = (
+        "*.jpg",
+        "*.jpeg",
+        "*.png",
+        "*.tif",
+        "*.tiff",
+        "*.bmp",
+        "*.gif",
+        "*.webp",
+        "*.heic",
+        "*.heif",
+        "*.dng",
+        "*.cr2",
+        "*.cr3",
+        "*.nef",
+        "*.arw",
+        "*.orf",
+        "*.rw2",
+        "*.raf",
+    )
+    VIDEO_PATTERNS = (
+        "*.h264",
+        "*.h265",
+        "*.hevc",
+        "*.mp4",
+        "*.mov",
+        "*.mkv",
+        "*.avi",
+        "*.mts",
+        "*.m2ts",
+        "*.ts",
+        "*.webm",
+        "*.mjpeg",
+        "*.yuv",
+    )
+    RUNTIME_STATE_PATTERNS = (
+        "*.env",
+        "*.pid",
+        "*.lock",
+        "*.tmp",
+        "*.temp",
+        "*.part",
+        "*.partial",
+        "*.swp",
+        "*.swo",
+        "*.db",
+        "*.db-*",
+        "*.sqlite",
+        "*.sqlite-*",
+        "*.journal",
+        "state.env",
+        "capture.log",
+    )
+
+    def __init__(self) -> None:
+        self.upload_dir = self._resolve_upload_dir()
+        self.upload_config_dir = self._resolve_upload_config_dir(self.upload_dir)
+
+        state_base = _env(
+            "STATE_DIRECTORY",
+            f"{_env('XDG_STATE_HOME', os.path.join(_env('HOME', ''), '.local', 'state'))}/antscihub-upload",
+        )
+        log_base = _env(
+            "LOGS_DIRECTORY",
+            f"{_env('XDG_STATE_HOME', os.path.join(_env('HOME', ''), '.local', 'state'))}/antscihub-upload",
+        )
+        runtime_base = _env("RUNTIME_DIRECTORY", _env("XDG_RUNTIME_DIR", "/tmp"))
+
+        self.state_dir = _first_path_entry(state_base)
+        self.log_dir = _first_path_entry(log_base)
+        self.runtime_dir = _first_path_entry(runtime_base)
+
+        self.db_file = os.path.join(self.state_dir, "queue.db")
+        self.legacy_processed_file = os.path.join(self.state_dir, "processed.txt")
+        self.log_file = os.path.join(self.log_dir, "antscihub-upload.log")
+        self.lock_file = os.path.join(self.state_dir, "antscihub-upload.lock")
+        self.protect_stop_stamp_file = os.path.join(self.state_dir, "last-protect-stop.epoch")
+
+        self.upload_profile_file = os.path.join(self.upload_config_dir, "upload-profile.txt")
+        self.upload_retention_file = os.path.join(self.upload_config_dir, "upload-retention.txt")
+        self.upload_paused_file = os.path.join(self.upload_config_dir, "upload-paused.txt")
+        self.upload_local_target_file = os.path.join(self.upload_config_dir, "upload-local-target.txt")
+        self.upload_rclone_remote_file = os.path.join(self.upload_config_dir, "upload-rclone-remote.txt")
+        self.upload_rclone_path_file = os.path.join(self.upload_config_dir, "upload-rclone-path.txt")
+        self.upload_high_watermark_file = os.path.join(self.upload_config_dir, "upload-high-watermark-percent.txt")
+        self.upload_low_watermark_file = os.path.join(self.upload_config_dir, "upload-low-watermark-percent.txt")
+
+        self.upload_service_name = _env("UPLOAD_SERVICE_NAME", "antscihub-upload.service")
+        self.upload_stop_command = _env("UPLOAD_STOP_COMMAND", "antcam stop")
+
+        self.fleet_event_topic_template = _env("FLEET_EVENT_TOPIC_TEMPLATE", "fleet/report/{DEVICE_ID}")
+        self.fleet_publish_bin = _env("FLEET_PUBLISH_BIN", "fleet-publish")
+        self.mqtt_report_bin = _env("MQTT_REPORT_BIN", "mqtt_report.py")
+        self.mqtt_event_enabled = _env("MQTT_EVENT_ENABLED", "true").lower() == "true"
+
+        machine_suffix = _env("MACHINE_SUFFIX", "")
+        if not machine_suffix:
+            machine_suffix = socket.gethostname()
+        self.machine_suffix = _sanitize_machine_suffix(machine_suffix)
+
+        self.default_upload_profile = _env("UPLOAD_PROFILE", "field")
+        self.default_upload_retention = _env("UPLOAD_RETENTION", "protect")
+        self.default_upload_paused = _env("UPLOAD_PAUSED", "false")
+        self.default_upload_local_target = _env("UPLOAD_LOCAL_TARGET_PATH", "")
+        self.default_upload_rclone_remote = _env("RCLONE_REMOTE", "")
+        self.default_upload_rclone_path = _env("RCLONE_PATH", "")
+        self.default_upload_high_watermark = _env("UPLOAD_HIGH_WATERMARK_PERCENT", "80")
+        self.default_upload_low_watermark = _env("UPLOAD_LOW_WATERMARK_PERCENT", "70")
+
+        self.max_retries = _as_int("MAX_RETRIES", 5)
+        self.scan_interval = _as_int("SCAN_INTERVAL", 10)
+        self.min_file_age_default = _as_int("MIN_FILE_AGE_DEFAULT", 30)
+        self.min_file_age_still_image = _as_int("MIN_FILE_AGE_STILL_IMAGE", 3)
+        self.min_file_age_video = _as_int("MIN_FILE_AGE_VIDEO", 120)
+        self.min_file_age_state_and_log = _as_int("MIN_FILE_AGE_STATE_AND_LOG", 300)
+        self.file_stability_interval_default = _as_int("FILE_STABILITY_CHECK_INTERVAL_DEFAULT", 10)
+        self.file_stability_interval_still_image = _as_int("FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE", 3)
+        self.protect_stop_cooldown_seconds = _as_int("PROTECT_STOP_COOLDOWN_SECONDS", 300)
+        self.retry_base_delay_seconds = _as_int("RETRY_BASE_DELAY_SECONDS", 30)
+        self.retry_max_delay_seconds = _as_int("RETRY_MAX_DELAY_SECONDS", 600)
+        self.rclone_lsf_timeout_seconds = max(5, _as_int("RCLONE_LSF_TIMEOUT_SECONDS", 20))
+        self.rclone_copy_timeout_seconds = max(30, _as_int("RCLONE_COPY_TIMEOUT_SECONDS", 1800))
+        self.rclone_connect_timeout_seconds = max(5, _as_int("RCLONE_CONNECT_TIMEOUT_SECONDS", 15))
+        self.rclone_io_timeout_seconds = max(10, _as_int("RCLONE_IO_TIMEOUT_SECONDS", 120))
+
+        self.device_id_cache: Optional[str] = None
+        self.mqtt_publish_warning_emitted = False
+        self.settings_warning_emitted = False
+        self.pause_notice_emitted = False
+        self.open_file_check_tool = "none"
+        self.current_settings = RuntimeSettings(
+            profile="field",
+            retention="protect",
+            paused=False,
+            local_target="",
+            remote_name="",
+            remote_path="",
+            high_watermark=80,
+            low_watermark=70,
+        )
+        self.seen_file_detections: Dict[str, bool] = {}
+        self.seen_file_exclusions: Dict[str, bool] = {}
+        self.running = True
+
+        self._lock_handle = None
+        self.conn: Optional[sqlite3.Connection] = None
+
+    def _resolve_desktop_dir(self) -> str:
+        home = _env("HOME", "")
+        desktop_dir = ""
+
+        if _cmd_exists("xdg-user-dir"):
+            try:
+                result = subprocess.run(
+                    ["xdg-user-dir", "DESKTOP"],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                desktop_dir = result.stdout.strip()
+            except Exception:
+                desktop_dir = ""
+
+        if not desktop_dir or desktop_dir == home:
+            user_dirs_file = os.path.join(_env("XDG_CONFIG_HOME", os.path.join(home, ".config")), "user-dirs.dirs")
+            if os.path.isfile(user_dirs_file):
+                try:
+                    with open(user_dirs_file, "r", encoding="utf-8", errors="replace") as handle:
+                        for line in handle:
+                            line = line.strip()
+                            if line.startswith("XDG_DESKTOP_DIR="):
+                                raw = line.split("=", 1)[1].strip().strip('"')
+                                desktop_dir = raw.replace("$HOME", home)
+                                break
+                except Exception:
+                    desktop_dir = ""
+
+        if not desktop_dir or desktop_dir == home:
+            if os.path.isdir(os.path.join(home, "Desktop")):
+                desktop_dir = os.path.join(home, "Desktop")
+            elif os.path.isdir(os.path.join(home, "desktop")):
+                desktop_dir = os.path.join(home, "desktop")
+            else:
+                desktop_dir = os.path.join(home, "Desktop")
+
+        return desktop_dir.rstrip("/\\")
+
+    def _resolve_upload_dir(self) -> str:
+        explicit = _env("UPLOAD_DIR", "")
+        if explicit:
+            return explicit.rstrip("/\\")
+        return os.path.join(self._resolve_desktop_dir(), "5-UPLOAD")
+
+    def _resolve_upload_config_dir(self, upload_dir: str) -> str:
+        explicit = _env("UPLOAD_CONFIG_DIR", "")
+        if explicit:
+            return explicit.rstrip("/\\")
+        upload_parent = os.path.dirname(upload_dir.rstrip("/\\"))
+        return os.path.join(upload_parent, "4-CAPTURE", "config")
+
+    def log(self, level: str, message: str) -> None:
+        line = f"[{_timestamp_local()}] [{level}] {message}"
+        print(line, flush=True)
+        try:
+            with open(self.log_file, "a", encoding="utf-8", errors="replace") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
+
+    def log_raw(self, text: str) -> None:
+        print(text, flush=True)
+        try:
+            with open(self.log_file, "a", encoding="utf-8", errors="replace") as handle:
+                handle.write(text + "\n")
+        except Exception:
+            pass
+
+    def read_value_with_default(self, file_path: str, default: str) -> str:
+        if not os.path.isfile(file_path):
+            return default
+        try:
+            with open(file_path, "r", encoding="utf-8", errors="replace") as handle:
+                first = handle.readline()
+        except Exception:
+            return default
+        normalized = _normalize_text(first)
+        return normalized if normalized else default
+
+    @staticmethod
+    def is_valid_profile(value: str) -> bool:
+        return value in {"field", "cloud", "local"}
+
+    @staticmethod
+    def is_valid_retention(value: str) -> bool:
+        return value in {"protect", "rolling"}
+
+    @staticmethod
+    def normalize_remote_path(value: str) -> str:
+        normalized = _normalize_text(value).strip("/")
+        return "" if normalized == "." else normalized
+
+    @staticmethod
+    def normalize_watermark(value: str) -> Optional[int]:
+        if not re.fullmatch(r"\d+", value):
+            return None
+        parsed = int(value)
+        if parsed < 1 or parsed > 99:
+            return None
+        return parsed
+
+    def refresh_runtime_settings(self) -> None:
+        profile = self.read_value_with_default(self.upload_profile_file, self.default_upload_profile).lower()
+        if not self.is_valid_profile(profile):
+            profile = "field"
+            if not self.settings_warning_emitted:
+                self.log("WARN", "Invalid upload profile setting; falling back to field")
+                self.settings_warning_emitted = True
+
+        retention = self.read_value_with_default(self.upload_retention_file, self.default_upload_retention).lower()
+        if not self.is_valid_retention(retention):
+            retention = "protect"
+            if not self.settings_warning_emitted:
+                self.log("WARN", "Invalid upload retention setting; falling back to protect")
+                self.settings_warning_emitted = True
+
+        paused_raw = self.read_value_with_default(self.upload_paused_file, self.default_upload_paused)
+        paused = _is_truthy(paused_raw)
+        paused = False if paused is None else paused
+
+        local_target = self.read_value_with_default(self.upload_local_target_file, self.default_upload_local_target)
+        if local_target.lower() == "none":
+            local_target = ""
+
+        remote_name = self.read_value_with_default(self.upload_rclone_remote_file, self.default_upload_rclone_remote)
+        if remote_name.lower() == "none":
+            remote_name = ""
+
+        remote_path = self.read_value_with_default(self.upload_rclone_path_file, self.default_upload_rclone_path)
+        if remote_path.lower() == "none":
+            remote_path = ""
+        remote_path = self.normalize_remote_path(remote_path)
+
+        high_raw = self.read_value_with_default(self.upload_high_watermark_file, self.default_upload_high_watermark)
+        low_raw = self.read_value_with_default(self.upload_low_watermark_file, self.default_upload_low_watermark)
+        high = self.normalize_watermark(high_raw)
+        low = self.normalize_watermark(low_raw)
+        if high is None:
+            high = 80
+        if low is None:
+            low = 70
+        if low >= high:
+            low = max(1, high - 10)
+
+        self.current_settings = RuntimeSettings(
+            profile=profile,
+            retention=retention,
+            paused=paused,
+            local_target=local_target,
+            remote_name=remote_name,
+            remote_path=remote_path,
+            high_watermark=high,
+            low_watermark=low,
+        )
+
+    def resolve_device_id(self) -> str:
+        if self.device_id_cache is not None:
+            return self.device_id_cache
+
+        candidate = ""
+        if _env("DEVICE_ID", ""):
+            candidate = _env("DEVICE_ID", "")
+        elif _env("FLEET_DEVICE_ID", ""):
+            candidate = _env("FLEET_DEVICE_ID", "")
+        candidate = _normalize_text(candidate).replace("\t", "").replace(" ", "")
+        if not candidate:
+            candidate = self.machine_suffix
+
+        self.device_id_cache = candidate
+        return candidate
+
+    def build_fleet_event_topic(self, device_id: str) -> str:
+        topic = self.fleet_event_topic_template.replace("{DEVICE_ID}", device_id)
+        return topic or f"fleet/report/{device_id}"
+
+    @staticmethod
+    def upload_status_to_report_name(status: str) -> str:
+        return {
+            "queued": "upload_queued",
+            "in_flight": "upload_in_flight",
+            "shipped": "upload_shipped",
+            "failed": "upload_failed",
+            "retry": "upload_retry_scheduled",
+            "dead_letter": "upload_dead_letter",
+            "pruned": "upload_pruned",
+            "paused": "upload_paused",
+            "protect_stop": "upload_protect_stop_requested",
+        }.get(status, "upload_status")
+
+    @staticmethod
+    def upload_status_to_severity(status: str) -> str:
+        return {
+            "queued": "ROUTINE",
+            "in_flight": "ATTENTION",
+            "shipped": "INFO",
+            "pruned": "INFO",
+            "retry": "WARNING",
+            "paused": "WARNING",
+            "failed": "ERROR",
+            "dead_letter": "ERROR",
+            "protect_stop": "ERROR",
+        }.get(status, "INFO")
+
+    @staticmethod
+    def upload_status_to_success(status: str) -> bool:
+        return status in {"queued", "in_flight", "shipped", "pruned"}
+
+    def _run_quiet(self, args: Sequence[str]) -> bool:
+        try:
+            result = subprocess.run(args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return result.returncode == 0
+        except Exception:
+            return False
+
+    def publish_with_fleet_publish(self, topic: str, payload: str) -> bool:
+        if not _cmd_exists(self.fleet_publish_bin):
+            return False
+
+        variants = [
+            [self.fleet_publish_bin, "--topic", topic, "--json", payload],
+            [self.fleet_publish_bin, "--topic", topic, "--payload", payload],
+            [self.fleet_publish_bin, "--topic", topic, "--message", payload],
+            [self.fleet_publish_bin, "-t", topic, "-m", payload],
+        ]
+        return any(self._run_quiet(args) for args in variants)
+
+    def publish_with_mqtt_report_cli(self, topic: str, payload: str) -> bool:
+        if not _cmd_exists(self.mqtt_report_bin):
+            return False
+        return self._run_quiet([self.mqtt_report_bin, "--topic", topic, "--json", payload])
+
+    def publish_with_fleet_mqtt_python(self, topic: str, payload: str) -> bool:
+        try:
+            payload_obj = json.loads(payload)
+        except Exception:
+            payload_obj = payload
+
+        try:
+            from mqtt_client import FleetMQTT  # type: ignore
+        except Exception:
+            return False
+
+        client = None
+        for ctor in (lambda: FleetMQTT(), lambda: FleetMQTT("antscihub-upload")):
+            try:
+                client = ctor()
+                break
+            except Exception:
+                continue
+        if client is None:
+            return False
+
+        published = False
+        try:
+            for method_name in ("publish_json", "publish", "send"):
+                method = getattr(client, method_name, None)
+                if not callable(method):
+                    continue
+                try:
+                    if method_name == "publish_json":
+                        parsed = payload_obj
+                        if isinstance(parsed, str):
+                            parsed = json.loads(parsed)
+                        try:
+                            method(topic, parsed, encrypt=True)
+                        except TypeError:
+                            method(topic, parsed)
+                    else:
+                        try:
+                            method(topic, payload_obj, encrypt=True)
+                        except TypeError:
+                            try:
+                                method(topic, payload_obj)
+                            except TypeError:
+                                method(topic, payload)
+                    published = True
+                    break
+                except Exception:
+                    continue
+        finally:
+            for close_name in ("close", "disconnect", "stop"):
+                close_method = getattr(client, close_name, None)
+                if callable(close_method):
+                    try:
+                        close_method()
+                    except Exception:
+                        pass
+
+        return published
+
+    def publish_upload_mqtt_event(
+        self,
+        status: str,
+        relative_path: str,
+        destination: str,
+        size_bytes: str,
+        attempt: str,
+        reason: str,
+        exit_code: str,
+    ) -> None:
+        if not self.mqtt_event_enabled:
+            return
+
+        device_id = self.resolve_device_id()
+        report_name = self.upload_status_to_report_name(status)
+        severity = self.upload_status_to_severity(status)
+        success = self.upload_status_to_success(status)
+        message = f"upload status={status}"
+        if relative_path:
+            message += f" file={relative_path}"
+        if reason:
+            message += f" reason={reason}"
+
+        payload = json.dumps(
+            {
+                "event": "report",
+                "report": report_name,
+                "device_id": device_id,
+                "timestamp": _epoch_now(),
+                "service": self.upload_service_name,
+                "success": success,
+                "severity": severity,
+                "message": message,
+                "file": relative_path,
+                "destination": destination,
+                "size_bytes": str(size_bytes),
+                "attempt": str(attempt),
+                "reason": str(reason),
+                "exit_code": str(exit_code),
+            },
+            separators=(",", ":"),
+        )
+
+        topic = self.build_fleet_event_topic(device_id)
+        if self.publish_with_fleet_publish(topic, payload):
+            return
+        if self.publish_with_mqtt_report_cli(topic, payload):
+            return
+        if self.publish_with_fleet_mqtt_python(topic, payload):
+            return
+        if not self.mqtt_publish_warning_emitted:
+            self.log("WARN", "Unable to publish upload MQTT events")
+            self.mqtt_publish_warning_emitted = True
+
+    def emit_upload_event(
+        self,
+        status: str,
+        relative_path: str = "",
+        destination: str = "",
+        size_bytes: str = "unknown",
+        attempt: str = "",
+        reason: str = "",
+        exit_code: str = "",
+    ) -> None:
+        ts = _timestamp_utc_iso()
+        safe_file = shlex_quote(relative_path)
+        safe_dest = shlex_quote(destination)
+        print(
+            f"UPLOAD_EVENT status={status} ts={ts} file={safe_file} destination={safe_dest} size_bytes={size_bytes}",
+            flush=True,
+        )
+        self.publish_upload_mqtt_event(status, relative_path, destination, size_bytes, attempt, reason, exit_code)
+
+    def db_open(self) -> None:
+        self.conn = sqlite3.connect(self.db_file, timeout=5)
+        self.conn.execute("PRAGMA busy_timeout=5000;")
+        self.conn.execute("PRAGMA journal_mode=WAL;")
+        self.conn.execute("PRAGMA synchronous=FULL;")
+        self.conn.execute("PRAGMA foreign_keys=ON;")
+
+    def db_exec(self, sql: str, params: Sequence[object] = ()) -> None:
+        assert self.conn is not None
+        self.conn.execute(sql, tuple(params))
+        self.conn.commit()
+
+    def db_query_one(self, sql: str, params: Sequence[object] = ()) -> Optional[sqlite3.Row]:
+        assert self.conn is not None
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(sql, tuple(params))
+        row = cursor.fetchone()
+        return row
+
+    def init_db(self) -> None:
+        schema = """
+CREATE TABLE IF NOT EXISTS artifacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    file_key TEXT NOT NULL UNIQUE,
+    relative_path TEXT NOT NULL,
+    full_path TEXT NOT NULL,
+    inode INTEGER NOT NULL,
+    size_bytes INTEGER NOT NULL,
+    mtime_epoch INTEGER NOT NULL,
+    status TEXT NOT NULL,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    next_retry_epoch INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    discovered_at_epoch INTEGER NOT NULL,
+    updated_at_epoch INTEGER NOT NULL,
+    last_seen_epoch INTEGER NOT NULL,
+    last_attempt_epoch INTEGER NOT NULL DEFAULT 0,
+    first_shipped_epoch INTEGER NOT NULL DEFAULT 0,
+    shipped_target TEXT NOT NULL DEFAULT '',
+    pruned_at_epoch INTEGER NOT NULL DEFAULT 0,
+    profile_at_ship TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
+CREATE INDEX IF NOT EXISTS idx_artifacts_next_retry ON artifacts(next_retry_epoch);
+CREATE INDEX IF NOT EXISTS idx_artifacts_first_shipped ON artifacts(first_shipped_epoch);
+CREATE INDEX IF NOT EXISTS idx_artifacts_relative_path ON artifacts(relative_path);
+CREATE TABLE IF NOT EXISTS artifact_targets (
+    artifact_id INTEGER NOT NULL,
+    target_name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'PENDING',
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    last_attempt_epoch INTEGER NOT NULL DEFAULT 0,
+    last_success_epoch INTEGER NOT NULL DEFAULT 0,
+    last_error TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (artifact_id, target_name),
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS attempt_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    artifact_id INTEGER NOT NULL,
+    target_name TEXT NOT NULL,
+    attempt_epoch INTEGER NOT NULL,
+    action TEXT NOT NULL,
+    exit_code INTEGER NOT NULL DEFAULT 0,
+    message TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (artifact_id) REFERENCES artifacts(id) ON DELETE CASCADE
+);
+"""
+        assert self.conn is not None
+        self.conn.executescript(schema)
+        self.conn.commit()
+
+    def archive_legacy_state(self) -> None:
+        if os.path.isfile(self.legacy_processed_file):
+            archive_name = f"{self.legacy_processed_file}.legacy.{_epoch_now()}"
+            try:
+                os.replace(self.legacy_processed_file, archive_name)
+                self.log("INFO", "Archived legacy processed.txt state")
+            except Exception:
+                pass
+
+    def recover_inflight_after_unclean_shutdown(self) -> None:
+        row = self.db_query_one("SELECT COUNT(*) AS count FROM artifacts WHERE status='IN_FLIGHT';")
+        in_flight_count = int(row["count"] or 0) if row else 0
+        if in_flight_count <= 0:
+            return
+
+        now = _epoch_now()
+        self.db_exec(
+            """
+UPDATE artifacts
+SET status='RETRY_WAIT',
+    next_retry_epoch=?,
+    last_error=CASE
+        WHEN last_error='' THEN 'recovered_after_unclean_shutdown'
+        ELSE last_error
+    END,
+    updated_at_epoch=?
+WHERE status='IN_FLIGHT';
+""",
+            (now, now),
+        )
+        self.log("WARN", f"Recovered {in_flight_count} in-flight artifact(s) after unclean shutdown")
+
+    def acquire_lock(self) -> None:
+        os.makedirs(os.path.dirname(self.lock_file), exist_ok=True)
+        self._lock_handle = open(self.lock_file, "w+", encoding="utf-8")
+        try:
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            self.log("ERROR", "Another upload worker instance is running. Exiting.")
+            raise SystemExit(1)
+        self._lock_handle.seek(0)
+        self._lock_handle.truncate(0)
+        self._lock_handle.write(str(os.getpid()))
+        self._lock_handle.flush()
+
+    def release_lock(self) -> None:
+        if self._lock_handle is None:
+            return
+        try:
+            fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            self._lock_handle.close()
+        except Exception:
+            pass
+        self._lock_handle = None
+        try:
+            os.remove(self.lock_file)
+        except OSError:
+            pass
+
+    @staticmethod
+    def hash_text(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+    @staticmethod
+    def make_file_identity(file_path: str, relative_path: str) -> str:
+        try:
+            st = os.stat(file_path, follow_symlinks=False)
+            stat_fields = f"{st.st_ino}:{st.st_size}"
+        except OSError:
+            stat_fields = "0:0"
+        return f"{relative_path}|{stat_fields}"
+
+    @staticmethod
+    def make_file_detection_key(file_path: str, relative_path: str) -> str:
+        try:
+            inode = os.stat(file_path, follow_symlinks=False).st_ino
+        except OSError:
+            inode = 0
+        return f"{relative_path}|{inode}"
+
+    def log_file_detected_once(self, file_path: str, relative_path: str) -> None:
+        key = self.make_file_detection_key(file_path, relative_path)
+        if key in self.seen_file_detections:
+            return
+        size = self._file_size(file_path)
+        self.log("INFO", f"Detected file candidate: {relative_path} (size={size} bytes)")
+        self.seen_file_detections[key] = True
+
+    @staticmethod
+    def is_uploadable(basename: str) -> bool:
+        if basename.startswith("."):
+            return False
+        if basename.startswith("~"):
+            return False
+        if basename.endswith(".MOVED"):
+            return False
+        return True
+
+    @staticmethod
+    def path_has_config_segment(relative_path: str) -> bool:
+        lower = relative_path.replace("\\", "/").lower()
+        return lower.startswith("config/") or "/config/" in lower
+
+    @staticmethod
+    def path_is_diagnostics_tree(relative_path: str) -> bool:
+        lower = relative_path.replace("\\", "/").lower()
+        return lower.startswith("diagnostics/") or "/diagnostics/" in lower
+
+    @staticmethod
+    def is_log_file(basename: str) -> bool:
+        lower = basename.lower()
+        return (
+            lower.endswith(".log")
+            or re.search(r"\.log\.\d+$", lower) is not None
+            or lower.endswith(".out")
+            or lower.endswith(".err")
+        )
+
+    @classmethod
+    def is_runtime_state_file(cls, basename: str) -> bool:
+        lower = basename.lower()
+        return any(fnmatch.fnmatch(lower, pattern) for pattern in cls.RUNTIME_STATE_PATTERNS)
+
+    def excluded_reason_for_path(self, relative_path: str, basename: str) -> str:
+        if self.path_has_config_segment(relative_path):
+            return "config_tree_runtime_excluded"
+        if self.is_runtime_state_file(basename) and not self.path_is_diagnostics_tree(relative_path):
+            return "runtime_state_excluded"
+        if self.is_log_file(basename) and not self.path_is_diagnostics_tree(relative_path):
+            return "log_outside_diagnostics_excluded"
+        return ""
+
+    def log_file_excluded_once(self, file_path: str, relative_path: str, reason: str) -> None:
+        key = f"{self.make_file_detection_key(file_path, relative_path)}|{reason}"
+        if key in self.seen_file_exclusions:
+            return
+        self.log("DEBUG", f"Skipping excluded file: {relative_path} reason={reason}")
+        self.seen_file_exclusions[key] = True
+
+    @classmethod
+    def is_still_image(cls, basename: str) -> bool:
+        lower = basename.lower()
+        return any(fnmatch.fnmatch(lower, p) for p in cls.STILL_IMAGE_PATTERNS)
+
+    @classmethod
+    def is_video_file(cls, basename: str) -> bool:
+        lower = basename.lower()
+        return any(fnmatch.fnmatch(lower, p) for p in cls.VIDEO_PATTERNS)
+
+    @staticmethod
+    def is_slow_maturity_file(basename: str) -> bool:
+        lower = basename.lower()
+        return lower == "state.env" or lower.endswith(".log")
+
+    def required_min_age_for_file(self, basename: str) -> int:
+        if self.is_slow_maturity_file(basename):
+            return self.min_file_age_state_and_log
+        if self.is_still_image(basename):
+            return self.min_file_age_still_image
+        if self.is_video_file(basename):
+            return self.min_file_age_video
+        return self.min_file_age_default
+
+    def stability_interval_for_file(self, basename: str) -> int:
+        if self.is_still_image(basename):
+            return self.file_stability_interval_still_image
+        return self.file_stability_interval_default
+
+    def is_file_stable(self, file_path: str, interval_seconds: int) -> bool:
+        initial_size = self._file_size(file_path)
+        time.sleep(max(interval_seconds, 0))
+        if not os.path.isfile(file_path):
+            return False
+        final_size = self._file_size(file_path)
+        return initial_size == final_size
+
+    def init_open_file_check_tool(self) -> None:
+        if _cmd_exists("lsof"):
+            self.open_file_check_tool = "lsof"
+        elif _cmd_exists("fuser"):
+            self.open_file_check_tool = "fuser"
+        else:
+            self.open_file_check_tool = "none"
+            self.log("WARN", "No lsof/fuser found; open-file detection is disabled")
+
+    def is_file_currently_open(self, file_path: str) -> bool:
+        if self.open_file_check_tool == "lsof":
+            result = subprocess.run(["lsof", "-t", "--", file_path], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return result.returncode == 0
+        if self.open_file_check_tool == "fuser":
+            result = subprocess.run(["fuser", file_path], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            return result.returncode == 0
+        return False
+
+    @staticmethod
+    def profile_targets_for_attempt(profile: str) -> Tuple[str, ...]:
+        if profile == "field":
+            return ("local", "cloud")
+        if profile == "cloud":
+            return ("cloud",)
+        if profile == "local":
+            return ("local",)
+        return ("local", "cloud")
+
+    def build_remote_target(self, relative_path: str) -> str:
+        if self.current_settings.remote_path:
+            return f"{self.current_settings.remote_name}:{self.current_settings.remote_path}/{relative_path}"
+        return f"{self.current_settings.remote_name}:{relative_path}"
+
+    def remote_path_exists(self, remote_target: str) -> Tuple[bool, str]:
+        command = [
+            "rclone",
+            "lsf",
+            "--files-only",
+            "--max-depth",
+            "1",
+            "--contimeout",
+            f"{self.rclone_connect_timeout_seconds}s",
+            "--timeout",
+            f"{self.rclone_io_timeout_seconds}s",
+            remote_target,
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self.rclone_lsf_timeout_seconds,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "rclone_lsf_timeout"
+        except Exception:
+            return False, "rclone_lsf_failed"
+
+        if result.returncode != 0:
+            return False, "rclone_lsf_failed"
+        return bool(result.stdout.strip()), ""
+
+    def calculate_backoff(self, attempt: int) -> int:
+        delay = self.retry_base_delay_seconds * (2 ** max(attempt - 1, 0))
+        return min(delay, self.retry_max_delay_seconds)
+
+    def set_artifact_target_status(
+        self,
+        artifact_id: int,
+        target_name: str,
+        status: str,
+        error_message: str,
+        current_epoch: int,
+        success_epoch: int,
+    ) -> None:
+        sql = """
+INSERT INTO artifact_targets (artifact_id, target_name, status, attempt_count, last_attempt_epoch, last_success_epoch, last_error)
+VALUES (?, ?, ?, 1, ?, ?, ?)
+ON CONFLICT(artifact_id, target_name) DO UPDATE SET
+    status=excluded.status,
+    attempt_count=artifact_targets.attempt_count + 1,
+    last_attempt_epoch=excluded.last_attempt_epoch,
+    last_success_epoch=excluded.last_success_epoch,
+    last_error=excluded.last_error;
+"""
+        self.db_exec(sql, (artifact_id, target_name, status, current_epoch, success_epoch, error_message))
+
+    def insert_attempt_log(
+        self,
+        artifact_id: int,
+        target_name: str,
+        action: str,
+        exit_code: int,
+        message: str,
+        current_epoch: int,
+    ) -> None:
+        sql = """
+INSERT INTO attempt_log (artifact_id, target_name, attempt_epoch, action, exit_code, message)
+VALUES (?, ?, ?, ?, ?, ?);
+"""
+        self.db_exec(sql, (artifact_id, target_name, current_epoch, action, exit_code, message))
+
+    def register_artifact_if_needed(self, file_path: str, relative_path: str, file_key: str) -> Tuple[int, bool]:
+        st = os.stat(file_path, follow_symlinks=False)
+        inode = int(st.st_ino)
+        size_bytes = int(st.st_size)
+        mtime_epoch = int(st.st_mtime)
+        current_epoch = _epoch_now()
+
+        existing = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
+        if existing is None:
+            existing = self.db_query_one(
+                "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? AND status='SHIPPED' ORDER BY id DESC LIMIT 1;",
+                (relative_path, inode, size_bytes),
+            )
+        if existing is None:
+            existing = self.db_query_one(
+                "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? ORDER BY id DESC LIMIT 1;",
+                (relative_path, inode, size_bytes),
+            )
+        if existing is None:
+            existing = self.db_query_one("SELECT id FROM artifacts WHERE relative_path=? ORDER BY id DESC LIMIT 1;", (relative_path,))
+
+        if existing is None:
+            self.db_exec(
+                """
+INSERT OR IGNORE INTO artifacts (
+    file_key, relative_path, full_path, inode, size_bytes, mtime_epoch, status,
+    retry_count, next_retry_epoch, last_error, discovered_at_epoch, updated_at_epoch, last_seen_epoch
+) VALUES (?, ?, ?, ?, ?, ?, 'QUEUED', 0, 0, '', ?, ?, ?);
+""",
+                (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, current_epoch),
+            )
+            row = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
+            if row is None:
+                row = self.db_query_one(
+                    "SELECT id FROM artifacts WHERE relative_path=? AND inode=? AND size_bytes=? ORDER BY id DESC LIMIT 1;",
+                    (relative_path, inode, size_bytes),
+                )
+            if row is None:
+                raise RuntimeError(f"unable to register artifact for {relative_path}")
+            return int(row["id"]), True
+
+        artifact_id = int(existing["id"])
+        self.db_exec(
+            """
+UPDATE artifacts
+SET file_key=?,
+    relative_path=?,
+    full_path=?,
+    inode=?,
+    size_bytes=?,
+    mtime_epoch=?,
+    last_seen_epoch=?,
+    updated_at_epoch=?
+WHERE id=?;
+""",
+            (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, artifact_id),
+        )
+        return artifact_id, False
+
+    def can_attempt_artifact_now(self, artifact_id: int, current_epoch: int) -> bool:
+        row = self.db_query_one("SELECT status, next_retry_epoch FROM artifacts WHERE id=?;", (artifact_id,))
+        if row is None:
+            return False
+        status = str(row["status"] or "")
+        if status in {"SHIPPED", "PRUNED", "DEAD_LETTER"}:
+            return False
+        if status == "RETRY_WAIT":
+            next_retry = int(row["next_retry_epoch"] or 0)
+            if next_retry > current_epoch:
+                return False
+        return True
+
+    def _run_command_with_log(self, args: Sequence[str], timeout_seconds: int) -> Tuple[int, bool, str]:
+        try:
+            result = subprocess.run(
+                list(args),
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=max(timeout_seconds, 1),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stdout_text = exc.stdout if isinstance(exc.stdout, str) else (exc.stdout.decode("utf-8", errors="replace") if exc.stdout else "")
+            stderr_text = exc.stderr if isinstance(exc.stderr, str) else (exc.stderr.decode("utf-8", errors="replace") if exc.stderr else "")
+            merged = "\n".join(part for part in (stdout_text, stderr_text) if part)
+            for line in merged.splitlines():
+                self.log_raw(line)
+            return 124, True, merged
+        except Exception as exc:
+            return 1, False, str(exc)
+
+        stdout_text = result.stdout or ""
+        stderr_text = result.stderr or ""
+        if stdout_text:
+            for line in stdout_text.splitlines():
+                self.log_raw(line)
+        if stderr_text:
+            for line in stderr_text.splitlines():
+                self.log_raw(line)
+        merged = "\n".join(part for part in (stdout_text, stderr_text) if part)
+        return int(result.returncode or 0), False, merged
+
+    @staticmethod
+    def _looks_like_rclone_existing_destination(output_text: str) -> bool:
+        lowered = output_text.lower()
+        hints = (
+            "immutable",
+            "already exists",
+            "source and destination exist",
+            "destination exists",
+            "duplicate object found",
+            "cannot overwrite existing",
+        )
+        return any(hint in lowered for hint in hints)
+
+    @staticmethod
+    def _file_size(file_path: str) -> int:
+        try:
+            return int(os.path.getsize(file_path))
+        except OSError:
+            return 0
+
+    def ship_to_cloud_target(self, file_path: str, relative_path: str) -> Tuple[bool, str, str, str, int, bool]:
+        if not self.current_settings.remote_name:
+            return False, "cloud_remote_unset", "", "", self._file_size(file_path), False
+        if not _cmd_exists("rclone"):
+            return False, "rclone_not_installed", "", "", self._file_size(file_path), False
+
+        remote_target = self.build_remote_target(relative_path)
+        file_size = self._file_size(file_path)
+        destination_label = f"{self.current_settings.remote_name}:{self.current_settings.remote_path}"
+        if not self.current_settings.remote_path:
+            destination_label = f"{self.current_settings.remote_name}:"
+
+        remote_exists, remote_exists_reason = self.remote_path_exists(remote_target)
+        if remote_exists:
+            return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+
+        rc, timed_out, output_text = self._run_command_with_log(
+            [
+                "rclone",
+                "copyto",
+                file_path,
+                remote_target,
+                "--immutable",
+                "--stats=0",
+                "--contimeout",
+                f"{self.rclone_connect_timeout_seconds}s",
+                "--timeout",
+                f"{self.rclone_io_timeout_seconds}s",
+                "--retries",
+                "1",
+                "--low-level-retries",
+                "1",
+            ],
+            timeout_seconds=self.rclone_copy_timeout_seconds,
+        )
+        if timed_out:
+            return False, "rclone_timeout", "", "", file_size, False
+        if rc != 0:
+            if self._looks_like_rclone_existing_destination(output_text):
+                return True, "target_cloud_exists", destination_label, remote_target, file_size, True
+            if remote_exists_reason == "rclone_lsf_timeout":
+                return False, "rclone_lsf_timeout", "", "", file_size, False
+            return False, "rclone_copy_failed", "", "", file_size, False
+
+        return True, "target_cloud", destination_label, remote_target, file_size, False
+
+    def ship_to_local_target(self, file_path: str, relative_path: str) -> Tuple[bool, str, str, str, int, bool]:
+        local_target = self.current_settings.local_target
+        if not local_target:
+            return False, "local_target_unset", "", "", self._file_size(file_path), False
+        if not os.path.isdir(local_target):
+            return False, "local_target_missing", "", "", self._file_size(file_path), False
+        if not os.access(local_target, os.W_OK):
+            return False, "local_target_not_writable", "", "", self._file_size(file_path), False
+
+        target_path = os.path.join(local_target, relative_path)
+        target_dir = os.path.dirname(target_path)
+        os.makedirs(target_dir, exist_ok=True)
+        source_size = self._file_size(file_path)
+
+        if os.path.isfile(target_path):
+            target_size = self._file_size(target_path)
+            if source_size == target_size:
+                destination_label = f"local:{local_target}"
+                return True, "target_local_exists", destination_label, target_path, source_size, True
+            return False, "local_destination_conflict", "", "", source_size, False
+
+        tmp_path = f"{target_path}.tmp.{os.getpid()}.{random.randint(1000, 999999)}"
+        try:
+            shutil.copy2(file_path, tmp_path)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False, "local_copy_failed", "", "", source_size, False
+        try:
+            os.replace(tmp_path, target_path)
+        except Exception:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False, "local_move_failed", "", "", source_size, False
+
+        destination_label = f"local:{local_target}"
+        return True, "target_local", destination_label, target_path, source_size, False
+
+    def attempt_ship_artifact(
+        self,
+        artifact_id: int,
+        file_path: str,
+        relative_path: str,
+        current_epoch: int,
+    ) -> bool:
+        size_bytes = str(self._file_size(file_path))
+        self.db_exec(
+            "UPDATE artifacts SET status='IN_FLIGHT', updated_at_epoch=?, last_attempt_epoch=? WHERE id=?;",
+            (current_epoch, current_epoch, artifact_id),
+        )
+        self.emit_upload_event("in_flight", relative_path, "", size_bytes, "", "attempt_started", "")
+
+        final_error = "all_targets_failed"
+        for target in self.profile_targets_for_attempt(self.current_settings.profile):
+            if target == "local":
+                ok, reason, dest_label, dest_path, file_size, already_present = self.ship_to_local_target(file_path, relative_path)
+                if ok:
+                    self.set_artifact_target_status(artifact_id, "local", "SUCCESS", "", current_epoch, current_epoch)
+                    self.insert_attempt_log(artifact_id, "local", "success", 0, dest_path, current_epoch)
+                    self.db_exec(
+                        """
+UPDATE artifacts
+SET status='SHIPPED',
+    retry_count=0,
+    next_retry_epoch=0,
+    last_error='',
+    updated_at_epoch=?,
+    first_shipped_epoch=CASE WHEN first_shipped_epoch=0 THEN ? ELSE first_shipped_epoch END,
+    shipped_target='local',
+    profile_at_ship=?
+WHERE id=?;
+""",
+                        (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
+                    )
+                    self.emit_upload_event("shipped", relative_path, dest_path, str(file_size), "", reason, "")
+                    if already_present:
+                        self.log("INFO", f"Local destination already had file; treated as shipped: {relative_path}")
+                    return True
+
+                self.set_artifact_target_status(artifact_id, "local", "FAILED", reason, current_epoch, 0)
+                self.insert_attempt_log(artifact_id, "local", "failed", 1, reason, current_epoch)
+                self.emit_upload_event("failed", relative_path, f"local:{self.current_settings.local_target}", size_bytes, "", reason, "1")
+                final_error = reason
+                continue
+
+            ok, reason, dest_label, dest_path, file_size, already_present = self.ship_to_cloud_target(file_path, relative_path)
+            if ok:
+                self.set_artifact_target_status(artifact_id, "cloud", "SUCCESS", "", current_epoch, current_epoch)
+                self.insert_attempt_log(artifact_id, "cloud", "success", 0, dest_path, current_epoch)
+                self.db_exec(
+                    """
+UPDATE artifacts
+SET status='SHIPPED',
+    retry_count=0,
+    next_retry_epoch=0,
+    last_error='',
+    updated_at_epoch=?,
+    first_shipped_epoch=CASE WHEN first_shipped_epoch=0 THEN ? ELSE first_shipped_epoch END,
+    shipped_target='cloud',
+    profile_at_ship=?
+WHERE id=?;
+""",
+                    (current_epoch, current_epoch, self.current_settings.profile, artifact_id),
+                )
+                self.emit_upload_event("shipped", relative_path, dest_path, str(file_size), "", reason, "")
+                if already_present:
+                    self.log("INFO", f"Cloud destination already had file; treated as shipped: {relative_path}")
+                return True
+
+            self.set_artifact_target_status(artifact_id, "cloud", "FAILED", reason, current_epoch, 0)
+            self.insert_attempt_log(artifact_id, "cloud", "failed", 1, reason, current_epoch)
+            self.emit_upload_event(
+                "failed",
+                relative_path,
+                f"{self.current_settings.remote_name}:{self.current_settings.remote_path}",
+                size_bytes,
+                "",
+                reason,
+                "1",
+            )
+            final_error = reason
+
+        retry_row = self.db_query_one("SELECT retry_count FROM artifacts WHERE id=?;", (artifact_id,))
+        retry_count = int(retry_row["retry_count"] or 0) if retry_row else 0
+        new_retry_count = retry_count + 1
+
+        if new_retry_count >= self.max_retries:
+            self.db_exec(
+                "UPDATE artifacts SET status='DEAD_LETTER', retry_count=?, next_retry_epoch=0, last_error=?, updated_at_epoch=? WHERE id=?;",
+                (new_retry_count, final_error, current_epoch, artifact_id),
+            )
+            self.emit_upload_event("dead_letter", relative_path, "", size_bytes, str(new_retry_count), final_error, "")
+        else:
+            backoff = self.calculate_backoff(new_retry_count)
+            next_retry_epoch = current_epoch + backoff
+            self.db_exec(
+                "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",
+                (new_retry_count, next_retry_epoch, final_error, current_epoch, artifact_id),
+            )
+            self.emit_upload_event(
+                "retry",
+                relative_path,
+                "",
+                size_bytes,
+                str(new_retry_count),
+                f"retry_backoff_{backoff}s",
+                "",
+            )
+        return False
+
+    def is_path_within_upload_dir(self, path_value: str) -> bool:
+        file_real = os.path.realpath(path_value)
+        upload_real = os.path.realpath(self.upload_dir)
+        return file_real == upload_real or file_real.startswith(upload_real + os.sep)
+
+    def spool_usage_percent(self) -> int:
+        try:
+            usage = shutil.disk_usage(self.upload_dir)
+            if usage.total <= 0:
+                return 0
+            return int((usage.used * 100) / usage.total)
+        except Exception:
+            return 0
+
+    def request_protect_stop_if_needed(self, current_epoch: int) -> None:
+        last_epoch = 0
+        if os.path.isfile(self.protect_stop_stamp_file):
+            try:
+                with open(self.protect_stop_stamp_file, "r", encoding="utf-8", errors="replace") as handle:
+                    last_epoch = int((handle.readline() or "0").strip() or "0")
+            except Exception:
+                last_epoch = 0
+
+        if (current_epoch - last_epoch) < self.protect_stop_cooldown_seconds:
+            return
+
+        self.emit_upload_event("protect_stop", "", "", "unknown", "", "disk_threshold_reached", "")
+        try:
+            rc = subprocess.run(self.upload_stop_command, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        except Exception:
+            rc = 1
+
+        if rc == 0:
+            self.log("WARN", "Protect retention requested recording stop")
+        else:
+            self.log("WARN", f"Protect retention could not execute stop command: {self.upload_stop_command}")
+        try:
+            with open(self.protect_stop_stamp_file, "w", encoding="utf-8") as handle:
+                handle.write(str(current_epoch) + "\n")
+        except Exception:
+            pass
+
+    def prune_oldest_shipped_until_low_watermark(self) -> None:
+        current_usage = self.spool_usage_percent()
+        while current_usage > self.current_settings.low_watermark:
+            row = self.db_query_one(
+                "SELECT id, full_path, relative_path, IFNULL(size_bytes,0) AS size_bytes FROM artifacts WHERE status='SHIPPED' ORDER BY first_shipped_epoch ASC LIMIT 1;"
+            )
+            if row is None:
+                self.log("WARN", "Rolling retention reached watermark, but no shipped files remain to prune")
+                break
+
+            artifact_id = int(row["id"])
+            full_path = str(row["full_path"] or "")
+            relative_path = str(row["relative_path"] or "")
+            size_bytes = str(row["size_bytes"] or 0)
+
+            now = _epoch_now()
+            if not full_path:
+                self.db_exec(
+                    "UPDATE artifacts SET status='PRUNED', pruned_at_epoch=?, updated_at_epoch=?, last_error='empty_full_path' WHERE id=?;",
+                    (now, now, artifact_id),
+                )
+                continue
+
+            if not self.is_path_within_upload_dir(full_path):
+                self.log("WARN", f"Skipping unsafe prune candidate outside upload dir: {full_path}")
+                self.db_exec(
+                    "UPDATE artifacts SET status='DEAD_LETTER', last_error='unsafe_prune_path', updated_at_epoch=? WHERE id=?;",
+                    (now, artifact_id),
+                )
+                continue
+
+            if os.path.isfile(full_path):
+                try:
+                    os.remove(full_path)
+                except OSError:
+                    pass
+
+            self.db_exec(
+                "UPDATE artifacts SET status='PRUNED', pruned_at_epoch=?, updated_at_epoch=?, last_error='' WHERE id=?;",
+                (now, now, artifact_id),
+            )
+            self.emit_upload_event("pruned", relative_path, "", size_bytes, "", "rolling_retention", "")
+            current_usage = self.spool_usage_percent()
+
+    def enforce_retention_policy(self) -> None:
+        usage = self.spool_usage_percent()
+        current_epoch = _epoch_now()
+
+        if self.current_settings.retention == "protect":
+            if usage >= self.current_settings.high_watermark:
+                self.request_protect_stop_if_needed(current_epoch)
+            return
+
+        if self.current_settings.retention == "rolling" and usage >= self.current_settings.high_watermark:
+            self.prune_oldest_shipped_until_low_watermark()
+
+    def _scan_files(self) -> List[str]:
+        paths: List[str] = []
+        for root, _dirs, files in os.walk(self.upload_dir):
+            for name in files:
+                paths.append(os.path.join(root, name))
+        paths.sort()
+        return paths
+
+    def _artifact_relative_path(self, file_path: str) -> str:
+        try:
+            rel = os.path.relpath(file_path, self.upload_dir)
+        except ValueError:
+            rel = os.path.basename(file_path)
+        if rel.startswith(".."):
+            rel = os.path.basename(file_path)
+        return rel.replace("\\", "/")
+
+    def _handle_signal(self, _signum: int, _frame: object) -> None:
+        self.running = False
+
+    def setup(self) -> None:
+        os.makedirs(self.state_dir, exist_ok=True)
+        os.makedirs(self.log_dir, exist_ok=True)
+        os.makedirs(self.runtime_dir, exist_ok=True)
+        os.makedirs(self.upload_dir, exist_ok=True)
+        os.makedirs(self.upload_config_dir, exist_ok=True)
+
+        self.acquire_lock()
+        self.db_open()
+        self.init_db()
+        self.recover_inflight_after_unclean_shutdown()
+        self.archive_legacy_state()
+        self.refresh_runtime_settings()
+        self.init_open_file_check_tool()
+
+        self.log("INFO", "Upload worker starting")
+        self.log("INFO", f"Spool dir: {self.upload_dir}")
+        self.log("INFO", f"Config dir: {self.upload_config_dir}")
+        self.log("INFO", f"Queue DB: {self.db_file}")
+        self.log(
+            "INFO",
+            f"Upload profile={self.current_settings.profile} retention={self.current_settings.retention}",
+        )
+        self.log(
+            "INFO",
+            (
+                "Rclone timeouts: "
+                f"lsf={self.rclone_lsf_timeout_seconds}s "
+                f"copy={self.rclone_copy_timeout_seconds}s "
+                f"connect={self.rclone_connect_timeout_seconds}s "
+                f"io={self.rclone_io_timeout_seconds}s"
+            ),
+        )
+
+    def run(self) -> int:
+        signal.signal(signal.SIGTERM, self._handle_signal)
+        signal.signal(signal.SIGINT, self._handle_signal)
+
+        try:
+            self.setup()
+        except SystemExit as exc:
+            return int(exc.code)
+        except Exception as exc:
+            self.log("ERROR", f"Failed to initialize upload worker: {exc}")
+            return 1
+
+        try:
+            while self.running:
+                try:
+                    self.refresh_runtime_settings()
+                    self.enforce_retention_policy()
+                except Exception as exc:
+                    self.log("ERROR", f"Runtime settings/retention error: {exc}")
+
+                if not os.path.isdir(self.upload_dir):
+                    time.sleep(max(self.scan_interval, 1))
+                    continue
+
+                try:
+                    files = self._scan_files()
+                except Exception as exc:
+                    self.log("ERROR", f"Failed to scan upload directory: {exc}")
+                    files = []
+
+                for file_path in files:
+                    if not self.running:
+                        break
+                    if not os.path.isfile(file_path):
+                        continue
+
+                    relative_path = self._artifact_relative_path(file_path)
+                    basename = os.path.basename(file_path)
+
+                    if not self.is_uploadable(basename):
+                        continue
+
+                    reason = self.excluded_reason_for_path(relative_path, basename)
+                    if reason:
+                        self.log_file_excluded_once(file_path, relative_path, reason)
+                        continue
+
+                    self.log_file_detected_once(file_path, relative_path)
+
+                    try:
+                        st = os.stat(file_path, follow_symlinks=False)
+                        mtime = int(st.st_mtime)
+                    except OSError:
+                        continue
+                    now = _epoch_now()
+                    age = now - mtime
+                    required_min_age = self.required_min_age_for_file(basename)
+                    if age < required_min_age:
+                        continue
+
+                    if self.is_file_currently_open(file_path):
+                        continue
+
+                    stability_interval = self.stability_interval_for_file(basename)
+                    if not self.is_file_stable(file_path, stability_interval):
+                        continue
+
+                    try:
+                        file_identity = self.make_file_identity(file_path, relative_path)
+                        file_key = self.hash_text(file_identity)
+                        artifact_id, was_new = self.register_artifact_if_needed(file_path, relative_path, file_key)
+                    except Exception as exc:
+                        self.log("ERROR", f"Failed to register artifact {relative_path}: {exc}")
+                        continue
+
+                    if was_new:
+                        size = self._file_size(file_path)
+                        self.log("INFO", f"Queued artifact: {relative_path} (id={artifact_id})")
+                        self.emit_upload_event(
+                            "queued",
+                            relative_path,
+                            "",
+                            str(size),
+                            "",
+                            "artifact_registered",
+                            "",
+                        )
+
+                    if not self.can_attempt_artifact_now(artifact_id, now):
+                        continue
+
+                    if self.current_settings.paused:
+                        if not self.pause_notice_emitted:
+                            self.emit_upload_event("paused", "", "", "unknown", "", "upload_paused", "")
+                            self.pause_notice_emitted = True
+                        continue
+
+                    self.pause_notice_emitted = False
+                    self.attempt_ship_artifact(artifact_id, file_path, relative_path, now)
+
+                time.sleep(max(self.scan_interval, 1))
+        finally:
+            if self.conn is not None:
+                try:
+                    self.conn.close()
+                except Exception:
+                    pass
+            self.release_lock()
+        return 0
+
+
+def shlex_quote(value: str) -> str:
+    if not value:
+        return "''"
+    # Keep compatibility with shell-ish logs.
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def main() -> int:
+    worker = UploadWorker()
+    return worker.run()
+
+
+if __name__ == "__main__":
+    sys.exit(main())

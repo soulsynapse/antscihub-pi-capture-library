@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PYTHON_WORKER="${SCRIPT_DIR}/upload_worker.py"
+
+if [[ -f "${PYTHON_WORKER}" ]] && command -v python3 >/dev/null 2>&1; then
+    exec python3 "${PYTHON_WORKER}" "$@"
+fi
+
+echo "[upload_worker.sh] WARN: upload_worker.py not found or python3 unavailable; using legacy shell worker" >&2
+
 resolve_desktop_dir() {
     local desktop_dir=""
 

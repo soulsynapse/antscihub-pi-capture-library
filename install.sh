@@ -23,6 +23,7 @@ RECORDING_SCRIPT_TARGET_DIR="/etc/antscihub/recording-scripts"
 UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
 UPLOAD_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.sh"
+UPLOAD_PY_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.py"
 
 DEFAULT_REMOTE="gdrive_personal"
 DEFAULT_REMOTE_PATH=""
@@ -64,6 +65,10 @@ require_inputs() {
 
     if [[ ! -f "$UPLOAD_SCRIPT" ]]; then
         log_error "Missing upload worker script: $UPLOAD_SCRIPT"
+        exit 1
+    fi
+    if [[ ! -f "$UPLOAD_PY_SCRIPT" ]]; then
+        log_error "Missing upload worker script: $UPLOAD_PY_SCRIPT"
         exit 1
     fi
 
@@ -317,7 +322,7 @@ reconcile_single_upload_worker() {
     systemctl reset-failed "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
 
     local upload_pids
-    upload_pids="$(pgrep -f 'upload_worker\.sh' 2>/dev/null || true)"
+    upload_pids="$(pgrep -f 'upload_worker\.(sh|py)' 2>/dev/null || true)"
     if [[ -n "${upload_pids}" ]]; then
         log_warn "Stopping residual upload worker process(es): $(echo "${upload_pids}" | tr '\n' ' ')"
         while IFS= read -r pid; do
@@ -326,7 +331,7 @@ reconcile_single_upload_worker() {
         done <<< "${upload_pids}"
         sleep 1
 
-        upload_pids="$(pgrep -f 'upload_worker\.sh' 2>/dev/null || true)"
+        upload_pids="$(pgrep -f 'upload_worker\.(sh|py)' 2>/dev/null || true)"
         if [[ -n "${upload_pids}" ]]; then
             log_warn "Force-stopping stuck upload worker process(es): $(echo "${upload_pids}" | tr '\n' ' ')"
             while IFS= read -r pid; do
@@ -349,7 +354,7 @@ main() {
 
     log_info "Starting installation/update"
 
-    chmod +x "${UPLOAD_SCRIPT}" "${CAMERA_CLI_SOURCE}"
+    chmod +x "${UPLOAD_SCRIPT}" "${UPLOAD_PY_SCRIPT}" "${CAMERA_CLI_SOURCE}"
 
     local upload_user
     if ! upload_user="$(determine_upload_user)"; then

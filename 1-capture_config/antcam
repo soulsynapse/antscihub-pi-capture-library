@@ -1621,7 +1621,7 @@ start_recording() {
 
     local capture_dir upload_dir record_script focus_value focus_file
     local fps_value fps_file length_value length_file segment_value segment_file
-    local loop_value loop_file script_basename
+    local loop_value loop_file script_basename photos_one_shot_guard
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
@@ -1641,6 +1641,15 @@ start_recording() {
         segment_value="$(read_segment_setting_for_home "${user_home}")"
     else
         segment_value=""
+    fi
+    photos_one_shot_guard="false"
+    if [[ "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
+        if [[ "${loop_value}" == "none" ]]; then
+            # Compatibility guard: force one-shot for photos when loop is disabled,
+            # including older deployed photos.sh variants.
+            length_value="0s"
+            photos_one_shot_guard="true"
+        fi
     fi
 
     if [[ -f "${recording_state_file}" ]]; then
@@ -1664,6 +1673,9 @@ start_recording() {
     echo "focus lens-position: ${focus_value}"
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
+    if [[ "${photos_one_shot_guard}" == "true" ]]; then
+        echo "photos one-shot guard: enabled (loop=none forces length=0s)"
+    fi
     echo "recording loop: ${loop_value}"
     if [[ -n "${segment_value}" ]]; then
         echo "recording segment: ${segment_value}"

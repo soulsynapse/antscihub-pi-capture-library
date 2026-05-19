@@ -274,7 +274,10 @@ log "Recording length: ${length_value} (${length_ms} ms)"
 if [[ "${loop_enabled}" == "true" ]]; then
     log "Loop interval: ${loop_value} (${loop_ms} ms)"
 else
-    log "Loop interval: none (loop scheduling disabled; captures run back-to-back)"
+    log "Loop interval: none (loop scheduling disabled; one-shot capture)"
+    if [[ "${length_ms}" -gt 0 ]]; then
+        log "Loop is disabled; recording length is ignored for photos one-shot mode"
+    fi
 fi
 log "Session folder: ${session_dir}"
 log "Output pattern: ${session_dir}/photos-%05d.jpg"
@@ -298,8 +301,8 @@ while true; do
 
         target_epoch_ms=$((start_epoch_ms + (capture_index * loop_ms)))
         sleep_until_epoch_milliseconds "${target_epoch_ms}"
-    elif [[ "${capture_index}" -gt 0 && "${length_ms}" -le 0 ]]; then
-        # Safety valve: no loop interval + no explicit length remains one-shot.
+    elif [[ "${capture_index}" -gt 0 ]]; then
+        # Loop disabled means strict one-shot behavior for photos.
         break
     fi
 

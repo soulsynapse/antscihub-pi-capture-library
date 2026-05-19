@@ -1561,6 +1561,51 @@ PY
     return 1
 }
 
+write_antcam_diagnostic_payload_file() {
+    local user_home="$1"
+    local payload="$2"
+
+    local upload_dir timestamp_utc timestamp_slug device_id
+    local target_subdir primary_dir primary_file fallback_dir fallback_file
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+
+    timestamp_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
+    target_subdir="diagnostics/recordings"
+
+    primary_dir="${upload_dir}/${target_subdir}"
+    primary_file="${primary_dir}/antcam-diagnostic-${device_id}-${timestamp_slug}.json"
+    fallback_dir="${upload_dir}/diagnostics"
+    fallback_file="${fallback_dir}/antcam-diagnostic-write-fallback-${device_id}-${timestamp_slug}.log"
+
+    if mkdir -p "${primary_dir}" && printf '%s\n' "${payload}" > "${primary_file}"; then
+        echo "wrote antcam diagnostic payload: ${primary_file}" >&2
+        printf '%s\n' "${primary_file}"
+        return 0
+    fi
+
+    if mkdir -p "${fallback_dir}"; then
+        {
+            echo "# AntCam Diagnostic Write Fallback"
+            echo "timestamp_utc=${timestamp_utc}"
+            echo "device_id=${device_id}"
+            echo "intended_path=${primary_file}"
+            echo "reason=failed_to_write_primary_diagnostic"
+            echo
+            echo "## Diagnostic Payload"
+            printf '%s\n' "${payload}"
+        } > "${fallback_file}"
+        echo "wrote fallback diagnostic payload: ${fallback_file}" >&2
+        printf '%s\n' "${fallback_file}"
+        return 0
+    fi
+
+    echo "antcam: warning: unable to write diagnostic payload to ${primary_dir} or fallback diagnostics folder" >&2
+    return 1
+}
+
 read_upload_effective_profile_for_home() {
     local user_home="$1"
     local setting_file profile_value fallback_value
@@ -2699,7 +2744,14 @@ report_diagnostic_payload() {
     payload+=",\"recent_upload_files_raw\":\"$(json_escape "${recent_upload_files}")\""
     payload+="}"
 
-    printf '%s\n' "${payload}"
+    local diagnostic_file_path
+    diagnostic_file_path="$(write_antcam_diagnostic_payload_file "${user_home}" "${payload}" || true)"
+    if [[ -n "${diagnostic_file_path}" ]]; then
+        echo "diagnostic_payload_file=${diagnostic_file_path}"
+        return 0
+    fi
+
+    die "failed to write diagnostic payload file"
 }
 
 start_recording() {

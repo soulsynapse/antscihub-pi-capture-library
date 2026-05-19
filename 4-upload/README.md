@@ -74,12 +74,20 @@ While running:
 
 1. Reload runtime settings.
 2. Enforce retention policy (`protect` or `rolling`).
-3. If spool dir missing, sleep `SCAN_INTERVAL` and continue.
-4. Recursively scan all files under spool dir (sorted path list).
-5. For each file candidate, run filter/maturity/stability/queue logic below.
-6. Sleep `SCAN_INTERVAL`.
+3. Prune `attempt_log` if prune interval elapsed and row count is above cap.
+4. If spool dir missing, clear scan queues, sleep `SCAN_INTERVAL`, and continue.
+5. Pull up to `MAX_SCAN_FILES_PER_LOOP` file paths from a resumable directory sweep:
+6. Sweep state is held in memory (`scan_dir_queue` + `scan_file_queue`).
+7. Directory entries are sorted per directory (`child_dirs.sort()`, `child_files.sort()`).
+8. The worker does not rebuild a full recursive list each loop.
+9. For each scanned file candidate, run filter/maturity/stability/queue logic below.
+10. If paused, emit one `paused` event and skip upload attempts.
+11. If not paused, fetch due artifacts from SQLite and attempt up to `MAX_DUE_ATTEMPTS_PER_LOOP`.
+12. Sleep `SCAN_INTERVAL`.
 
 `SCAN_INTERVAL` default: `10` seconds.
+`MAX_SCAN_FILES_PER_LOOP` default: `500`.
+`MAX_DUE_ATTEMPTS_PER_LOOP` default: `200`.
 
 ## Candidate File Filters
 
@@ -157,6 +165,30 @@ If found:
 
 - Update existing row fields: `file_key`, `relative_path`, `full_path`, `inode`, `size_bytes`, `mtime_epoch`, `last_seen_epoch`, `updated_at_epoch`.
 - Existing `status` is preserved.
+
+## Due Attempt Selection
+
+When not paused, due rows are selected with:
+
+- `status='QUEUED'`
+- or `status='RETRY_WAIT' AND next_retry_epoch <= now`
+- ordered by:
+- `RETRY_WAIT` before `QUEUED`
+- then `next_retry_epoch ASC`
+- then `discovered_at_epoch ASC`
+- then `id ASC`
+- limited to `MAX_DUE_ATTEMPTS_PER_LOOP`
+
+Per due row:
+
+1. Resolve source path:
+2. Use `full_path` if it exists.
+3. Else try `<upload_dir>/<relative_path>` only if it stays inside upload dir.
+4. If still missing, call `schedule_retry_or_dead_letter(..., final_error='source_file_missing')`.
+5. If recovered path differs, update `artifacts.full_path`.
+6. If `relative_path` is empty, derive from current path and update DB.
+7. Re-check `can_attempt_artifact_now()`.
+8. Call `attempt_ship_artifact(...)`.
 
 ## Attempt Eligibility
 
@@ -276,9 +308,10 @@ Defaults:
 
 ## Exception Handling Around Attempts
 
-- Any unhandled exception from `attempt_ship_artifact` is caught in the main loop.
+- Any unhandled exception from `attempt_ship_artifact` during due processing is caught.
 - Worker logs error and routes artifact through `schedule_retry_or_dead_letter` with reason:
 - `unexpected_exception_<ExceptionType>`
+- Any unhandled exception while processing a scanned file candidate is logged and that candidate is skipped for the current loop.
 
 ## Unclean Shutdown Recovery
 
@@ -331,3 +364,9 @@ If all publish methods fail, one warning is logged once.
 `artifact_targets` tracks per-target success/fail attempts.
 
 `attempt_log` stores per-attempt action history.
+
+`attempt_log` pruning:
+
+- Every `ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS` (default `300`, minimum `30`), worker checks row count.
+- If `row_count > ATTEMPT_LOG_MAX_ROWS` (default `100000`), it deletes the oldest `row_count - cap` rows by `id ASC`.
+- `ATTEMPT_LOG_MAX_ROWS <= 0` disables pruning.

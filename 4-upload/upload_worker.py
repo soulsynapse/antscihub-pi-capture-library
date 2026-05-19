@@ -26,10 +26,11 @@ import sqlite3
 import subprocess
 import sys
 import time
+from collections import deque
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, Tuple
 
 
 def _env(name: str, default: str) -> str:
@@ -227,6 +228,12 @@ class UploadWorker:
         self.file_identity_sample_bytes = max(4096, _as_int("FILE_IDENTITY_SAMPLE_BYTES", 65536))
         self.seen_cache_max_entries = max(1000, _as_int("SEEN_CACHE_MAX_ENTRIES", 50000))
         self.stability_cache_max_entries = max(1000, _as_int("STABILITY_CACHE_MAX_ENTRIES", 50000))
+        self.max_scan_files_per_loop = max(1, _as_int("MAX_SCAN_FILES_PER_LOOP", 500))
+        self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 200))
+        self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
+        self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
+        if self.attempt_log_max_rows < 0:
+            self.attempt_log_max_rows = 0
 
         self.device_id_cache: Optional[str] = None
         self.mqtt_publish_warning_emitted = False
@@ -246,6 +253,9 @@ class UploadWorker:
         self.seen_file_detections: Dict[str, bool] = {}
         self.seen_file_exclusions: Dict[str, bool] = {}
         self.file_stability_observations: Dict[str, Tuple[int, int]] = {}
+        self.scan_dir_queue: Deque[str] = deque()
+        self.scan_file_queue: Deque[str] = deque()
+        self.last_attempt_log_prune_epoch = 0
         self.running = True
 
         self._lock_handle = None
@@ -1522,13 +1532,216 @@ WHERE id=?;
         if self.current_settings.retention == "rolling" and usage >= self.current_settings.high_watermark:
             self.prune_oldest_shipped_until_low_watermark()
 
-    def _scan_files(self) -> List[str]:
-        paths: List[str] = []
-        for root, _dirs, files in os.walk(self.upload_dir):
-            for name in files:
-                paths.append(os.path.join(root, name))
-        paths.sort()
-        return paths
+    def prune_attempt_log_if_needed(self, current_epoch: int) -> None:
+        if self.attempt_log_max_rows <= 0:
+            return
+        if self.last_attempt_log_prune_epoch > 0:
+            elapsed = current_epoch - self.last_attempt_log_prune_epoch
+            if elapsed < self.attempt_log_prune_interval_seconds:
+                return
+        self.last_attempt_log_prune_epoch = current_epoch
+
+        count_row = self.db_query_one("SELECT COUNT(*) AS row_count FROM attempt_log;")
+        if count_row is None:
+            return
+        row_count = int(count_row["row_count"] or 0)
+        if row_count <= self.attempt_log_max_rows:
+            return
+
+        delete_count = row_count - self.attempt_log_max_rows
+        with self.db_transaction():
+            self.db_exec(
+                """
+DELETE FROM attempt_log
+WHERE id IN (
+    SELECT id
+    FROM attempt_log
+    ORDER BY id ASC
+    LIMIT ?
+);
+""",
+                (delete_count,),
+            )
+        self.log("DEBUG", f"Pruned {delete_count} row(s) from attempt_log")
+
+    def _seed_scan_queue_if_needed(self) -> None:
+        if self.scan_dir_queue or self.scan_file_queue:
+            return
+        if os.path.isdir(self.upload_dir):
+            self.scan_dir_queue.append(self.upload_dir)
+
+    def _scan_next_file_batch(self) -> List[str]:
+        if not os.path.isdir(self.upload_dir):
+            self.scan_dir_queue.clear()
+            self.scan_file_queue.clear()
+            return []
+
+        self._seed_scan_queue_if_needed()
+
+        while self.scan_dir_queue and len(self.scan_file_queue) < self.max_scan_files_per_loop:
+            root = self.scan_dir_queue.popleft()
+            try:
+                with os.scandir(root) as entries:
+                    child_dirs: List[str] = []
+                    child_files: List[str] = []
+                    for entry in entries:
+                        try:
+                            if entry.is_dir(follow_symlinks=False):
+                                child_dirs.append(entry.path)
+                            elif entry.is_file(follow_symlinks=False):
+                                child_files.append(entry.path)
+                        except OSError:
+                            continue
+            except OSError:
+                continue
+
+            child_dirs.sort()
+            child_files.sort()
+            self.scan_dir_queue.extend(child_dirs)
+            self.scan_file_queue.extend(child_files)
+
+        batch: List[str] = []
+        while self.scan_file_queue and len(batch) < self.max_scan_files_per_loop:
+            batch.append(self.scan_file_queue.popleft())
+        return batch
+
+    def process_scan_candidate(self, file_path: str) -> None:
+        if not os.path.isfile(file_path):
+            return
+
+        relative_path = self._artifact_relative_path(file_path)
+        basename = os.path.basename(file_path)
+
+        if not self.is_uploadable(basename):
+            return
+
+        if self.is_path_within_local_target(file_path):
+            self.log_file_excluded_once(file_path, relative_path, "local_target_tree_excluded")
+            return
+
+        reason = self.excluded_reason_for_path(relative_path, basename)
+        if reason:
+            self.log_file_excluded_once(file_path, relative_path, reason)
+            return
+
+        self.log_file_detected_once(file_path, relative_path)
+
+        try:
+            st = os.stat(file_path, follow_symlinks=False)
+            mtime = int(st.st_mtime)
+        except OSError:
+            return
+        now = _epoch_now()
+        age = now - mtime
+        required_min_age = self.required_min_age_for_file(basename)
+        if age < required_min_age:
+            return
+
+        if self.is_file_currently_open(file_path):
+            return
+
+        stability_interval = self.stability_interval_for_file(basename)
+        if not self.is_file_stable(file_path, stability_interval):
+            return
+
+        file_identity = self.make_file_identity(file_path, relative_path)
+        file_key = self.hash_text(file_identity)
+        artifact_id, was_new = self.register_artifact_if_needed(file_path, relative_path, file_key)
+        if not was_new:
+            return
+
+        size = self._file_size(file_path)
+        self.log("INFO", f"Queued artifact: {relative_path} (id={artifact_id})")
+        self.emit_upload_event(
+            "queued",
+            relative_path,
+            "",
+            str(size),
+            "",
+            "artifact_registered",
+            "",
+        )
+
+    def get_due_artifacts(self, current_epoch: int) -> List[sqlite3.Row]:
+        assert self.conn is not None
+        self.conn.row_factory = sqlite3.Row
+        cursor = self.conn.execute(
+            """
+SELECT id, full_path, relative_path, size_bytes, status
+FROM artifacts
+WHERE status='QUEUED' OR (status='RETRY_WAIT' AND next_retry_epoch <= ?)
+ORDER BY
+    CASE status WHEN 'RETRY_WAIT' THEN 0 ELSE 1 END ASC,
+    next_retry_epoch ASC,
+    discovered_at_epoch ASC,
+    id ASC
+LIMIT ?;
+""",
+            (current_epoch, self.max_due_attempts_per_loop),
+        )
+        return cursor.fetchall()
+
+    def resolve_due_artifact_path(self, full_path: str, relative_path: str) -> str:
+        if full_path and os.path.isfile(full_path):
+            return full_path
+        if not relative_path:
+            return ""
+        relative_os = relative_path.replace("/", os.sep)
+        candidate_path = os.path.normpath(os.path.join(self.upload_dir, relative_os))
+        if not self.is_path_within_upload_dir(candidate_path):
+            return ""
+        if os.path.isfile(candidate_path):
+            return candidate_path
+        return ""
+
+    def process_due_artifacts(self, current_epoch: int) -> None:
+        rows = self.get_due_artifacts(current_epoch)
+        for row in rows:
+            if not self.running:
+                return
+
+            artifact_id = int(row["id"])
+            full_path = str(row["full_path"] or "")
+            relative_path = str(row["relative_path"] or "")
+            size_bytes = str(row["size_bytes"] or 0)
+
+            file_path = self.resolve_due_artifact_path(full_path, relative_path)
+            if not file_path:
+                self.schedule_retry_or_dead_letter(
+                    artifact_id=artifact_id,
+                    relative_path=relative_path,
+                    size_bytes=size_bytes,
+                    current_epoch=current_epoch,
+                    final_error="source_file_missing",
+                )
+                continue
+
+            if not relative_path:
+                relative_path = self._artifact_relative_path(file_path)
+                self.db_exec(
+                    "UPDATE artifacts SET relative_path=?, updated_at_epoch=? WHERE id=?;",
+                    (relative_path, current_epoch, artifact_id),
+                )
+            if file_path != full_path:
+                self.db_exec(
+                    "UPDATE artifacts SET full_path=?, updated_at_epoch=? WHERE id=?;",
+                    (file_path, current_epoch, artifact_id),
+                )
+
+            if not self.can_attempt_artifact_now(artifact_id, current_epoch):
+                continue
+
+            try:
+                self.attempt_ship_artifact(artifact_id, file_path, relative_path, current_epoch)
+            except Exception as exc:
+                self.log("ERROR", f"Unhandled upload attempt exception for {relative_path}: {exc}")
+                self.schedule_retry_or_dead_letter(
+                    artifact_id=artifact_id,
+                    relative_path=relative_path,
+                    size_bytes=str(self._file_size(file_path)),
+                    current_epoch=current_epoch,
+                    final_error=f"unexpected_exception_{type(exc).__name__}",
+                )
 
     def _artifact_relative_path(self, file_path: str) -> str:
         try:
@@ -1597,12 +1810,20 @@ WHERE id=?;
                 except Exception as exc:
                     self.log("ERROR", f"Runtime settings/retention error: {exc}")
 
+                loop_epoch = _epoch_now()
+                try:
+                    self.prune_attempt_log_if_needed(loop_epoch)
+                except Exception as exc:
+                    self.log("ERROR", f"attempt_log pruning error: {exc}")
+
                 if not os.path.isdir(self.upload_dir):
+                    self.scan_dir_queue.clear()
+                    self.scan_file_queue.clear()
                     time.sleep(max(self.scan_interval, 1))
                     continue
 
                 try:
-                    files = self._scan_files()
+                    files = self._scan_next_file_batch()
                 except Exception as exc:
                     self.log("ERROR", f"Failed to scan upload directory: {exc}")
                     files = []
@@ -1610,86 +1831,22 @@ WHERE id=?;
                 for file_path in files:
                     if not self.running:
                         break
-                    if not os.path.isfile(file_path):
-                        continue
-
-                    relative_path = self._artifact_relative_path(file_path)
-                    basename = os.path.basename(file_path)
-
-                    if not self.is_uploadable(basename):
-                        continue
-
-                    if self.is_path_within_local_target(file_path):
-                        self.log_file_excluded_once(file_path, relative_path, "local_target_tree_excluded")
-                        continue
-
-                    reason = self.excluded_reason_for_path(relative_path, basename)
-                    if reason:
-                        self.log_file_excluded_once(file_path, relative_path, reason)
-                        continue
-
-                    self.log_file_detected_once(file_path, relative_path)
-
                     try:
-                        st = os.stat(file_path, follow_symlinks=False)
-                        mtime = int(st.st_mtime)
-                    except OSError:
-                        continue
-                    now = _epoch_now()
-                    age = now - mtime
-                    required_min_age = self.required_min_age_for_file(basename)
-                    if age < required_min_age:
-                        continue
-
-                    if self.is_file_currently_open(file_path):
-                        continue
-
-                    stability_interval = self.stability_interval_for_file(basename)
-                    if not self.is_file_stable(file_path, stability_interval):
-                        continue
-
-                    try:
-                        file_identity = self.make_file_identity(file_path, relative_path)
-                        file_key = self.hash_text(file_identity)
-                        artifact_id, was_new = self.register_artifact_if_needed(file_path, relative_path, file_key)
+                        self.process_scan_candidate(file_path)
                     except Exception as exc:
-                        self.log("ERROR", f"Failed to register artifact {relative_path}: {exc}")
-                        continue
+                        self.log("ERROR", f"Failed to process scanned candidate {file_path}: {exc}")
 
-                    if was_new:
-                        size = self._file_size(file_path)
-                        self.log("INFO", f"Queued artifact: {relative_path} (id={artifact_id})")
-                        self.emit_upload_event(
-                            "queued",
-                            relative_path,
-                            "",
-                            str(size),
-                            "",
-                            "artifact_registered",
-                            "",
-                        )
-
-                    if not self.can_attempt_artifact_now(artifact_id, now):
-                        continue
-
-                    if self.current_settings.paused:
-                        if not self.pause_notice_emitted:
-                            self.emit_upload_event("paused", "", "", "unknown", "", "upload_paused", "")
-                            self.pause_notice_emitted = True
-                        continue
-
+                if self.current_settings.paused:
+                    if not self.pause_notice_emitted:
+                        self.emit_upload_event("paused", "", "", "unknown", "", "upload_paused", "")
+                        self.pause_notice_emitted = True
+                else:
                     self.pause_notice_emitted = False
+                    attempt_epoch = _epoch_now()
                     try:
-                        self.attempt_ship_artifact(artifact_id, file_path, relative_path, now)
+                        self.process_due_artifacts(attempt_epoch)
                     except Exception as exc:
-                        self.log("ERROR", f"Unhandled upload attempt exception for {relative_path}: {exc}")
-                        self.schedule_retry_or_dead_letter(
-                            artifact_id=artifact_id,
-                            relative_path=relative_path,
-                            size_bytes=str(self._file_size(file_path)),
-                            current_epoch=now,
-                            final_error=f"unexpected_exception_{type(exc).__name__}",
-                        )
+                        self.log("ERROR", f"Due artifact attempt cycle error: {exc}")
 
                 time.sleep(max(self.scan_interval, 1))
         finally:

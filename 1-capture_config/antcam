@@ -2472,6 +2472,20 @@ read_file_tail_for_payload() {
     fi
 }
 
+report_upload_worker_process_snapshot() {
+    if command -v pgrep >/dev/null 2>&1; then
+        pgrep -af 'upload_worker\.sh' 2>/dev/null || true
+        return 0
+    fi
+
+    if command -v ps >/dev/null 2>&1; then
+        ps -eo pid,ppid,etimes,cmd 2>/dev/null | awk '/upload_worker\.sh/ { print }' || true
+        return 0
+    fi
+
+    printf '%s\n' "(pgrep/ps unavailable)"
+}
+
 report_diagnostic_payload() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for diagnostic"
@@ -2507,10 +2521,12 @@ report_diagnostic_payload() {
     local service_active="" service_active_rc=127
     local service_enabled="" service_enabled_rc=127
     local service_show="" service_show_rc=127
+    local service_mainpid="" service_mainpid_rc=127
     local service_journal="" service_journal_rc=127
     if command -v systemctl >/dev/null 2>&1; then
         capture_subshell_output service_active service_active_rc systemctl is-active "${DEFAULT_UPLOAD_SERVICE_NAME}"
         capture_subshell_output service_enabled service_enabled_rc systemctl is-enabled "${DEFAULT_UPLOAD_SERVICE_NAME}"
+        capture_subshell_output service_mainpid service_mainpid_rc systemctl show "${DEFAULT_UPLOAD_SERVICE_NAME}" -p MainPID --value
         capture_subshell_output service_show service_show_rc systemctl show "${DEFAULT_UPLOAD_SERVICE_NAME}" -p ActiveState -p SubState -p Result -p ExecMainStatus -p MainPID -p FragmentPath -p Environment --value
     fi
     if command -v journalctl >/dev/null 2>&1; then
@@ -2520,6 +2536,37 @@ report_diagnostic_payload() {
     local upload_worker_log_tail recording_state_tail
     upload_worker_log_tail="$(read_file_tail_for_payload "${upload_worker_log_file}" 120)"
     recording_state_tail="$(read_file_tail_for_payload "${state_file}" 80)"
+
+    local upload_worker_processes upload_worker_processes_rc
+    capture_subshell_output upload_worker_processes upload_worker_processes_rc report_upload_worker_process_snapshot
+
+    service_mainpid="$(printf '%s' "${service_mainpid}" | tr -d '[:space:]')"
+    local upload_worker_pid_list upload_worker_process_count mainpid_present orphan_worker_pids
+    upload_worker_pid_list="$(printf '%s\n' "${upload_worker_processes}" | awk '{print $1}' | grep -E '^[0-9]+$' | paste -sd ',' - 2>/dev/null || true)"
+    upload_worker_process_count="$(printf '%s\n' "${upload_worker_processes}" | awk '{ if ($1 ~ /^[0-9]+$/) c++ } END { print c+0 }')"
+    mainpid_present="false"
+    orphan_worker_pids=""
+    if [[ -n "${service_mainpid}" && "${service_mainpid}" != "0" ]]; then
+        if printf '%s\n' "${upload_worker_processes}" | awk -v p="${service_mainpid}" '$1 == p { found=1 } END { exit(found ? 0 : 1) }'; then
+            mainpid_present="true"
+        fi
+    fi
+    orphan_worker_pids="$(printf '%s\n' "${upload_worker_processes}" | awk -v p="${service_mainpid}" '
+        $1 ~ /^[0-9]+$/ {
+            if (p == "" || p == "0" || $1 != p) {
+                out = (out == "" ? $1 : out "," $1)
+            }
+        }
+        END { print out }
+    ')"
+
+    local legacy_upload_unit_scan legacy_upload_unit_scan_rc
+    legacy_upload_unit_scan=""
+    legacy_upload_unit_scan_rc=127
+    if command -v systemctl >/dev/null 2>&1; then
+        capture_subshell_output legacy_upload_unit_scan legacy_upload_unit_scan_rc systemctl list-units --type=service --all
+        legacy_upload_unit_scan="$(printf '%s\n' "${legacy_upload_unit_scan}" | awk '/antscihub/ && /upload/ { print }')"
+    fi
 
     local focus_file_text fps_file_text length_file_text segment_file_text loop_file_text
     focus_file_text="$(read_file_tail_for_payload "${focus_file}" 20)"
@@ -2564,8 +2611,13 @@ report_diagnostic_payload() {
     service_active="$(truncate_text_for_payload "${service_active}" 4000)"
     service_enabled="$(truncate_text_for_payload "${service_enabled}" 4000)"
     service_show="$(truncate_text_for_payload "${service_show}" 20000)"
+    service_mainpid="$(truncate_text_for_payload "${service_mainpid}" 2000)"
     service_journal="$(truncate_text_for_payload "${service_journal}" 20000)"
     upload_worker_log_tail="$(truncate_text_for_payload "${upload_worker_log_tail}" 20000)"
+    upload_worker_processes="$(truncate_text_for_payload "${upload_worker_processes}" 12000)"
+    upload_worker_pid_list="$(truncate_text_for_payload "${upload_worker_pid_list}" 2000)"
+    orphan_worker_pids="$(truncate_text_for_payload "${orphan_worker_pids}" 2000)"
+    legacy_upload_unit_scan="$(truncate_text_for_payload "${legacy_upload_unit_scan}" 12000)"
     recording_state_tail="$(truncate_text_for_payload "${recording_state_tail}" 12000)"
     focus_file_text="$(truncate_text_for_payload "${focus_file_text}" 4000)"
     fps_file_text="$(truncate_text_for_payload "${fps_file_text}" 4000)"
@@ -2606,7 +2658,12 @@ report_diagnostic_payload() {
     payload+=",\"upload_service_active_rc\":\"$(json_escape "${service_active_rc}")\""
     payload+=",\"upload_service_enabled_rc\":\"$(json_escape "${service_enabled_rc}")\""
     payload+=",\"upload_service_show_rc\":\"$(json_escape "${service_show_rc}")\""
+    payload+=",\"upload_service_mainpid_rc\":\"$(json_escape "${service_mainpid_rc}")\""
     payload+=",\"upload_service_journal_rc\":\"$(json_escape "${service_journal_rc}")\""
+    payload+=",\"upload_worker_processes_rc\":\"$(json_escape "${upload_worker_processes_rc}")\""
+    payload+=",\"legacy_upload_unit_scan_rc\":\"$(json_escape "${legacy_upload_unit_scan_rc}")\""
+    payload+=",\"upload_worker_process_count\":\"$(json_escape "${upload_worker_process_count}")\""
+    payload+=",\"upload_worker_mainpid_present\":\"$(json_escape "${mainpid_present}")\""
     payload+=",\"upload_dir_df_rc\":\"$(json_escape "${upload_dir_df_rc}")\""
     payload+=",\"upload_dir_du_rc\":\"$(json_escape "${upload_dir_du_rc}")\""
     payload+=",\"camera_report_raw\":\"$(json_escape "${camera_report}")\""
@@ -2618,8 +2675,13 @@ report_diagnostic_payload() {
     payload+=",\"video_script_path_raw\":\"$(json_escape "${video_script_path}")\""
     payload+=",\"upload_service_active_raw\":\"$(json_escape "${service_active}")\""
     payload+=",\"upload_service_enabled_raw\":\"$(json_escape "${service_enabled}")\""
+    payload+=",\"upload_service_mainpid_raw\":\"$(json_escape "${service_mainpid}")\""
     payload+=",\"upload_service_show_raw\":\"$(json_escape "${service_show}")\""
     payload+=",\"upload_service_journal_raw\":\"$(json_escape "${service_journal}")\""
+    payload+=",\"upload_worker_processes_raw\":\"$(json_escape "${upload_worker_processes}")\""
+    payload+=",\"upload_worker_pid_list_raw\":\"$(json_escape "${upload_worker_pid_list}")\""
+    payload+=",\"upload_worker_orphan_pids_raw\":\"$(json_escape "${orphan_worker_pids}")\""
+    payload+=",\"legacy_upload_units_raw\":\"$(json_escape "${legacy_upload_unit_scan}")\""
     payload+=",\"upload_worker_log_tail_raw\":\"$(json_escape "${upload_worker_log_tail}")\""
     payload+=",\"recording_state_tail_raw\":\"$(json_escape "${recording_state_tail}")\""
     payload+=",\"focus_file\":\"$(json_escape "${focus_file}")\""

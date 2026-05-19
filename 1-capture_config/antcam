@@ -73,6 +73,7 @@ Usage:
   antcam start <recording-script-name>
   antcam stop
   antcam capture report
+  antcam diagnostic
   antcam focus check
   antcam focus set <lens-position|auto>
   antcam focus report
@@ -112,6 +113,7 @@ Examples:
   antcam start photos
   antcam stop
   antcam capture report
+  antcam diagnostic
   antcam focus check
   antcam focus set 7.5
   antcam focus set auto
@@ -2416,6 +2418,228 @@ report_capture_settings() {
     echo "recording_state_file=${state_file}"
 }
 
+truncate_text_for_payload() {
+    local input="${1:-}"
+    local max_chars="${2:-16000}"
+    local marker=" ...<truncated>... "
+
+    if [[ "${max_chars}" -le 0 ]]; then
+        printf '%s' ""
+        return 0
+    fi
+
+    if [[ "${#input}" -le "${max_chars}" ]]; then
+        printf '%s' "${input}"
+        return 0
+    fi
+
+    local keep_each=$(( (max_chars - ${#marker}) / 2 ))
+    if [[ "${keep_each}" -lt 0 ]]; then
+        keep_each=0
+    fi
+
+    if [[ "${keep_each}" -eq 0 ]]; then
+        printf '%s' "${input:0:${max_chars}}"
+        return 0
+    fi
+
+    printf '%s%s%s' "${input:0:${keep_each}}" "${marker}" "${input: -${keep_each}}"
+}
+
+capture_subshell_output() {
+    local out_var="$1"
+    local rc_var="$2"
+    shift 2
+
+    local cmd_output cmd_rc
+    set +e
+    cmd_output="$( ( "$@" ) 2>&1 )"
+    cmd_rc=$?
+    set -e
+
+    printf -v "${out_var}" '%s' "${cmd_output}"
+    printf -v "${rc_var}" '%s' "${cmd_rc}"
+}
+
+read_file_tail_for_payload() {
+    local file_path="$1"
+    local lines="${2:-80}"
+
+    if [[ -f "${file_path}" ]]; then
+        tail -n "${lines}" "${file_path}" 2>/dev/null || cat "${file_path}" 2>/dev/null || true
+    else
+        printf '%s\n' "(file missing: ${file_path})"
+    fi
+}
+
+report_diagnostic_payload() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for diagnostic"
+
+    local capture_dir upload_dir queue_db state_file upload_worker_log_file
+    local focus_file fps_file length_file segment_file loop_file
+    capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
+    state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    upload_worker_log_file="${user_home%/}/.local/state/antscihub-upload/antscihub-upload.log"
+    focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
+    fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
+    length_file="$(resolve_length_value_file_for_home "${user_home}")"
+    segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+
+    local capture_report capture_rc
+    local upload_settings_report upload_settings_rc
+    local upload_targets_report upload_targets_rc
+    local upload_queue_report upload_queue_rc
+    local camera_report camera_rc
+    capture_subshell_output capture_report capture_rc report_capture_settings
+    capture_subshell_output upload_settings_report upload_settings_rc report_upload_settings
+    capture_subshell_output upload_targets_report upload_targets_rc report_upload_targets
+    capture_subshell_output upload_queue_report upload_queue_rc report_upload_queue
+    capture_subshell_output camera_report camera_rc report_camera_make_model
+
+    local photos_script_path photos_script_rc video_script_path video_script_rc
+    capture_subshell_output photos_script_path photos_script_rc resolve_recording_script_path photos
+    capture_subshell_output video_script_path video_script_rc resolve_recording_script_path video
+
+    local service_active="" service_active_rc=127
+    local service_enabled="" service_enabled_rc=127
+    local service_show="" service_show_rc=127
+    local service_journal="" service_journal_rc=127
+    if command -v systemctl >/dev/null 2>&1; then
+        capture_subshell_output service_active service_active_rc systemctl is-active "${DEFAULT_UPLOAD_SERVICE_NAME}"
+        capture_subshell_output service_enabled service_enabled_rc systemctl is-enabled "${DEFAULT_UPLOAD_SERVICE_NAME}"
+        capture_subshell_output service_show service_show_rc systemctl show "${DEFAULT_UPLOAD_SERVICE_NAME}" -p ActiveState -p SubState -p Result -p ExecMainStatus -p MainPID -p FragmentPath -p Environment --value
+    fi
+    if command -v journalctl >/dev/null 2>&1; then
+        capture_subshell_output service_journal service_journal_rc journalctl -u "${DEFAULT_UPLOAD_SERVICE_NAME}" -n 120 --no-pager
+    fi
+
+    local upload_worker_log_tail recording_state_tail
+    upload_worker_log_tail="$(read_file_tail_for_payload "${upload_worker_log_file}" 120)"
+    recording_state_tail="$(read_file_tail_for_payload "${state_file}" 80)"
+
+    local focus_file_text fps_file_text length_file_text segment_file_text loop_file_text
+    focus_file_text="$(read_file_tail_for_payload "${focus_file}" 20)"
+    fps_file_text="$(read_file_tail_for_payload "${fps_file}" 20)"
+    length_file_text="$(read_file_tail_for_payload "${length_file}" 20)"
+    segment_file_text="$(read_file_tail_for_payload "${segment_file}" 20)"
+    loop_file_text="$(read_file_tail_for_payload "${loop_file}" 20)"
+
+    local upload_dir_df upload_dir_df_rc upload_dir_du upload_dir_du_rc
+    upload_dir_df=""
+    upload_dir_du=""
+    upload_dir_df_rc=127
+    upload_dir_du_rc=127
+    if [[ -d "${upload_dir}" ]]; then
+        capture_subshell_output upload_dir_df upload_dir_df_rc df -h "${upload_dir}"
+        capture_subshell_output upload_dir_du upload_dir_du_rc du -sh "${upload_dir}"
+    fi
+
+    local recent_upload_files=""
+    if [[ -d "${upload_dir}" ]]; then
+        recent_upload_files="$(find "${upload_dir}" -maxdepth 2 -type f 2>/dev/null | tail -n 120 || true)"
+    fi
+
+    local hostname_value kernel_value date_utc now_epoch
+    hostname_value="$(hostname 2>/dev/null || true)"
+    kernel_value="$(uname -a 2>/dev/null || true)"
+    date_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    now_epoch="$(date +%s)"
+
+    resolve_device_id >/dev/null
+    local device_id topic
+    device_id="${DEVICE_ID_CACHE}"
+    topic="$(build_fleet_event_topic "${device_id}")"
+
+    capture_report="$(truncate_text_for_payload "${capture_report}" 20000)"
+    upload_settings_report="$(truncate_text_for_payload "${upload_settings_report}" 20000)"
+    upload_targets_report="$(truncate_text_for_payload "${upload_targets_report}" 12000)"
+    upload_queue_report="$(truncate_text_for_payload "${upload_queue_report}" 20000)"
+    camera_report="$(truncate_text_for_payload "${camera_report}" 4000)"
+    photos_script_path="$(truncate_text_for_payload "${photos_script_path}" 4000)"
+    video_script_path="$(truncate_text_for_payload "${video_script_path}" 4000)"
+    service_active="$(truncate_text_for_payload "${service_active}" 4000)"
+    service_enabled="$(truncate_text_for_payload "${service_enabled}" 4000)"
+    service_show="$(truncate_text_for_payload "${service_show}" 20000)"
+    service_journal="$(truncate_text_for_payload "${service_journal}" 20000)"
+    upload_worker_log_tail="$(truncate_text_for_payload "${upload_worker_log_tail}" 20000)"
+    recording_state_tail="$(truncate_text_for_payload "${recording_state_tail}" 12000)"
+    focus_file_text="$(truncate_text_for_payload "${focus_file_text}" 4000)"
+    fps_file_text="$(truncate_text_for_payload "${fps_file_text}" 4000)"
+    length_file_text="$(truncate_text_for_payload "${length_file_text}" 4000)"
+    segment_file_text="$(truncate_text_for_payload "${segment_file_text}" 4000)"
+    loop_file_text="$(truncate_text_for_payload "${loop_file_text}" 4000)"
+    upload_dir_df="$(truncate_text_for_payload "${upload_dir_df}" 8000)"
+    upload_dir_du="$(truncate_text_for_payload "${upload_dir_du}" 4000)"
+    recent_upload_files="$(truncate_text_for_payload "${recent_upload_files}" 20000)"
+
+    local payload
+    payload="{\"event\":\"report\""
+    payload+=",\"report\":\"antcam_diagnostic\""
+    payload+=",\"device_id\":\"$(json_escape "${device_id}")\""
+    payload+=",\"timestamp\":${now_epoch}"
+    payload+=",\"timestamp_utc\":\"$(json_escape "${date_utc}")\""
+    payload+=",\"severity\":\"INFO\""
+    payload+=",\"success\":true"
+    payload+=",\"service\":\"antcam-cli\""
+    payload+=",\"topic\":\"$(json_escape "${topic}")\""
+    payload+=",\"message\":\"AntCam diagnostic payload\""
+    payload+=",\"diagnostic_version\":\"1\""
+    payload+=",\"host\":\"$(json_escape "${hostname_value}")\""
+    payload+=",\"kernel\":\"$(json_escape "${kernel_value}")\""
+    payload+=",\"effective_home\":\"$(json_escape "${user_home}")\""
+    payload+=",\"capture_dir\":\"$(json_escape "${capture_dir}")\""
+    payload+=",\"upload_dir\":\"$(json_escape "${upload_dir}")\""
+    payload+=",\"queue_db\":\"$(json_escape "${queue_db}")\""
+    payload+=",\"recording_state_file\":\"$(json_escape "${state_file}")\""
+    payload+=",\"upload_worker_log_file\":\"$(json_escape "${upload_worker_log_file}")\""
+    payload+=",\"capture_report_rc\":\"$(json_escape "${capture_rc}")\""
+    payload+=",\"upload_settings_report_rc\":\"$(json_escape "${upload_settings_rc}")\""
+    payload+=",\"upload_targets_report_rc\":\"$(json_escape "${upload_targets_rc}")\""
+    payload+=",\"upload_queue_report_rc\":\"$(json_escape "${upload_queue_rc}")\""
+    payload+=",\"camera_report_rc\":\"$(json_escape "${camera_rc}")\""
+    payload+=",\"photos_script_resolve_rc\":\"$(json_escape "${photos_script_rc}")\""
+    payload+=",\"video_script_resolve_rc\":\"$(json_escape "${video_script_rc}")\""
+    payload+=",\"upload_service_active_rc\":\"$(json_escape "${service_active_rc}")\""
+    payload+=",\"upload_service_enabled_rc\":\"$(json_escape "${service_enabled_rc}")\""
+    payload+=",\"upload_service_show_rc\":\"$(json_escape "${service_show_rc}")\""
+    payload+=",\"upload_service_journal_rc\":\"$(json_escape "${service_journal_rc}")\""
+    payload+=",\"upload_dir_df_rc\":\"$(json_escape "${upload_dir_df_rc}")\""
+    payload+=",\"upload_dir_du_rc\":\"$(json_escape "${upload_dir_du_rc}")\""
+    payload+=",\"camera_report_raw\":\"$(json_escape "${camera_report}")\""
+    payload+=",\"capture_report_raw\":\"$(json_escape "${capture_report}")\""
+    payload+=",\"upload_settings_report_raw\":\"$(json_escape "${upload_settings_report}")\""
+    payload+=",\"upload_targets_report_raw\":\"$(json_escape "${upload_targets_report}")\""
+    payload+=",\"upload_queue_report_raw\":\"$(json_escape "${upload_queue_report}")\""
+    payload+=",\"photos_script_path_raw\":\"$(json_escape "${photos_script_path}")\""
+    payload+=",\"video_script_path_raw\":\"$(json_escape "${video_script_path}")\""
+    payload+=",\"upload_service_active_raw\":\"$(json_escape "${service_active}")\""
+    payload+=",\"upload_service_enabled_raw\":\"$(json_escape "${service_enabled}")\""
+    payload+=",\"upload_service_show_raw\":\"$(json_escape "${service_show}")\""
+    payload+=",\"upload_service_journal_raw\":\"$(json_escape "${service_journal}")\""
+    payload+=",\"upload_worker_log_tail_raw\":\"$(json_escape "${upload_worker_log_tail}")\""
+    payload+=",\"recording_state_tail_raw\":\"$(json_escape "${recording_state_tail}")\""
+    payload+=",\"focus_file\":\"$(json_escape "${focus_file}")\""
+    payload+=",\"focus_file_raw\":\"$(json_escape "${focus_file_text}")\""
+    payload+=",\"fps_file\":\"$(json_escape "${fps_file}")\""
+    payload+=",\"fps_file_raw\":\"$(json_escape "${fps_file_text}")\""
+    payload+=",\"length_file\":\"$(json_escape "${length_file}")\""
+    payload+=",\"length_file_raw\":\"$(json_escape "${length_file_text}")\""
+    payload+=",\"segment_file\":\"$(json_escape "${segment_file}")\""
+    payload+=",\"segment_file_raw\":\"$(json_escape "${segment_file_text}")\""
+    payload+=",\"loop_file\":\"$(json_escape "${loop_file}")\""
+    payload+=",\"loop_file_raw\":\"$(json_escape "${loop_file_text}")\""
+    payload+=",\"upload_dir_df_raw\":\"$(json_escape "${upload_dir_df}")\""
+    payload+=",\"upload_dir_du_raw\":\"$(json_escape "${upload_dir_du}")\""
+    payload+=",\"recent_upload_files_raw\":\"$(json_escape "${recent_upload_files}")\""
+    payload+="}"
+
+    printf '%s\n' "${payload}"
+}
+
 start_recording() {
     local requested_script_name="$1"
     local user_home
@@ -2857,6 +3081,11 @@ main() {
                     die "unknown capture action: $1"
                     ;;
             esac
+            ;;
+        diagnostic)
+            shift
+            [[ $# -eq 0 ]] || die "usage: antcam diagnostic"
+            report_diagnostic_payload
             ;;
         cam)
             shift

@@ -124,6 +124,7 @@ MQTT_PUBLISH_WARNING_EMITTED="false"
 SETTINGS_WARNING_EMITTED="false"
 PAUSE_NOTICE_EMITTED="false"
 OPEN_FILE_CHECK_TOOL=""
+EXCLUSION_REASON=""
 
 CURRENT_UPLOAD_PROFILE=""
 CURRENT_UPLOAD_RETENTION=""
@@ -135,6 +136,7 @@ CURRENT_HIGH_WATERMARK=80
 CURRENT_LOW_WATERMARK=70
 
 declare -A SEEN_FILE_DETECTIONS=()
+declare -A SEEN_FILE_EXCLUSIONS=()
 
 log() {
     local level="$1"
@@ -626,6 +628,7 @@ CREATE TABLE IF NOT EXISTS artifacts (
 CREATE INDEX IF NOT EXISTS idx_artifacts_status ON artifacts(status);
 CREATE INDEX IF NOT EXISTS idx_artifacts_next_retry ON artifacts(next_retry_epoch);
 CREATE INDEX IF NOT EXISTS idx_artifacts_first_shipped ON artifacts(first_shipped_epoch);
+CREATE INDEX IF NOT EXISTS idx_artifacts_relative_path ON artifacts(relative_path);
 CREATE TABLE IF NOT EXISTS artifact_targets (
     artifact_id INTEGER NOT NULL,
     target_name TEXT NOT NULL,
@@ -682,7 +685,8 @@ make_file_identity() {
     local file="$1"
     local relative_path="$2"
     local stat_fields
-    stat_fields="$(stat -c '%i:%s:%Y' "${file}" 2>/dev/null || echo "0:0:0")"
+    # Use inode+size (not mtime) to avoid re-queue churn from metadata-only mtime touches.
+    stat_fields="$(stat -c '%i:%s' "${file}" 2>/dev/null || echo "0:0")"
     printf '%s|%s' "${relative_path}" "${stat_fields}"
 }
 
@@ -717,18 +721,102 @@ is_uploadable() {
     return 0
 }
 
-is_excluded_runtime_config_file() {
+path_has_config_segment() {
     local relative_path="$1"
     local lower_relative="${relative_path,,}"
-
     case "${lower_relative}" in
-        config/state.env|*/config/state.env|config/capture.log|*/config/capture.log)
+        config/*|*/config/*)
             return 0
             ;;
         *)
             return 1
             ;;
     esac
+}
+
+path_is_diagnostics_tree() {
+    local relative_path="$1"
+    local lower_relative="${relative_path,,}"
+    case "${lower_relative}" in
+        diagnostics/*|*/diagnostics/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_log_file() {
+    local basename="$1"
+    local lower_basename="${basename,,}"
+    case "${lower_basename}" in
+        *.log|*.log.[0-9]|*.out|*.err)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_runtime_state_file() {
+    local basename="$1"
+    local lower_basename="${basename,,}"
+    case "${lower_basename}" in
+        *.env|*.pid|*.lock|*.tmp|*.temp|*.part|*.partial|*.swp|*.swo|*.db|*.db-*|*.sqlite|*.sqlite-*|*.journal|state.env|capture.log)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+log_file_excluded_once() {
+    local file="$1"
+    local relative_path="$2"
+    local reason="$3"
+    local detection_key
+    detection_key="$(make_file_detection_key "${file}" "${relative_path}")|${reason}"
+
+    if [[ -n "${SEEN_FILE_EXCLUSIONS["${detection_key}"]+x}" ]]; then
+        return 0
+    fi
+
+    log "DEBUG" "Skipping excluded file: ${relative_path} reason=${reason}"
+    SEEN_FILE_EXCLUSIONS["${detection_key}"]="1"
+}
+
+excluded_reason_for_path() {
+    local relative_path="$1"
+    local basename="$2"
+    local reason=""
+
+    if path_has_config_segment "${relative_path}"; then
+        reason="config_tree_runtime_excluded"
+    elif is_runtime_state_file "${basename}" && ! path_is_diagnostics_tree "${relative_path}"; then
+        reason="runtime_state_excluded"
+    elif is_log_file "${basename}" && ! path_is_diagnostics_tree "${relative_path}"; then
+        reason="log_outside_diagnostics_excluded"
+    fi
+
+    printf '%s' "${reason}"
+}
+
+is_excluded_upload_candidate() {
+    local relative_path="$1"
+    local basename="$2"
+    local reason=""
+
+    reason="$(excluded_reason_for_path "${relative_path}" "${basename}")"
+    if [[ -n "${reason}" ]]; then
+        EXCLUSION_REASON="${reason}"
+        return 0
+    fi
+
+    EXCLUSION_REASON=""
+    return 1
 }
 
 is_still_image() {
@@ -939,6 +1027,9 @@ register_artifact_if_needed() {
     current_epoch="$(now_epoch)"
 
     existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
+    if [[ -z "${existing_id}" ]]; then
+        existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' ORDER BY id DESC LIMIT 1;")"
+    fi
 
     if [[ -z "${existing_id}" ]]; then
         db_exec "
@@ -949,7 +1040,8 @@ VALUES ('$(sql_escape "${file_key}")', '$(sql_escape "${relative_path}")', '$(sq
     else
         db_exec "
 UPDATE artifacts
-SET relative_path='$(sql_escape "${relative_path}")',
+SET file_key='$(sql_escape "${file_key}")',
+    relative_path='$(sql_escape "${relative_path}")',
     full_path='$(sql_escape "${file}")',
     inode=${inode},
     size_bytes=${size_bytes},
@@ -1126,6 +1218,10 @@ attempt_ship_artifact() {
 
         if [[ "${target}" == "local" ]]; then
             if ship_to_local_target "${file}" "${relative_path}"; then
+                local success_reason="target_local"
+                if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
+                    success_reason="target_local_exists"
+                fi
                 set_artifact_target_status "${artifact_id}" "local" "SUCCESS" "" "${current_epoch}" "${current_epoch}"
                 insert_attempt_log "${artifact_id}" "local" "success" 0 "${SHIP_DESTINATION_PATH}" "${current_epoch}"
                 db_exec "
@@ -1140,7 +1236,7 @@ SET status='SHIPPED',
     profile_at_ship='$(sql_escape "${CURRENT_UPLOAD_PROFILE}")'
 WHERE id=${artifact_id};
 "
-                emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "target_local" ""
+                emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "${success_reason}" ""
                 if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
                     log "INFO" "Local destination already had file; treated as shipped: ${relative_path}"
                 fi
@@ -1152,6 +1248,10 @@ WHERE id=${artifact_id};
             final_error="${SHIP_FAILURE_REASON}"
         else
             if ship_to_cloud_target "${file}" "${relative_path}"; then
+                local success_reason="target_cloud"
+                if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
+                    success_reason="target_cloud_exists"
+                fi
                 set_artifact_target_status "${artifact_id}" "cloud" "SUCCESS" "" "${current_epoch}" "${current_epoch}"
                 insert_attempt_log "${artifact_id}" "cloud" "success" 0 "${SHIP_DESTINATION_PATH}" "${current_epoch}"
                 db_exec "
@@ -1166,7 +1266,7 @@ SET status='SHIPPED',
     profile_at_ship='$(sql_escape "${CURRENT_UPLOAD_PROFILE}")'
 WHERE id=${artifact_id};
 "
-                emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "target_cloud" ""
+                emit_upload_event "shipped" "${relative_path}" "${SHIP_DESTINATION_PATH}" "${SHIP_FILE_SIZE}" "" "${success_reason}" ""
                 if [[ "${SHIP_ALREADY_PRESENT}" == "true" ]]; then
                     log "INFO" "Cloud destination already had file; treated as shipped: ${relative_path}"
                 fi
@@ -1362,7 +1462,8 @@ while true; do
             continue
         fi
 
-        if is_excluded_runtime_config_file "${relative_path}"; then
+        if is_excluded_upload_candidate "${relative_path}" "${basename}"; then
+            log_file_excluded_once "${file}" "${relative_path}" "${EXCLUSION_REASON}"
             continue
         fi
 

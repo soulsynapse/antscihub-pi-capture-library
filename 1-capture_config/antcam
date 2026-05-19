@@ -2561,14 +2561,11 @@ report_upload_worker_cgroup_snapshot() {
 }
 
 report_upload_worker_lock_snapshot() {
-    local runtime_dir lock_file lock_pid
-    runtime_dir="$(read_upload_service_env_value "RUNTIME_DIRECTORY" || true)"
-    if [[ -z "${runtime_dir}" ]]; then
-        runtime_dir="${XDG_RUNTIME_DIR:-/tmp}"
-    fi
-    runtime_dir="${runtime_dir%/}"
-    [[ -n "${runtime_dir}" ]] || runtime_dir="/tmp"
-    lock_file="${runtime_dir}/antscihub-upload.lock"
+    local user_home queue_db state_dir lock_file lock_pid
+    user_home="$(resolve_effective_home)" || user_home="${HOME}"
+    queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
+    state_dir="$(dirname "${queue_db}")"
+    lock_file="${state_dir}/antscihub-upload.lock"
 
     echo "lock_file=${lock_file}"
 

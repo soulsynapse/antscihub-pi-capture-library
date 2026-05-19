@@ -262,6 +262,8 @@ sync_upload_service() {
         systemctl unmask "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
     fi
 
+    systemctl reset-failed "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
+
     if [[ "$was_enabled" == "true" ]]; then
         log_info "Restarting ${UPLOAD_SERVICE_NAME} (was enabled before install)"
         if ! systemctl restart "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1; then
@@ -282,6 +284,43 @@ sync_upload_service() {
     if ! systemctl start "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1; then
         log_warn "Could not start ${UPLOAD_SERVICE_NAME}. This is usually rclone-config related."
     fi
+}
+
+reconcile_single_upload_worker() {
+    local upload_user="$1"
+    local upload_home="$2"
+    local upload_uid
+    upload_uid="$(id -u "${upload_user}" 2>/dev/null || true)"
+
+    log_info "Reconciling upload worker to a single instance"
+    systemctl stop "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
+    systemctl reset-failed "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1 || true
+
+    local upload_pids
+    upload_pids="$(pgrep -f 'upload_worker\.sh' 2>/dev/null || true)"
+    if [[ -n "${upload_pids}" ]]; then
+        log_warn "Stopping residual upload worker process(es): $(echo "${upload_pids}" | tr '\n' ' ')"
+        while IFS= read -r pid; do
+            [[ -n "${pid}" ]] || continue
+            kill -TERM "${pid}" >/dev/null 2>&1 || true
+        done <<< "${upload_pids}"
+        sleep 1
+
+        upload_pids="$(pgrep -f 'upload_worker\.sh' 2>/dev/null || true)"
+        if [[ -n "${upload_pids}" ]]; then
+            log_warn "Force-stopping stuck upload worker process(es): $(echo "${upload_pids}" | tr '\n' ' ')"
+            while IFS= read -r pid; do
+                [[ -n "${pid}" ]] || continue
+                kill -KILL "${pid}" >/dev/null 2>&1 || true
+            done <<< "${upload_pids}"
+        fi
+    fi
+
+    rm -f "/tmp/antscihub-upload.lock" >/dev/null 2>&1 || true
+    if [[ -n "${upload_uid}" ]]; then
+        rm -f "/run/user/${upload_uid}/antscihub-upload.lock" >/dev/null 2>&1 || true
+    fi
+    rm -f "${upload_home}/.local/state/antscihub-upload/antscihub-upload.lock" >/dev/null 2>&1 || true
 }
 
 main() {
@@ -337,6 +376,7 @@ main() {
     log_info "Enabling ${UPLOAD_SERVICE_NAME}"
     systemctl enable "${UPLOAD_SERVICE_NAME}" >/dev/null
 
+    reconcile_single_upload_worker "$upload_user" "$upload_home"
     sync_upload_service "$upload_was_enabled" "$upload_was_active"
 
     local upload_destination="${DEFAULT_REMOTE}:"

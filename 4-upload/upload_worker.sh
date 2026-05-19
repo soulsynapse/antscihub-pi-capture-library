@@ -67,7 +67,7 @@ RUNTIME_DIR="${RUNTIME_DIR%%:*}"
 DB_FILE="${STATE_DIR}/queue.db"
 LEGACY_PROCESSED_FILE="${STATE_DIR}/processed.txt"
 LOG_FILE="${LOG_DIR}/antscihub-upload.log"
-LOCK_FILE="${RUNTIME_DIR}/antscihub-upload.lock"
+LOCK_FILE="${STATE_DIR}/antscihub-upload.lock"
 PROTECT_STOP_STAMP_FILE="${STATE_DIR}/last-protect-stop.epoch"
 
 UPLOAD_PROFILE_FILE="${UPLOAD_CONFIG_DIR}/upload-profile.txt"
@@ -661,6 +661,7 @@ archive_legacy_state() {
 }
 
 acquire_lock() {
+    mkdir -p "$(dirname "${LOCK_FILE}")"
     exec 9>"${LOCK_FILE}"
     if ! flock -n 9; then
         log "ERROR" "Another upload worker instance is running. Exiting."
@@ -1027,6 +1028,9 @@ register_artifact_if_needed() {
     current_epoch="$(now_epoch)"
 
     existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
+    if [[ -z "${existing_id}" ]]; then
+        existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' AND inode=${inode} AND size_bytes=${size_bytes} AND status='SHIPPED' ORDER BY id DESC LIMIT 1;")"
+    fi
     if [[ -z "${existing_id}" ]]; then
         existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' AND inode=${inode} AND size_bytes=${size_bytes} ORDER BY id DESC LIMIT 1;")"
     fi

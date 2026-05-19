@@ -75,6 +75,10 @@ def is_valid_lens_position_value(value: str) -> bool:
     return re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", value or "") is not None
 
 
+def is_valid_recording_name_value(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
+
+
 def now_epoch_milliseconds() -> int:
     return int(time.time() * 1000)
 
@@ -99,6 +103,18 @@ def read_value_with_default(file_path: Path, default: str) -> str:
     return default
 
 
+def read_raw_value_with_default(file_path: Path, default: str) -> str:
+    if file_path.is_file():
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not lines:
+                return default
+            return lines[0]
+        except Exception:
+            return default
+    return default
+
+
 def resolve_focus_file_path(capture_dir: Path) -> Path:
     override = os.environ.get("ANTCAM_FOCUS_VALUE_FILE", "")
     if override:
@@ -118,6 +134,13 @@ def resolve_loop_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "recording-loop.txt"
+
+
+def resolve_name_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_NAME_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-name.txt"
 
 
 def resolve_upload_dir_path(capture_dir: Path) -> Path:
@@ -153,6 +176,7 @@ def main() -> int:
     focus_file = resolve_focus_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     loop_file = resolve_loop_file_path(capture_dir)
+    name_file = resolve_name_file_path(capture_dir)
 
     focus_value = os.environ.get("ANTCAM_FOCUS_LENS_POSITION", "")
     if not focus_value:
@@ -201,6 +225,14 @@ def main() -> int:
             log("set loop >= 10s for photos")
             return 6
 
+    name_value = os.environ.get("ANTCAM_RECORDING_NAME", "")
+    if not name_value:
+        name_value = read_raw_value_with_default(name_file, "BLANK")
+    if not is_valid_recording_name_value(name_value):
+        log(f"invalid recording name value: {name_value}")
+        log("set it with: antcam name set <suffix> (allowed: A-Z a-z 0-9 . _ -)")
+        return 7
+
     still_cmd = choose_still_command()
     if not still_cmd:
         log("rpicam-still or libcamera-still not found. Install Raspberry Pi camera apps.")
@@ -210,7 +242,7 @@ def main() -> int:
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    session_dir = upload_dir / f"{session_timestamp}__{session_hostname}"
+    session_dir = upload_dir / f"{session_timestamp}__{session_hostname}__{name_value}"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"Using still command: {still_cmd}")
@@ -225,8 +257,9 @@ def main() -> int:
         log("Loop interval: none (loop scheduling disabled; one-shot capture)")
         if length_ms > 0:
             log("Loop is disabled; recording length is ignored for photos one-shot mode")
+    log(f"Recording name suffix: {name_value}")
     log(f"Session folder: {session_dir}")
-    log(f"Output pattern: {session_dir}/photos-%05d.jpg")
+    log(f"Output pattern: {session_dir}/photos-{name_value}-%05d.jpg")
 
     still_args = [
         "--nopreview",
@@ -239,7 +272,7 @@ def main() -> int:
 
     if not loop_enabled:
         # Hard one-shot path: when loop scheduling is disabled, capture exactly one image and exit.
-        output_file = session_dir / "photos-00000.jpg"
+        output_file = session_dir / f"photos-{name_value}-00000.jpg"
         log(f"Starting photo index=0 output={output_file}")
         rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
         return rc
@@ -263,7 +296,7 @@ def main() -> int:
         if end_epoch_ms > 0 and now_ms >= end_epoch_ms:
             break
 
-        output_file = session_dir / f"photos-{capture_index:05d}.jpg"
+        output_file = session_dir / f"photos-{name_value}-{capture_index:05d}.jpg"
         log(f"Starting photo index={capture_index} output={output_file}")
         rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
         if rc != 0:

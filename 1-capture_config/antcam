@@ -18,6 +18,8 @@ DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
 SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_LOOP_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-loop.txt"
 LOOP_SETTINGS_RELATIVE_PATH="${ANTCAM_LOOP_SETTINGS_RELATIVE_PATH:-${DEFAULT_LOOP_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_NAME_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-name.txt"
+NAME_SETTINGS_RELATIVE_PATH="${ANTCAM_NAME_SETTINGS_RELATIVE_PATH:-${DEFAULT_NAME_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
 RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
 DEFAULT_RECORDING_LAST_START_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-last-start-context.env"
@@ -42,6 +44,7 @@ DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
 DEFAULT_RECORDING_LOOP="${ANTCAM_DEFAULT_RECORDING_LOOP:-1m}"
+DEFAULT_RECORDING_NAME="${ANTCAM_DEFAULT_RECORDING_NAME:-BLANK}"
 DEFAULT_UPLOAD_PROFILE="${ANTCAM_DEFAULT_UPLOAD_PROFILE:-field}"
 DEFAULT_UPLOAD_RETENTION="${ANTCAM_DEFAULT_UPLOAD_RETENTION:-protect}"
 DEFAULT_UPLOAD_PAUSED="${ANTCAM_DEFAULT_UPLOAD_PAUSED:-false}"
@@ -87,6 +90,8 @@ Usage:
   antcam segment report
   antcam loop set <duration|none|0>
   antcam loop report
+  antcam name set <suffix>
+  antcam name report
   antcam upload set profile <field|cloud|local>
   antcam upload set retention <protect|rolling>
   antcam upload set local-target <path>
@@ -129,6 +134,8 @@ Examples:
   antcam loop set 1m
   antcam loop set none
   antcam loop report
+  antcam name set antcam01
+  antcam name report
   antcam upload set profile field
   antcam upload set retention rolling
   antcam upload set local-target /mnt/antscihub
@@ -395,6 +402,24 @@ resolve_loop_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${LOOP_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_name_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_NAME_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_NAME_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${NAME_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${NAME_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${NAME_SETTINGS_RELATIVE_PATH#./}"
+}
+
 resolve_recording_state_file_for_home() {
     local user_home="$1"
 
@@ -617,6 +642,18 @@ normalize_loop_setting_value() {
     else
         printf '%s\n' "${normalized_value}"
     fi
+}
+
+normalize_recording_name_value() {
+    local value="${1:-}"
+    value="${value//$'\r'/}"
+    value="${value//$'\n'/}"
+    printf '%s\n' "${value}"
+}
+
+is_valid_recording_name_value() {
+    local value="${1:-}"
+    [[ "${value}" =~ ^[A-Za-z0-9._-]+$ ]]
 }
 
 normalize_upload_text_value() {
@@ -1528,6 +1565,25 @@ read_loop_setting_for_home() {
     printf '%s\n' "${normalized_loop_value}"
 }
 
+read_name_setting_for_home() {
+    local user_home="$1"
+    local name_file name_value normalized_name_value
+    name_file="$(resolve_name_value_file_for_home "${user_home}")"
+
+    normalized_name_value="$(normalize_recording_name_value "${DEFAULT_RECORDING_NAME}")"
+    is_valid_recording_name_value "${normalized_name_value}" || die "invalid default recording name: ${DEFAULT_RECORDING_NAME} (expected characters [A-Za-z0-9._-])"
+
+    if [[ ! -f "${name_file}" ]]; then
+        printf '%s\n' "${normalized_name_value}"
+        return 0
+    fi
+
+    name_value="$(head -n 1 "${name_file}" 2>/dev/null || true)"
+    normalized_name_value="$(normalize_recording_name_value "${name_value}")"
+    is_valid_recording_name_value "${normalized_name_value}" || die "invalid recording name in ${name_file}: ${name_value} (expected characters [A-Za-z0-9._-])"
+    printf '%s\n' "${normalized_name_value}"
+}
+
 read_upload_profile_for_home() {
     local user_home="$1"
     local setting_file profile_value
@@ -1640,12 +1696,18 @@ report_loop_value() {
     read_loop_setting_for_home "${user_home}"
 }
 
+report_name_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for name settings"
+    read_name_setting_for_home "${user_home}"
+}
+
 report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
     local capture_dir upload_dir focus_file focus_value state_file last_start_state_file
-    local fps_file fps_value length_file length_value segment_file segment_value loop_file loop_value
+    local fps_file fps_value length_file length_value segment_file segment_value loop_file loop_value name_file name_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
@@ -1653,6 +1715,7 @@ report_capture_settings() {
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
     loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    name_file="$(resolve_name_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
 
@@ -1688,6 +1751,14 @@ report_capture_settings() {
         loop_value="${loop_value} (default)"
     fi
 
+    if [[ -f "${name_file}" ]]; then
+        name_value="$(read_name_setting_for_home "${user_home}")"
+    else
+        name_value="$(normalize_recording_name_value "${DEFAULT_RECORDING_NAME}")"
+        is_valid_recording_name_value "${name_value}" || die "invalid default recording name: ${DEFAULT_RECORDING_NAME} (expected characters [A-Za-z0-9._-])"
+        name_value="${name_value} (default)"
+    fi
+
     echo "capture_dir=${capture_dir}"
     echo "upload_dir=${upload_dir}"
     echo "recording_script_dir=${RECORDING_SCRIPT_DIR}"
@@ -1701,6 +1772,8 @@ report_capture_settings() {
     echo "recording_segment=${segment_value}"
     echo "loop_settings_file=${loop_file}"
     echo "recording_loop=${loop_value}"
+    echo "name_settings_file=${name_file}"
+    echo "recording_name=${name_value}"
     echo "recording_state_file=${state_file}"
     echo "recording_last_start_state_file=${last_start_state_file}"
 }
@@ -1715,8 +1788,8 @@ start_recording() {
 
     local capture_dir upload_dir record_script focus_value focus_file
     local fps_value fps_file length_value length_file segment_value segment_file
-    local loop_value loop_file script_basename photos_one_shot_guard
-    local length_source loop_source strict_service_context
+    local loop_value loop_file name_value name_file script_basename photos_one_shot_guard
+    local length_source loop_source name_source strict_service_context
     local recording_last_start_state_file last_start_context_payload
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
@@ -1741,8 +1814,15 @@ start_recording() {
     else
         loop_source="default"
     fi
+    name_file="$(resolve_name_value_file_for_home "${user_home}")"
+    if [[ -f "${name_file}" ]]; then
+        name_source="file"
+    else
+        name_source="default"
+    fi
     length_value="$(read_length_setting_for_home "${user_home}")"
     loop_value="$(read_loop_setting_for_home "${user_home}")"
+    name_value="$(read_name_setting_for_home "${user_home}")"
     strict_service_context="false"
     if is_service_execution_context; then
         strict_service_context="true"
@@ -1793,6 +1873,9 @@ segment_value=${segment_value}
 loop_file=${loop_file}
 loop_value=${loop_value}
 loop_source=${loop_source}
+name_file=${name_file}
+name_value=${name_value}
+name_source=${name_source}
 photos_one_shot_guard=${photos_one_shot_guard}
 recording_state_file=${recording_state_file}
 EOF
@@ -1827,6 +1910,8 @@ EOF
     fi
     echo "recording loop: ${loop_value}"
     echo "recording loop source: ${loop_source}"
+    echo "recording name: ${name_value}"
+    echo "recording name source: ${name_source}"
     echo "service context: ${strict_service_context}"
     if [[ -n "${segment_value}" ]]; then
         echo "recording segment: ${segment_value}"
@@ -1864,6 +1949,8 @@ EOF
             ANTCAM_RECORDING_LENGTH="${length_value}" \
             ANTCAM_LOOP_VALUE_FILE="${loop_file}" \
             ANTCAM_RECORDING_LOOP="${loop_value}" \
+            ANTCAM_NAME_VALUE_FILE="${name_file}" \
+            ANTCAM_RECORDING_NAME="${name_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
             "${record_script}"
@@ -2356,6 +2443,25 @@ main() {
                     ;;
                 *)
                     die "unknown loop action: $1"
+                    ;;
+            esac
+            ;;
+        name)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam name <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam name set <suffix>"
+                    set_name_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam name report"
+                    report_name_value
+                    ;;
+                *)
+                    die "unknown name action: $1"
                     ;;
             esac
             ;;

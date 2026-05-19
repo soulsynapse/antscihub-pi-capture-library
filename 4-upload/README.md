@@ -87,7 +87,8 @@ While running:
 13. candidates are due `QUEUED` and due `RETRY_WAIT` (`next_retry_epoch <= now`), ordered by `mtime_epoch`, then `discovered_at_epoch`, then `id`.
 14. if oldest candidate is still being written/not stable/open/not mature, skip it for now and keep checking the next oldest candidate.
 15. attempt one oldest-ready artifact, then re-query and continue until no eligible progress remains for this cycle.
-16. Sleep `SCAN_INTERVAL`.
+16. if a rate-limited failure sets global retry pause during this cycle, stop further due attempts immediately.
+17. Sleep `SCAN_INTERVAL`.
 
 `SCAN_INTERVAL` default: `10` seconds.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
@@ -269,16 +270,14 @@ Remote path:
 
 Behavior:
 
-1. Existence probe with `rclone lsf --files-only --max-depth 1` + timeouts.
-2. If probe reports file exists, validate remote size with `rclone lsjson --stat --files-only`.
-3. Only treat as success when remote size exactly matches local size.
-4. Else run `rclone copyto` with `--immutable --stats=0 --contimeout <N>s --timeout <N>s --retries 1 --low-level-retries 1`.
-5. If copy times out -> `rclone_timeout`.
-6. If copy fails but output text matches immutable/existing hints, do the same remote size validation before success.
-7. If size validation fails, return explicit failure reasons such as `remote_destination_conflict` or `rclone_lsjson_*`.
-8. Else if earlier lsf timed out -> `rclone_lsf_timeout`.
-9. If command output indicates provider throttling/rate-limit -> `rclone_rate_limited` (or `remote_rate_limited` from pre-check).
-10. Else -> `rclone_copy_failed`.
+1. Run `rclone copyto` with `--immutable --stats=0 --contimeout <N>s --timeout <N>s --retries 1 --low-level-retries 1`.
+2. If copy succeeds -> `target_cloud`.
+3. If copy times out -> `rclone_timeout`.
+4. If copy fails and output text matches immutable/existing hints, validate remote size with `rclone lsjson --stat --files-only`.
+5. Only treat immutable/existing as success when remote size exactly matches local size (`target_cloud_exists`).
+6. If size validation fails, return explicit failure reasons such as `remote_destination_conflict` or `rclone_lsjson_*`.
+7. If command output indicates provider throttling/rate-limit -> `rclone_rate_limited`.
+8. Else -> `rclone_copy_failed`.
 
 ## Success Commit
 
@@ -321,7 +320,7 @@ After all targets fail:
 6. Emit `dead_letter`.
 7. Else:
 8. Backoff = `RETRY_BASE_DELAY_SECONDS * 2^(attempt-1)` capped by `RETRY_MAX_DELAY_SECONDS`.
-9. If `final_error` is rate-limit (`rclone_rate_limited|remote_rate_limited`), enforce minimum backoff of `RATE_LIMIT_COOLDOWN_SECONDS`.
+9. If `final_error` is rate-limit (`rclone_rate_limited`), enforce minimum backoff of `RATE_LIMIT_COOLDOWN_SECONDS`.
 10. If `final_error` is rate-limit, set global retry pause until `now + RATE_LIMIT_COOLDOWN_SECONDS`.
 11. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff`, set `last_error`, set `updated_at_epoch`.
 12. Emit `retry` with reason `retry_backoff_<N>s`.

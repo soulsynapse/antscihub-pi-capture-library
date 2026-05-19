@@ -398,6 +398,21 @@ set_loop_setting_for_home() {
     printf '%s\n' "${loop_file}"
 }
 
+set_name_setting_for_home() {
+    local user_home="$1"
+    local name_value="$2"
+    local normalized_name_value
+    normalized_name_value="$(normalize_recording_name_value "${name_value}")"
+    is_valid_recording_name_value "${normalized_name_value}" || die "invalid recording name: ${name_value} (expected characters [A-Za-z0-9._-])"
+
+    local name_file name_dir
+    name_file="$(resolve_name_value_file_for_home "${user_home}")"
+    name_dir="$(dirname "${name_file}")"
+    mkdir -p "${name_dir}"
+    printf '%s\n' "${normalized_name_value}" > "${name_file}"
+    printf '%s\n' "${name_file}"
+}
+
 read_recording_state_field() {
     local state_file="$1"
     local field_name="$2"
@@ -516,6 +531,18 @@ set_loop_value() {
     normalized_loop="$(read_loop_setting_for_home "${user_home}")"
     echo "recording loop set to ${normalized_loop}"
     echo "loop settings file: ${loop_file}"
+}
+
+set_name_value() {
+    local name_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for name settings"
+
+    local name_file normalized_name
+    name_file="$(set_name_setting_for_home "${user_home}" "${name_value}")"
+    normalized_name="$(read_name_setting_for_home "${user_home}")"
+    echo "recording name set to ${normalized_name}"
+    echo "name settings file: ${name_file}"
 }
 
 set_upload_profile_value() {

@@ -8,11 +8,13 @@ antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
 antcam loop set <duration|none|0>
+antcam name set <suffix>
 antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
 antcam loop report
+antcam name report
 antcam start <recording-script-name>
 antcam stop
 antcam focus check
@@ -28,13 +30,14 @@ antcam focus check
 6. Read recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (or `ANTCAM_LENGTH_VALUE_FILE` override, defaults to `0s`).
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`) for scripts that use segments (for example, `video.py`).
 8. Read loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (or `ANTCAM_LOOP_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable loop scheduling).
-9. Run the selected script from inside `<desktop>/4-CAPTURE`.
-10. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
-11. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (for example, `video.py` writes `video-%05d.h264`, `photos.py` writes `photos-%05d.jpg`).
-12. Publish encrypted Fleet report messages when recording starts and ends.
+9. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
+10. Run the selected script from inside `<desktop>/4-CAPTURE`.
+11. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
+12. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
+13. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
-13. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+14. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
 
 `antcam stop` behavior:
 
@@ -63,7 +66,7 @@ Bundled recording scripts:
   - If loop is `none` or `0`, loop scheduling is disabled and the script runs one-shot (exactly one photo)
   - In one-shot mode, configured length is ignored
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
-  - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/photos-%05d.jpg`
+  - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/photos-suffix-%05d.jpg`
 
 `antcam focus check` behavior:
 

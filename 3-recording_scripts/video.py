@@ -83,6 +83,10 @@ def is_valid_fps_value(value: str) -> bool:
         return False
 
 
+def is_valid_recording_name_value(value: str) -> bool:
+    return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
+
+
 def parse_positive_int(raw_value: str) -> Optional[int]:
     if re.fullmatch(r"[0-9]+", raw_value or "") is None:
         return None
@@ -99,6 +103,18 @@ def read_value_with_default(file_path: Path, default: str) -> str:
     if file_path.is_file():
         try:
             return file_path.read_text(encoding="utf-8", errors="replace").splitlines()[0].strip()
+        except Exception:
+            return default
+    return default
+
+
+def read_raw_value_with_default(file_path: Path, default: str) -> str:
+    if file_path.is_file():
+        try:
+            lines = file_path.read_text(encoding="utf-8", errors="replace").splitlines()
+            if not lines:
+                return default
+            return lines[0]
         except Exception:
             return default
     return default
@@ -139,6 +155,13 @@ def resolve_loop_file_path(capture_dir: Path) -> Path:
     return capture_dir / "config" / "recording-loop.txt"
 
 
+def resolve_name_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_NAME_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-name.txt"
+
+
 def resolve_upload_dir_path(capture_dir: Path) -> Path:
     override = os.environ.get("ANTCAM_UPLOAD_DIR", "")
     if override:
@@ -174,6 +197,7 @@ def main() -> int:
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
     loop_file = resolve_loop_file_path(capture_dir)
+    name_file = resolve_name_file_path(capture_dir)
 
     focus_value = os.environ.get("ANTCAM_FOCUS_LENS_POSITION", "")
     if not focus_value:
@@ -256,6 +280,14 @@ def main() -> int:
         log("set loop to match segment, or set loop to none")
         return 8
 
+    name_value = os.environ.get("ANTCAM_RECORDING_NAME", "")
+    if not name_value:
+        name_value = read_raw_value_with_default(name_file, "BLANK")
+    if not is_valid_recording_name_value(name_value):
+        log(f"invalid recording name value: {name_value}")
+        log("set it with: antcam name set <suffix> (allowed: A-Z a-z 0-9 . _ -)")
+        return 10
+
     video_cmd = choose_video_command()
     if not video_cmd:
         log("rpicam-vid or libcamera-vid not found. Install Raspberry Pi camera apps.")
@@ -265,7 +297,7 @@ def main() -> int:
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    session_dir = upload_dir / f"{session_timestamp}__{session_hostname}"
+    session_dir = upload_dir / f"{session_timestamp}__{session_hostname}__{name_value}"
     session_dir.mkdir(parents=True, exist_ok=True)
 
     log(f"Using video command: {video_cmd}")
@@ -281,8 +313,9 @@ def main() -> int:
         log("Loop interval: none (segment mode writes contiguous clips)")
     log(f"Frame rate: {fps_value} fps")
     log(f"Resolution: {width_value}x{height_value}")
+    log(f"Recording name suffix: {name_value}")
     log(f"Session folder: {session_dir}")
-    log(f"Output pattern: {session_dir}/video-%05d.h264")
+    log(f"Output pattern: {session_dir}/video-{name_value}-%05d.h264")
     log("Recording mode: single rpicam process with --segment (avoids per-clip startup loss)")
 
     capture_timeout_ms = length_ms if length_ms > 0 else 0
@@ -302,14 +335,14 @@ def main() -> int:
         "--segment",
         str(segment_ms),
         "--output",
-        str(session_dir / "video-%05d.h264"),
+        str(session_dir / f"video-{name_value}-%05d.h264"),
     ]
     if not is_auto_focus_value(focus_value):
         video_args.extend(["--lens-position", focus_value])
 
     log(
         "Starting segmented capture: "
-        f"timeout={capture_timeout_ms}ms segment={segment_ms}ms output={session_dir / 'video-%05d.h264'}"
+        f"timeout={capture_timeout_ms}ms segment={segment_ms}ms output={session_dir / f'video-{name_value}-%05d.h264'}"
     )
     return run_capture(video_cmd, video_args)
 

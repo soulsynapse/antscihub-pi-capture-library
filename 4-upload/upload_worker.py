@@ -979,30 +979,6 @@ CREATE TABLE IF NOT EXISTS attempt_log (
             return f"{self.current_settings.remote_name}:{self.current_settings.remote_path}/{relative_path}"
         return f"{self.current_settings.remote_name}:{relative_path}"
 
-    def remote_path_exists(self, remote_target: str) -> Tuple[bool, str]:
-        rc, timed_out, output_text = self._run_command_with_log(
-            [
-                "rclone",
-                "lsf",
-                "--files-only",
-                "--max-depth",
-                "1",
-                "--contimeout",
-                f"{self.rclone_connect_timeout_seconds}s",
-                "--timeout",
-                f"{self.rclone_io_timeout_seconds}s",
-                remote_target,
-            ],
-            timeout_seconds=self.rclone_lsf_timeout_seconds,
-        )
-        if timed_out:
-            return False, "rclone_lsf_timeout"
-        if rc != 0:
-            if self._looks_like_rate_limited(output_text):
-                return False, "rclone_rate_limited"
-            return False, "rclone_lsf_failed"
-        return bool((output_text or "").strip()), ""
-
     def calculate_backoff(self, attempt: int) -> int:
         delay = self.retry_base_delay_seconds * (2 ** max(attempt - 1, 0))
         return min(delay, self.retry_max_delay_seconds)
@@ -1342,13 +1318,6 @@ WHERE id=?;
                 return False, "remote_destination_conflict"
             return True, ""
 
-        remote_exists, remote_exists_reason = self.remote_path_exists(remote_target)
-        if remote_exists:
-            exists_ok, exists_reason = cloud_exists_and_matches_size()
-            if exists_ok:
-                return True, "target_cloud_exists", destination_label, remote_target, file_size, True
-            return False, exists_reason, "", "", file_size, False
-
         rc, timed_out, output_text = self._run_command_with_log(
             [
                 "rclone",
@@ -1378,10 +1347,6 @@ WHERE id=?;
                 return False, exists_reason, "", "", file_size, False
             if self._looks_like_rate_limited(output_text):
                 return False, "rclone_rate_limited", "", "", file_size, False
-            if remote_exists_reason == "rclone_rate_limited":
-                return False, "remote_rate_limited", "", "", file_size, False
-            if remote_exists_reason == "rclone_lsf_timeout":
-                return False, "rclone_lsf_timeout", "", "", file_size, False
             return False, "rclone_copy_failed", "", "", file_size, False
 
         return True, "target_cloud", destination_label, remote_target, file_size, False
@@ -1853,6 +1818,13 @@ LIMIT ?;
 
         attempts = 0
         while self.running:
+            if self.global_retry_pause_until_epoch > current_epoch:
+                remaining = self.global_retry_pause_until_epoch - current_epoch
+                if current_epoch - self.last_global_retry_pause_notice_epoch >= 60:
+                    self.log("WARN", f"Global retry pause active for {remaining}s due to rate limiting")
+                    self.last_global_retry_pause_notice_epoch = current_epoch
+                return
+
             rows = self.get_due_artifacts(current_epoch)
             if not rows:
                 return
@@ -1977,7 +1949,7 @@ LIMIT ?;
             "INFO",
             (
                 "Rclone timeouts: "
-                f"lsf={self.rclone_lsf_timeout_seconds}s "
+                f"stat={self.rclone_lsf_timeout_seconds}s "
                 f"copy={self.rclone_copy_timeout_seconds}s "
                 f"connect={self.rclone_connect_timeout_seconds}s "
                 f"io={self.rclone_io_timeout_seconds}s"

@@ -19,6 +19,7 @@ antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
 antcam loop set <duration|none|0>
+antcam name set <suffix>
 antcam upload set profile <field|cloud|local>
 antcam upload set retention <protect|rolling>
 antcam upload set local-target <path>
@@ -39,6 +40,7 @@ antcam fps report
 antcam length report
 antcam segment report
 antcam loop report
+antcam name report
 antcam start <recording-script-name>
 antcam stop
 antcam focus check
@@ -80,6 +82,7 @@ Current bundled profiles:
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
 - `antcam loop set <duration|none|0>` writes the loop interval used by recording scripts
+- `antcam name set <suffix>` writes recording filename/folder suffix (allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`; default `BLANK`)
 - Positive loop values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
 - `none` or `0` disables loop scheduling
 - `antcam upload set profile <field|cloud|local>` selects destination routing mode for store-and-forward uploader
@@ -99,6 +102,7 @@ Current bundled profiles:
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)
 - `antcam loop report` returns the saved loop interval (or default)
+- `antcam name report` returns the saved recording suffix (or default `BLANK`)
 - `antcam cam report` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
 - `antcam start` writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` so `antcam stop` can target the live recording process

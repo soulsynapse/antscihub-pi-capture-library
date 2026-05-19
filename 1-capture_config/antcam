@@ -2666,6 +2666,63 @@ report_upload_worker_start_counters_for_home() {
     echo "log_upload_worker_start_count_total=${log_starts}"
 }
 
+report_upload_worker_repeat_summary_for_home() {
+    local user_home="$1"
+    local upload_worker_log_file
+    upload_worker_log_file="${user_home%/}/.local/state/antscihub-upload/antscihub-upload.log"
+
+    if [[ ! -f "${upload_worker_log_file}" ]]; then
+        echo "upload_worker_log_exists=false"
+        return 0
+    fi
+    echo "upload_worker_log_exists=true"
+
+    if ! command -v awk >/dev/null 2>&1; then
+        echo "awk_available=false"
+        return 0
+    fi
+    echo "awk_available=true"
+
+    echo "repeat_queue_candidates_begin"
+    awk '
+        /Queued file candidate:/ {
+            split($0, parts, "Queued file candidate: ")
+            if (length(parts) >= 2) {
+                split(parts[2], p2, " \\(size=")
+                path=p2[1]
+                q[path]++
+            }
+        }
+        END {
+            for (k in q) {
+                if (q[k] > 1) {
+                    printf "%s|%d\n", k, q[k]
+                }
+            }
+        }
+    ' "${upload_worker_log_file}" 2>/dev/null | sort -t '|' -k2,2nr | head -n 40 || true
+    echo "repeat_queue_candidates_end"
+
+    echo "repeat_existing_destination_hits_begin"
+    awk '
+        /destination already had file; treated as shipped:/ {
+            split($0, parts, "treated as shipped: ")
+            if (length(parts) >= 2) {
+                path=parts[2]
+                s[path]++
+            }
+        }
+        END {
+            for (k in s) {
+                if (s[k] > 1) {
+                    printf "%s|%d\n", k, s[k]
+                }
+            }
+        }
+    ' "${upload_worker_log_file}" 2>/dev/null | sort -t '|' -k2,2nr | head -n 40 || true
+    echo "repeat_existing_destination_hits_end"
+}
+
 report_diagnostic_payload() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for diagnostic"
@@ -2733,6 +2790,9 @@ report_diagnostic_payload() {
 
     local upload_worker_start_counters upload_worker_start_counters_rc
     capture_subshell_output upload_worker_start_counters upload_worker_start_counters_rc report_upload_worker_start_counters_for_home "${user_home}"
+
+    local upload_worker_repeat_summary upload_worker_repeat_summary_rc
+    capture_subshell_output upload_worker_repeat_summary upload_worker_repeat_summary_rc report_upload_worker_repeat_summary_for_home "${user_home}"
 
     service_mainpid="$(printf '%s' "${service_mainpid}" | tr -d '[:space:]')"
     local upload_worker_pid_list upload_worker_process_count mainpid_present orphan_worker_pids
@@ -2814,6 +2874,7 @@ report_diagnostic_payload() {
     upload_worker_lock_snapshot="$(truncate_text_for_payload "${upload_worker_lock_snapshot}" 8000)"
     upload_queue_db_diagnostic="$(truncate_text_for_payload "${upload_queue_db_diagnostic}" 20000)"
     upload_worker_start_counters="$(truncate_text_for_payload "${upload_worker_start_counters}" 8000)"
+    upload_worker_repeat_summary="$(truncate_text_for_payload "${upload_worker_repeat_summary}" 20000)"
     upload_worker_pid_list="$(truncate_text_for_payload "${upload_worker_pid_list}" 2000)"
     orphan_worker_pids="$(truncate_text_for_payload "${orphan_worker_pids}" 2000)"
     legacy_upload_unit_scan="$(truncate_text_for_payload "${legacy_upload_unit_scan}" 12000)"
@@ -2865,6 +2926,7 @@ report_diagnostic_payload() {
     payload+=",\"upload_worker_lock_snapshot_rc\":\"$(json_escape "${upload_worker_lock_snapshot_rc}")\""
     payload+=",\"upload_queue_db_diagnostic_rc\":\"$(json_escape "${upload_queue_db_diagnostic_rc}")\""
     payload+=",\"upload_worker_start_counters_rc\":\"$(json_escape "${upload_worker_start_counters_rc}")\""
+    payload+=",\"upload_worker_repeat_summary_rc\":\"$(json_escape "${upload_worker_repeat_summary_rc}")\""
     payload+=",\"legacy_upload_unit_scan_rc\":\"$(json_escape "${legacy_upload_unit_scan_rc}")\""
     payload+=",\"upload_worker_process_count\":\"$(json_escape "${upload_worker_process_count}")\""
     payload+=",\"upload_worker_mainpid_present\":\"$(json_escape "${mainpid_present}")\""
@@ -2888,6 +2950,7 @@ report_diagnostic_payload() {
     payload+=",\"upload_worker_lock_snapshot_raw\":\"$(json_escape "${upload_worker_lock_snapshot}")\""
     payload+=",\"upload_queue_db_diagnostic_raw\":\"$(json_escape "${upload_queue_db_diagnostic}")\""
     payload+=",\"upload_worker_start_counters_raw\":\"$(json_escape "${upload_worker_start_counters}")\""
+    payload+=",\"upload_worker_repeat_summary_raw\":\"$(json_escape "${upload_worker_repeat_summary}")\""
     payload+=",\"upload_worker_pid_list_raw\":\"$(json_escape "${upload_worker_pid_list}")\""
     payload+=",\"upload_worker_orphan_pids_raw\":\"$(json_escape "${orphan_worker_pids}")\""
     payload+=",\"legacy_upload_units_raw\":\"$(json_escape "${legacy_upload_unit_scan}")\""

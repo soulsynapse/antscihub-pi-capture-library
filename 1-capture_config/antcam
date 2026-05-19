@@ -69,15 +69,21 @@ Usage:
   sudo antcam list
   sudo antcam show <profile>
   sudo antcam apply <profile> [--dry-run] [--no-reboot]
-  sudo antcam report cam
+  sudo antcam cam report
   antcam start <recording-script-name>
   antcam stop
-  antcam focus
-  antcam set focus <lens-position|auto>
-  antcam set fps <value>
-  antcam set length <duration>
-  antcam set segment <duration>
-  antcam set loop <duration|none|0>
+  antcam capture report
+  antcam focus check
+  antcam focus set <lens-position|auto>
+  antcam focus report
+  antcam fps set <value>
+  antcam fps report
+  antcam length set <duration>
+  antcam length report
+  antcam segment set <duration>
+  antcam segment report
+  antcam loop set <duration|none|0>
+  antcam loop report
   antcam upload set profile <field|cloud|local>
   antcam upload set retention <protect|rolling>
   antcam upload set local-target <path>
@@ -92,33 +98,33 @@ Usage:
   antcam upload resume
   antcam upload reload
   antcam upload prune --older-than <duration> [--dry-run]
-  antcam report
-  antcam report focus
-  antcam report fps
-  antcam report length
-  antcam report segment
-  antcam report loop
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
 
 Examples:
   sudo antcam list
-  sudo antcam report cam
+  sudo antcam cam report
   sudo antcam show imx708
   sudo antcam apply imx708
   sudo antcam apply auto --dry-run
   antcam start video
   antcam start photos
   antcam stop
-  antcam focus
-  antcam set focus 7.5
-  antcam set focus auto
-  antcam set fps 2
-  antcam set length 30h
-  antcam set segment 10m
-  antcam set loop 1m
-  antcam set loop none
+  antcam capture report
+  antcam focus check
+  antcam focus set 7.5
+  antcam focus set auto
+  antcam focus report
+  antcam fps set 2
+  antcam fps report
+  antcam length set 30h
+  antcam length report
+  antcam segment set 10m
+  antcam segment report
+  antcam loop set 1m
+  antcam loop set none
+  antcam loop report
   antcam upload set profile field
   antcam upload set retention rolling
   antcam upload set local-target /mnt/antscihub
@@ -126,15 +132,11 @@ Examples:
   antcam upload set remote-path antscihub
   antcam upload report
   antcam upload report queue
+  antcam upload report targets
   antcam upload pause
   antcam upload resume
   antcam upload reload
   antcam upload prune --older-than 72h --dry-run
-  antcam report focus
-  antcam report fps
-  antcam report length
-  antcam report segment
-  antcam report loop
 EOF
 }
 
@@ -1517,6 +1519,181 @@ read_upload_low_watermark_for_home() {
     printf '%s\n' "${low_value}"
 }
 
+read_upload_service_env_value() {
+    local env_key="$1"
+    local service_name="${DEFAULT_UPLOAD_SERVICE_NAME}"
+    local env_blob
+
+    command -v systemctl >/dev/null 2>&1 || return 1
+    env_blob="$(systemctl show "${service_name}" -p Environment --value 2>/dev/null || true)"
+    [[ -n "${env_blob}" ]] || return 1
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "${env_key}" "${env_blob}" <<'PY' 2>/dev/null || return 1
+import shlex
+import sys
+
+key = sys.argv[1]
+blob = sys.argv[2]
+needle = f"{key}="
+
+for token in shlex.split(blob):
+    if token.startswith(needle):
+        print(token[len(needle):])
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+        return 0
+    fi
+
+    local token
+    for token in ${env_blob}; do
+        case "${token}" in
+            "${env_key}"=*)
+                printf '%s\n' "${token#*=}"
+                return 0
+                ;;
+        esac
+    done
+    return 1
+}
+
+read_upload_effective_profile_for_home() {
+    local user_home="$1"
+    local setting_file profile_value fallback_value
+    setting_file="$(resolve_upload_profile_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_PROFILE" || true)"
+    fallback_value="$(normalize_upload_profile_value "${fallback_value}")"
+    if ! is_valid_upload_profile_value "${fallback_value}"; then
+        fallback_value="${DEFAULT_UPLOAD_PROFILE}"
+    fi
+
+    profile_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    profile_value="$(normalize_upload_profile_value "${profile_value}")"
+    is_valid_upload_profile_value "${profile_value}" || die "invalid upload profile in ${setting_file}: ${profile_value} (expected field|cloud|local)"
+    printf '%s\n' "${profile_value}"
+}
+
+read_upload_effective_retention_for_home() {
+    local user_home="$1"
+    local setting_file retention_value fallback_value
+    setting_file="$(resolve_upload_retention_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_RETENTION" || true)"
+    fallback_value="$(normalize_upload_retention_value "${fallback_value}")"
+    if ! is_valid_upload_retention_value "${fallback_value}"; then
+        fallback_value="${DEFAULT_UPLOAD_RETENTION}"
+    fi
+
+    retention_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    retention_value="$(normalize_upload_retention_value "${retention_value}")"
+    is_valid_upload_retention_value "${retention_value}" || die "invalid upload retention in ${setting_file}: ${retention_value} (expected protect|rolling)"
+    printf '%s\n' "${retention_value}"
+}
+
+read_upload_effective_paused_for_home() {
+    local user_home="$1"
+    local setting_file paused_value fallback_value
+    setting_file="$(resolve_upload_paused_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_PAUSED" || true)"
+    fallback_value="$(normalize_upload_boolean_value "${fallback_value}" || true)"
+    if [[ -z "${fallback_value}" ]]; then
+        fallback_value="${DEFAULT_UPLOAD_PAUSED}"
+    fi
+
+    paused_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    paused_value="$(normalize_upload_boolean_value "${paused_value}" || true)"
+    [[ -n "${paused_value}" ]] || die "invalid upload paused flag in ${setting_file} (expected true|false)"
+    printf '%s\n' "${paused_value}"
+}
+
+read_upload_effective_local_target_for_home() {
+    local user_home="$1"
+    local setting_file target_value fallback_value
+    setting_file="$(resolve_upload_local_target_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_LOCAL_TARGET_PATH" || true)"
+    fallback_value="$(normalize_upload_text_value "${fallback_value}")"
+    target_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    target_value="$(normalize_upload_text_value "${target_value}")"
+    if [[ "${target_value,,}" == "none" ]]; then
+        target_value=""
+    fi
+    printf '%s\n' "${target_value}"
+}
+
+read_upload_effective_rclone_remote_for_home() {
+    local user_home="$1"
+    local setting_file remote_value fallback_value
+    setting_file="$(resolve_upload_rclone_remote_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "RCLONE_REMOTE" || true)"
+    fallback_value="$(normalize_upload_text_value "${fallback_value}")"
+    remote_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    remote_value="$(normalize_upload_text_value "${remote_value}")"
+    if [[ "${remote_value,,}" == "none" ]]; then
+        remote_value=""
+    fi
+    printf '%s\n' "${remote_value}"
+}
+
+read_upload_effective_rclone_path_for_home() {
+    local user_home="$1"
+    local setting_file path_value fallback_value
+    setting_file="$(resolve_upload_rclone_path_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "RCLONE_PATH" || true)"
+    fallback_value="$(normalize_upload_text_value "${fallback_value}")"
+    path_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    path_value="$(normalize_upload_text_value "${path_value}")"
+    if [[ "${path_value,,}" == "none" ]]; then
+        path_value=""
+    fi
+    path_value="${path_value#/}"
+    path_value="${path_value%/}"
+    if [[ "${path_value}" == "." ]]; then
+        path_value=""
+    fi
+    printf '%s\n' "${path_value}"
+}
+
+read_upload_effective_high_watermark_for_home() {
+    local user_home="$1"
+    local setting_file high_value fallback_value
+    setting_file="$(resolve_upload_high_watermark_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_HIGH_WATERMARK_PERCENT" || true)"
+    fallback_value="$(normalize_upload_watermark_value "${fallback_value}" || true)"
+    if [[ -z "${fallback_value}" ]]; then
+        fallback_value="${DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT}"
+    fi
+
+    high_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    high_value="$(normalize_upload_watermark_value "${high_value}" || true)"
+    [[ -n "${high_value}" ]] || die "invalid upload high watermark in ${setting_file} (expected integer 1-99)"
+    printf '%s\n' "${high_value}"
+}
+
+read_upload_effective_low_watermark_for_home() {
+    local user_home="$1"
+    local setting_file low_value fallback_value
+    setting_file="$(resolve_upload_low_watermark_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_LOW_WATERMARK_PERCENT" || true)"
+    fallback_value="$(normalize_upload_watermark_value "${fallback_value}" || true)"
+    if [[ -z "${fallback_value}" ]]; then
+        fallback_value="${DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT}"
+    fi
+
+    low_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    low_value="$(normalize_upload_watermark_value "${low_value}" || true)"
+    [[ -n "${low_value}" ]] || die "invalid upload low watermark in ${setting_file} (expected integer 1-99)"
+    printf '%s\n' "${low_value}"
+}
+
 set_upload_profile_for_home() {
     local user_home="$1"
     local profile_value="$2"
@@ -1938,14 +2115,14 @@ report_upload_settings() {
     local local_target_file remote_file remote_path_file high_file low_file
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
-    profile="$(read_upload_profile_for_home "${user_home}")"
-    retention="$(read_upload_retention_for_home "${user_home}")"
-    paused="$(read_upload_paused_for_home "${user_home}")"
-    local_target="$(read_upload_local_target_for_home "${user_home}")"
-    remote_name="$(read_upload_rclone_remote_for_home "${user_home}")"
-    remote_path="$(read_upload_rclone_path_for_home "${user_home}")"
-    high_watermark="$(read_upload_high_watermark_for_home "${user_home}")"
-    low_watermark="$(read_upload_low_watermark_for_home "${user_home}")"
+    profile="$(read_upload_effective_profile_for_home "${user_home}")"
+    retention="$(read_upload_effective_retention_for_home "${user_home}")"
+    paused="$(read_upload_effective_paused_for_home "${user_home}")"
+    local_target="$(read_upload_effective_local_target_for_home "${user_home}")"
+    remote_name="$(read_upload_effective_rclone_remote_for_home "${user_home}")"
+    remote_path="$(read_upload_effective_rclone_path_for_home "${user_home}")"
+    high_watermark="$(read_upload_effective_high_watermark_for_home "${user_home}")"
+    low_watermark="$(read_upload_effective_low_watermark_for_home "${user_home}")"
     profile_file="$(resolve_upload_profile_file_for_home "${user_home}")"
     retention_file="$(resolve_upload_retention_file_for_home "${user_home}")"
     paused_file="$(resolve_upload_paused_file_for_home "${user_home}")"
@@ -1991,10 +2168,10 @@ report_upload_targets() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for upload target report"
 
     local profile local_target remote_name remote_path
-    profile="$(read_upload_profile_for_home "${user_home}")"
-    local_target="$(read_upload_local_target_for_home "${user_home}")"
-    remote_name="$(read_upload_rclone_remote_for_home "${user_home}")"
-    remote_path="$(read_upload_rclone_path_for_home "${user_home}")"
+    profile="$(read_upload_effective_profile_for_home "${user_home}")"
+    local_target="$(read_upload_effective_local_target_for_home "${user_home}")"
+    remote_name="$(read_upload_effective_rclone_remote_for_home "${user_home}")"
+    remote_path="$(read_upload_effective_rclone_path_for_home "${user_home}")"
 
     echo "upload_profile=${profile}"
 
@@ -2667,10 +2844,133 @@ main() {
             [[ $# -eq 0 ]] || die "usage: antcam stop"
             stop_recording
             ;;
+        capture)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam capture report"
+            case "$1" in
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam capture report"
+                    report_capture_settings
+                    ;;
+                *)
+                    die "unknown capture action: $1"
+                    ;;
+            esac
+            ;;
+        cam)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam cam report"
+            case "$1" in
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam cam report"
+                    report_camera_make_model
+                    ;;
+                *)
+                    die "unknown cam action: $1"
+                    ;;
+            esac
+            ;;
         focus)
             shift
-            [[ $# -eq 0 ]] || die "focus takes no arguments"
-            start_focus_check
+            [[ $# -ge 1 ]] || die "usage: antcam focus <check|set|report> ..."
+            case "$1" in
+                check)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam focus check"
+                    start_focus_check
+                    ;;
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam focus set <lens-position|auto>"
+                    set_focus_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam focus report"
+                    report_focus_value
+                    ;;
+                *)
+                    die "unknown focus action: $1"
+                    ;;
+            esac
+            ;;
+        fps)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam fps <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam fps set <value>"
+                    set_fps_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam fps report"
+                    report_fps_value
+                    ;;
+                *)
+                    die "unknown fps action: $1"
+                    ;;
+            esac
+            ;;
+        length)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam length <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam length set <duration>"
+                    set_length_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam length report"
+                    report_length_value
+                    ;;
+                *)
+                    die "unknown length action: $1"
+                    ;;
+            esac
+            ;;
+        segment)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam segment <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam segment set <duration>"
+                    set_segment_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam segment report"
+                    report_segment_value
+                    ;;
+                *)
+                    die "unknown segment action: $1"
+                    ;;
+            esac
+            ;;
+        loop)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam loop <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam loop set <duration|none|0>"
+                    set_loop_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam loop report"
+                    report_loop_value
+                    ;;
+                *)
+                    die "unknown loop action: $1"
+                    ;;
+            esac
             ;;
         upload)
             shift
@@ -2784,82 +3084,6 @@ main() {
                     ;;
                 *)
                     die "unknown upload command: $1"
-                    ;;
-            esac
-            ;;
-        set)
-            shift
-            [[ $# -ge 1 ]] || die "usage: antcam set <focus|fps|length|segment|loop> <value>"
-            case "$1" in
-                focus)
-                    shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set focus <lens-position|auto>"
-                    set_focus_value "$1"
-                    ;;
-                fps)
-                    shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set fps <value>"
-                    set_fps_value "$1"
-                    ;;
-                length)
-                    shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set length <duration>"
-                    set_length_value "$1"
-                    ;;
-                segment)
-                    shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set segment <duration>"
-                    set_segment_value "$1"
-                    ;;
-                loop)
-                    shift
-                    [[ $# -eq 1 ]] || die "usage: antcam set loop <duration|none|0>"
-                    set_loop_value "$1"
-                    ;;
-                *)
-                    die "unknown set target: $1"
-                    ;;
-            esac
-            ;;
-        report)
-            shift
-            if [[ $# -eq 0 ]]; then
-                report_capture_settings
-                return 0
-            fi
-            case "$1" in
-                cam)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report cam"
-                    report_camera_make_model
-                    ;;
-                focus)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report focus"
-                    report_focus_value
-                    ;;
-                fps)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report fps"
-                    report_fps_value
-                    ;;
-                length)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report length"
-                    report_length_value
-                    ;;
-                segment)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report segment"
-                    report_segment_value
-                    ;;
-                loop)
-                    shift
-                    [[ $# -eq 0 ]] || die "usage: antcam report loop"
-                    report_loop_value
-                    ;;
-                *)
-                    die "unknown report target: $1"
                     ;;
             esac
             ;;

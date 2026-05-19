@@ -191,7 +191,7 @@ if is_auto_focus_value "${focus_value}"; then
     focus_value="auto"
 elif ! is_valid_lens_position_value "${focus_value}"; then
     log "invalid focus lens-position value: ${focus_value}"
-    log "set it with: antcam set focus <lens-position|auto>"
+    log "set it with: antcam focus set <lens-position|auto>"
     exit 3
 fi
 
@@ -206,7 +206,7 @@ length_value="$(normalize_duration_value "${length_value}")"
 length_ms="$(duration_to_milliseconds "${length_value}" || true)"
 if [[ -z "${length_ms}" ]]; then
     log "invalid recording length value: ${length_value}"
-    log "set it with: antcam set length <duration> (example: 30h, 10m, 45s)"
+    log "set it with: antcam length set <duration> (example: 30h, 10m, 45s)"
     exit 4
 fi
 
@@ -222,7 +222,7 @@ loop_value="$(normalize_duration_value "${loop_value}")"
 loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
 if [[ -z "${loop_value}" ]]; then
     log "invalid recording loop value: ${loop_raw_value}"
-    log "set it with: antcam set loop <duration|none|0> (example: 1m, 30s, 2h, none)"
+    log "set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)"
     exit 5
 fi
 
@@ -234,7 +234,7 @@ else
     loop_ms="$(duration_to_milliseconds "${loop_value}" || true)"
     if [[ -z "${loop_ms}" || "${loop_ms}" -le 0 ]]; then
         log "invalid recording loop value: ${loop_raw_value}"
-        log "set it with: antcam set loop <duration|none|0> (example: 1m, 30s, 2h, none)"
+        log "set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)"
         exit 5
     fi
 

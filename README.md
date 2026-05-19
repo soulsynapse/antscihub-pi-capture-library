@@ -3,8 +3,8 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam set focus`, `antcam set fps`, `antcam set length`, `antcam set segment`, `antcam set loop`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
-3. Store-and-forward upload control (`antcam upload ...`) with profile routing and retention modes
+2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam loop set`, `antcam report`, `antcam start`, `antcam stop`, `antcam focus`)
+3. Store-and-forward upload control (`antcam upload set ...`, `antcam upload report ...`, `antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
 
@@ -35,12 +35,12 @@ This install flow:
 
 ```bash
 sudo antcam list
-sudo antcam report cam
+sudo antcam cam report
 sudo antcam show imx708
 sudo antcam apply imx708
 ```
 
-`antcam report cam` prints a make/model camera label for the active profile (for example, `Raspberry Pi Camera Module 3 (Sony IMX708)`).
+`antcam cam report` prints a make/model camera label for the active profile (for example, `Raspberry Pi Camera Module 3 (Sony IMX708)`).
 
 Apply options:
 
@@ -67,11 +67,11 @@ Current bundled profiles:
 ### Recording Commands
 
 ```bash
-antcam set focus <lens-position|auto>
-antcam set fps <value>
-antcam set length <duration>
-antcam set segment <duration>
-antcam set loop <duration|none|0>
+antcam focus set <lens-position|auto>
+antcam fps set <value>
+antcam length set <duration>
+antcam segment set <duration>
+antcam loop set <duration|none|0>
 antcam upload set profile <field|cloud|local>
 antcam upload set retention <protect|rolling>
 antcam upload report
@@ -81,14 +81,14 @@ antcam upload pause
 antcam upload resume
 antcam upload reload
 antcam upload prune --older-than <duration> [--dry-run]
-antcam report focus
-antcam report fps
-antcam report length
-antcam report segment
-antcam report loop
+antcam focus report
+antcam fps report
+antcam length report
+antcam segment report
+antcam loop report
 antcam start <recording-script-name>
 antcam stop
-antcam focus
+antcam focus check
 ```
 
 `antcam start <recording-script-name>` resolves the active user's Desktop path and then:
@@ -110,10 +110,10 @@ antcam focus
 
 Bundled recording scripts:
 
-- `video.sh` -> configurable fps video (`antcam set fps <value>`, default `1`), configurable length/segment/loop (`antcam set length`, `antcam set segment`, `antcam set loop`), and focus from saved `lens-position` or `auto`
-- `photos.sh` -> loop-driven still-photo capture (`antcam set loop <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
+- `video.sh` -> configurable fps video (`antcam fps set <value>`, default `1`), configurable length/segment/loop (`antcam length set`, `antcam segment set`, `antcam loop set`), and focus from saved `lens-position` or `auto`
+- `photos.sh` -> loop-driven still-photo capture (`antcam loop set <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
 
-`antcam focus` resolves the active user's Desktop path and then:
+`antcam focus check` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
 - Runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
@@ -149,6 +149,8 @@ antcam upload pause
 antcam upload resume
 antcam upload prune --older-than 72h --dry-run
 ```
+
+`antcam upload report` and `antcam upload report targets` fall back to `antscihub-upload.service` environment defaults (for example `RCLONE_REMOTE`) when Desktop upload config files are unset.
 
 ## Operational Defaults
 

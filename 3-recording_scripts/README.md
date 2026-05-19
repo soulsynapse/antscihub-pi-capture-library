@@ -3,19 +3,19 @@
 Recording commands:
 
 ```bash
-antcam set focus <lens-position|auto>
-antcam set fps <value>
-antcam set length <duration>
-antcam set segment <duration>
-antcam set loop <duration|none|0>
-antcam report focus
-antcam report fps
-antcam report length
-antcam report segment
-antcam report loop
+antcam focus set <lens-position|auto>
+antcam fps set <value>
+antcam length set <duration>
+antcam segment set <duration>
+antcam loop set <duration|none|0>
+antcam focus report
+antcam fps report
+antcam length report
+antcam segment report
+antcam loop report
 antcam start <recording-script-name>
 antcam stop
-antcam focus
+antcam focus check
 ```
 
 `antcam start <recording-script-name>` behavior:
@@ -48,22 +48,22 @@ antcam focus
 Bundled recording scripts:
 
 - `video.sh`
-  - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam set fps <value>`, defaults to `1`)
-  - Uses configurable length (`antcam set length <duration>`, default `0s`), segment size (`antcam set segment <duration>`, default `1m`), and loop interval (`antcam set loop <duration|none|0>`, default `1m`)
+  - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam fps set <value>`, defaults to `1`)
+  - Uses configurable length (`antcam length set <duration>`, default `0s`), segment size (`antcam segment set <duration>`, default `1m`), and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
   - Starts each clip on loop-aligned schedule from script start time
   - Requires `segment <= loop` to preserve aligned start schedule
   - If loop is `none` or `0`, loop scheduling is disabled and clips run back-to-back
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
 - `photos.sh`
   - Runs `rpicam-still`/`libcamera-still` still capture
-  - Uses configurable length (`antcam set length <duration>`, default `0s`) and loop interval (`antcam set loop <duration|none|0>`, default `1m`)
+  - Uses configurable length (`antcam length set <duration>`, default `0s`) and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
   - Uses loop (not fps) to decide when each photo starts
   - Requires `loop >= 10s` for positive loop values
   - If loop is `none` or `0`, loop scheduling is disabled and one photo is captured per run
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
   - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/photos-%05d.jpg`
 
-`antcam focus` behavior:
+`antcam focus check` behavior:
 
 1. Resolve the active Desktop directory (including `sudo` invocation support).
 2. Ensure `<desktop>/4-CAPTURE` exists (create it if missing).

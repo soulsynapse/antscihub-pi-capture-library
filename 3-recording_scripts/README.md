@@ -59,7 +59,8 @@ Bundled recording scripts:
   - Uses configurable length (`antcam length set <duration>`, default `0s`) and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
   - Uses loop (not fps) to decide when each photo starts
   - Requires `loop >= 10s` for positive loop values
-  - If loop is `none` or `0`, loop scheduling is disabled and one photo is captured per run
+  - If loop is `none` or `0`, loop scheduling is disabled and captures run back-to-back
+  - With loop disabled and length `0s`, the script runs one-shot as a safety default
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
   - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/photos-%05d.jpg`
 

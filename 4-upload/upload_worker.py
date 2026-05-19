@@ -925,15 +925,24 @@ CREATE TABLE IF NOT EXISTS attempt_log (
         current_size = self._file_size(file_path)
         now = _epoch_now()
         prior = self.file_stability_observations.get(file_path)
-        self.file_stability_observations[file_path] = (current_size, now)
-        while len(self.file_stability_observations) > self.stability_cache_max_entries:
-            self.file_stability_observations.pop(next(iter(self.file_stability_observations)))
-
         if prior is None:
+            self.file_stability_observations[file_path] = (current_size, now)
+            while len(self.file_stability_observations) > self.stability_cache_max_entries:
+                self.file_stability_observations.pop(next(iter(self.file_stability_observations)))
             return False
+
         prior_size, first_seen_epoch = prior
         if current_size != prior_size:
+            # Size changed: restart stability window from now.
+            self.file_stability_observations[file_path] = (current_size, now)
+            while len(self.file_stability_observations) > self.stability_cache_max_entries:
+                self.file_stability_observations.pop(next(iter(self.file_stability_observations)))
             return False
+
+        # Size unchanged: keep the original first-seen timestamp so stability can mature.
+        self.file_stability_observations[file_path] = (current_size, first_seen_epoch)
+        while len(self.file_stability_observations) > self.stability_cache_max_entries:
+            self.file_stability_observations.pop(next(iter(self.file_stability_observations)))
         return (now - first_seen_epoch) >= max(interval_seconds, 0)
 
     def init_open_file_check_tool(self) -> None:

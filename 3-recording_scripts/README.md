@@ -49,6 +49,7 @@ Bundled recording scripts:
 
 - `video.py` (invoked via `video.sh` launcher)
   - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam fps set <value>`, defaults to `1`)
+  - Records at 1080p by default (`1920x1080` via `--width/--height`; override with `ANTCAM_VIDEO_WIDTH` and `ANTCAM_VIDEO_HEIGHT`)
   - Uses configurable length (`antcam length set <duration>`, default `0s`), segment size (`antcam segment set <duration>`, default `1m`), and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
   - Starts each clip on loop-aligned schedule from script start time
   - Requires `segment <= loop` to preserve aligned start schedule

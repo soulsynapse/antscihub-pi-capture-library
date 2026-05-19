@@ -111,7 +111,7 @@ antcam focus check
 
 Bundled recording scripts:
 
-- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), configurable length/segment/loop (`antcam length set`, `antcam segment set`, `antcam loop set`), and focus from saved `lens-position` or `auto`
+- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable length/segment/loop (`antcam length set`, `antcam segment set`, `antcam loop set`), and focus from saved `lens-position` or `auto`
 - `photos.py` (with `photos.sh` retained as a compatibility launcher) -> loop-driven still-photo capture (`antcam loop set <duration|none|0>`). Positive loop values require minimum `10s`; `none`/`0` disables looping and captures one photo per run
 
 `antcam focus check` resolves the active user's Desktop path and then:

@@ -84,6 +84,18 @@ def is_valid_fps_value(value: str) -> bool:
         return False
 
 
+def parse_positive_int(raw_value: str) -> Optional[int]:
+    if re.fullmatch(r"[0-9]+", raw_value or "") is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def now_epoch_milliseconds() -> int:
     return int(time.time() * 1000)
 
@@ -197,6 +209,15 @@ def main() -> int:
         log("set it with: antcam fps set <value>")
         return 4
 
+    width_value_raw = os.environ.get("ANTCAM_VIDEO_WIDTH", "1920")
+    height_value_raw = os.environ.get("ANTCAM_VIDEO_HEIGHT", "1080")
+    width_value = parse_positive_int(width_value_raw)
+    height_value = parse_positive_int(height_value_raw)
+    if width_value is None or height_value is None:
+        log(f"invalid video resolution: {width_value_raw}x{height_value_raw}")
+        log("set ANTCAM_VIDEO_WIDTH and ANTCAM_VIDEO_HEIGHT to positive integers")
+        return 9
+
     length_value = os.environ.get("ANTCAM_RECORDING_LENGTH", "")
     if not length_value:
         length_value = read_value_with_default(length_file, "0s")
@@ -272,6 +293,7 @@ def main() -> int:
     else:
         log("Loop interval: none (loop scheduling disabled; clips start immediately after each clip)")
     log(f"Frame rate: {fps_value} fps")
+    log(f"Resolution: {width_value}x{height_value}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {session_dir}/video-%05d.h264")
 
@@ -314,6 +336,10 @@ def main() -> int:
             "--codec",
             "h264",
             "--inline",
+            "--width",
+            str(width_value),
+            "--height",
+            str(height_value),
         ]
         if not is_auto_focus_value(focus_value):
             video_args.extend(["--lens-position", focus_value])

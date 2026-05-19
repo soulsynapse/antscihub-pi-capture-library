@@ -83,16 +83,15 @@ While running:
 9. For each scanned file candidate, run filter/maturity/stability/queue logic below.
 10. If paused, emit one `paused` event and skip upload attempts.
 11. If not paused, enforce global retry pause (when active due to rate limiting) and skip attempts until pause expires.
-12. If not paused and no global retry pause, fetch due artifacts from SQLite and attempt:
-13. up to `MAX_DUE_ATTEMPTS_PER_LOOP` total
-14. with `RETRY_WAIT` due rows first
-15. then `QUEUED` rows capped by `MAX_QUEUED_ATTEMPTS_PER_LOOP`
+12. If not paused and no global retry pause, repeatedly choose the oldest pending candidate set and upload oldest-ready:
+13. candidates are `QUEUED` plus due `RETRY_WAIT` (`next_retry_epoch <= now`), ordered by `mtime_epoch`, then `discovered_at_epoch`, then `id`.
+14. if oldest candidate is still being written/not stable/open/not mature, skip it for now and keep checking the next oldest candidate.
+15. attempt one oldest-ready artifact, then re-query and continue until no eligible progress remains for this cycle.
 16. Sleep `SCAN_INTERVAL`.
 
 `SCAN_INTERVAL` default: `10` seconds.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
-`MAX_QUEUED_ATTEMPTS_PER_LOOP` default: `10`.
 `RATE_LIMIT_COOLDOWN_SECONDS` default: `300`.
 
 ## Candidate File Filters
@@ -176,12 +175,11 @@ If found:
 
 When not paused, due rows are selected with:
 
-- First query `status='RETRY_WAIT' AND next_retry_epoch <= now`
-- Ordered by `next_retry_epoch ASC`, then `discovered_at_epoch ASC`, then `id ASC`
-- Limited to `MAX_DUE_ATTEMPTS_PER_LOOP`
-- If room remains, query `status='QUEUED'`
-- Ordered by `discovered_at_epoch ASC`, then `id ASC`
-- `QUEUED` rows additionally capped by `MAX_QUEUED_ATTEMPTS_PER_LOOP`
+- `status='QUEUED'` OR (`status='RETRY_WAIT'` AND `next_retry_epoch <= now`)
+- ordered by `mtime_epoch ASC`, then `discovered_at_epoch ASC`, then `id ASC`
+- limited per fetch by `MAX_DUE_ATTEMPTS_PER_LOOP`
+- worker iterates that ordered list and picks the first candidate that is actually ready to upload.
+- if earlier candidates are not ready (open/still-writing/not stable yet), they are skipped for now instead of blocking newer ready artifacts.
 
 Per due row:
 
@@ -192,7 +190,8 @@ Per due row:
 5. If recovered path differs, update `artifacts.full_path`.
 6. If `relative_path` is empty, derive from current path and update DB.
 7. Re-check `can_attempt_artifact_now()`.
-8. Call `attempt_ship_artifact(...)`.
+8. Re-check readiness gates (maturity/open-file/stability + exclusions).
+9. If ready, call `attempt_ship_artifact(...)`; if not ready, continue scanning older->newer candidates for oldest-ready behavior.
 
 ## Attempt Eligibility
 

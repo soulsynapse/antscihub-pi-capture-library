@@ -230,7 +230,6 @@ class UploadWorker:
         self.stability_cache_max_entries = max(1000, _as_int("STABILITY_CACHE_MAX_ENTRIES", 50000))
         self.max_scan_files_per_loop = max(1, _as_int("MAX_SCAN_FILES_PER_LOOP", 500))
         self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 50))
-        self.max_queued_attempts_per_loop = max(1, _as_int("MAX_QUEUED_ATTEMPTS_PER_LOOP", 10))
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
         self.rate_limit_cooldown_seconds = max(30, _as_int("RATE_LIMIT_COOLDOWN_SECONDS", 300))
@@ -1699,37 +1698,48 @@ WHERE id IN (
     def get_due_artifacts(self, current_epoch: int) -> List[sqlite3.Row]:
         assert self.conn is not None
         self.conn.row_factory = sqlite3.Row
-        retry_cursor = self.conn.execute(
+        cursor = self.conn.execute(
             """
-SELECT id, full_path, relative_path, size_bytes, status
+SELECT id, full_path, relative_path, size_bytes, status, next_retry_epoch
 FROM artifacts
-WHERE status='RETRY_WAIT' AND next_retry_epoch <= ?
+WHERE status='QUEUED' OR (status='RETRY_WAIT' AND next_retry_epoch <= ?)
 ORDER BY
-    next_retry_epoch ASC,
+    mtime_epoch ASC,
     discovered_at_epoch ASC,
     id ASC
 LIMIT ?;
 """,
             (current_epoch, self.max_due_attempts_per_loop),
         )
-        rows = list(retry_cursor.fetchall())
-        remaining = self.max_due_attempts_per_loop - len(rows)
-        if remaining <= 0:
-            return rows
+        return list(cursor.fetchall())
 
-        queued_limit = min(remaining, self.max_queued_attempts_per_loop)
-        queued_cursor = self.conn.execute(
-            """
-SELECT id, full_path, relative_path, size_bytes, status
-FROM artifacts
-WHERE status='QUEUED'
-ORDER BY discovered_at_epoch ASC, id ASC
-LIMIT ?;
-""",
-            (queued_limit,),
-        )
-        rows.extend(list(queued_cursor.fetchall()))
-        return rows
+    def is_artifact_ready_for_upload(self, file_path: str, relative_path: str, current_epoch: int) -> bool:
+        if not os.path.isfile(file_path):
+            return False
+
+        basename = os.path.basename(file_path)
+        if not self.is_uploadable(basename):
+            return False
+        if self.is_path_within_local_target(file_path):
+            return False
+        if self.excluded_reason_for_path(relative_path, basename):
+            return False
+
+        try:
+            st = os.stat(file_path, follow_symlinks=False)
+            mtime = int(st.st_mtime)
+        except OSError:
+            return False
+
+        age = current_epoch - mtime
+        if age < self.required_min_age_for_file(basename):
+            return False
+        if self.is_file_currently_open(file_path):
+            return False
+        stability_interval = self.stability_interval_for_file(basename)
+        if not self.is_file_stable(file_path, stability_interval):
+            return False
+        return True
 
     def resolve_due_artifact_path(self, full_path: str, relative_path: str) -> str:
         if full_path and os.path.isfile(full_path):
@@ -1752,53 +1762,69 @@ LIMIT ?;
                 self.last_global_retry_pause_notice_epoch = current_epoch
             return
 
-        rows = self.get_due_artifacts(current_epoch)
-        for row in rows:
-            if not self.running:
+        attempts = 0
+        while self.running:
+            rows = self.get_due_artifacts(current_epoch)
+            if not rows:
                 return
 
-            artifact_id = int(row["id"])
-            full_path = str(row["full_path"] or "")
-            relative_path = str(row["relative_path"] or "")
-            size_bytes = str(row["size_bytes"] or 0)
+            made_progress = False
+            for row in rows:
+                artifact_id = int(row["id"])
+                full_path = str(row["full_path"] or "")
+                relative_path = str(row["relative_path"] or "")
+                size_bytes = str(row["size_bytes"] or 0)
 
-            file_path = self.resolve_due_artifact_path(full_path, relative_path)
-            if not file_path:
-                self.schedule_retry_or_dead_letter(
-                    artifact_id=artifact_id,
-                    relative_path=relative_path,
-                    size_bytes=size_bytes,
-                    current_epoch=current_epoch,
-                    final_error="source_file_missing",
-                )
-                continue
+                file_path = self.resolve_due_artifact_path(full_path, relative_path)
+                if not file_path:
+                    self.schedule_retry_or_dead_letter(
+                        artifact_id=artifact_id,
+                        relative_path=relative_path,
+                        size_bytes=size_bytes,
+                        current_epoch=current_epoch,
+                        final_error="source_file_missing",
+                    )
+                    made_progress = True
+                    continue
 
-            if not relative_path:
-                relative_path = self._artifact_relative_path(file_path)
-                self.db_exec(
-                    "UPDATE artifacts SET relative_path=?, updated_at_epoch=? WHERE id=?;",
-                    (relative_path, current_epoch, artifact_id),
-                )
-            if file_path != full_path:
-                self.db_exec(
-                    "UPDATE artifacts SET full_path=?, updated_at_epoch=? WHERE id=?;",
-                    (file_path, current_epoch, artifact_id),
-                )
+                if not relative_path:
+                    relative_path = self._artifact_relative_path(file_path)
+                    self.db_exec(
+                        "UPDATE artifacts SET relative_path=?, updated_at_epoch=? WHERE id=?;",
+                        (relative_path, current_epoch, artifact_id),
+                    )
+                if file_path != full_path:
+                    self.db_exec(
+                        "UPDATE artifacts SET full_path=?, updated_at_epoch=? WHERE id=?;",
+                        (file_path, current_epoch, artifact_id),
+                    )
 
-            if not self.can_attempt_artifact_now(artifact_id, current_epoch):
-                continue
+                if not self.can_attempt_artifact_now(artifact_id, current_epoch):
+                    continue
+                if not self.is_artifact_ready_for_upload(file_path, relative_path, current_epoch):
+                    # Oldest candidate may still be writing. Keep searching for the oldest ready candidate.
+                    continue
 
-            try:
-                self.attempt_ship_artifact(artifact_id, file_path, relative_path, current_epoch)
-            except Exception as exc:
-                self.log("ERROR", f"Unhandled upload attempt exception for {relative_path}: {exc}")
-                self.schedule_retry_or_dead_letter(
-                    artifact_id=artifact_id,
-                    relative_path=relative_path,
-                    size_bytes=str(self._file_size(file_path)),
-                    current_epoch=current_epoch,
-                    final_error=f"unexpected_exception_{type(exc).__name__}",
-                )
+                try:
+                    self.attempt_ship_artifact(artifact_id, file_path, relative_path, current_epoch)
+                except Exception as exc:
+                    self.log("ERROR", f"Unhandled upload attempt exception for {relative_path}: {exc}")
+                    self.schedule_retry_or_dead_letter(
+                        artifact_id=artifact_id,
+                        relative_path=relative_path,
+                        size_bytes=str(self._file_size(file_path)),
+                        current_epoch=current_epoch,
+                        final_error=f"unexpected_exception_{type(exc).__name__}",
+                    )
+                made_progress = True
+                attempts += 1
+                break
+
+            if attempts >= self.max_due_attempts_per_loop:
+                return
+            if not made_progress:
+                return
+            current_epoch = _epoch_now()
 
     def _artifact_relative_path(self, file_path: str) -> str:
         try:

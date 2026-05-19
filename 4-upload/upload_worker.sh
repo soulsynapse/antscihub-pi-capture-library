@@ -125,6 +125,7 @@ SETTINGS_WARNING_EMITTED="false"
 PAUSE_NOTICE_EMITTED="false"
 OPEN_FILE_CHECK_TOOL=""
 EXCLUSION_REASON=""
+ARTIFACT_WAS_NEW="false"
 
 CURRENT_UPLOAD_PROFILE=""
 CURRENT_UPLOAD_RETENTION=""
@@ -709,8 +710,7 @@ log_file_detected_once() {
     fi
 
     file_size="$(stat -c %s "${file}" 2>/dev/null || echo 0)"
-    log "INFO" "Queued file candidate: ${relative_path} (size=${file_size} bytes)"
-    emit_upload_event "queued" "${relative_path}" "" "${file_size}" "" "file_detected" ""
+    log "INFO" "Detected file candidate: ${relative_path} (size=${file_size} bytes)"
     SEEN_FILE_DETECTIONS["${detection_key}"]="1"
 }
 
@@ -1026,6 +1026,7 @@ register_artifact_if_needed() {
     size_bytes="$(stat -c %s "${file}" 2>/dev/null || echo 0)"
     mtime_epoch="$(stat -c %Y "${file}" 2>/dev/null || echo 0)"
     current_epoch="$(now_epoch)"
+    ARTIFACT_WAS_NEW="false"
 
     existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
     if [[ -z "${existing_id}" ]]; then
@@ -1046,6 +1047,9 @@ VALUES ('$(sql_escape "${file_key}")', '$(sql_escape "${relative_path}")', '$(sq
         existing_id="$(db_query_single "SELECT id FROM artifacts WHERE file_key='$(sql_escape "${file_key}")' LIMIT 1;")"
         if [[ -z "${existing_id}" ]]; then
             existing_id="$(db_query_single "SELECT id FROM artifacts WHERE relative_path='$(sql_escape "${relative_path}")' AND inode=${inode} AND size_bytes=${size_bytes} ORDER BY id DESC LIMIT 1;")"
+        fi
+        if [[ -n "${existing_id}" ]]; then
+            ARTIFACT_WAS_NEW="true"
         fi
     else
         db_exec "
@@ -1500,6 +1504,10 @@ while true; do
         file_identity="$(make_file_identity "${file}" "${relative_path}")"
         file_key="$(hash_text "${file_identity}")"
         artifact_id="$(register_artifact_if_needed "${file}" "${relative_path}" "${file_key}")"
+        if [[ "${ARTIFACT_WAS_NEW}" == "true" ]]; then
+            log "INFO" "Queued artifact: ${relative_path} (id=${artifact_id})"
+            emit_upload_event "queued" "${relative_path}" "" "$(stat -c %s "${file}" 2>/dev/null || echo 0)" "" "artifact_registered" ""
+        fi
 
         if ! can_attempt_artifact_now "${artifact_id}" "${now}"; then
             continue

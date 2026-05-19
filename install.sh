@@ -9,6 +9,10 @@ CAMERA_SERVICE_PATH="/etc/systemd/system/${CAMERA_SERVICE_NAME}"
 CAMERA_CLI_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam"
 CAMERA_CLI_TARGET="/usr/local/bin/antcam"
 LEGACY_CAMERA_CLI_TARGET="/usr/local/bin/antscam"
+ANTCAM_HELPER_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config"
+ANTCAM_UPLOAD_HELPER_SOURCE="${ANTCAM_HELPER_SOURCE_DIR}/antcam_upload_helpers.sh"
+ANTCAM_DIAGNOSTIC_HELPER_SOURCE="${ANTCAM_HELPER_SOURCE_DIR}/antcam_diagnostic_helpers.sh"
+ANTCAM_HELPER_TARGET_DIR="/etc/antscihub/antcam-lib"
 CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
 CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
 FOCUS_SCRIPT_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam_focus_autofocus.sh"
@@ -65,6 +69,16 @@ require_inputs() {
 
     if [[ ! -f "$FOCUS_SCRIPT_SOURCE" ]]; then
         log_error "Missing focus helper script: $FOCUS_SCRIPT_SOURCE"
+        exit 1
+    fi
+
+    if [[ ! -f "$ANTCAM_UPLOAD_HELPER_SOURCE" ]]; then
+        log_error "Missing antcam upload helper script: $ANTCAM_UPLOAD_HELPER_SOURCE"
+        exit 1
+    fi
+
+    if [[ ! -f "$ANTCAM_DIAGNOSTIC_HELPER_SOURCE" ]]; then
+        log_error "Missing antcam diagnostic helper script: $ANTCAM_DIAGNOSTIC_HELPER_SOURCE"
         exit 1
     fi
 
@@ -188,6 +202,12 @@ install_camera_cli() {
 
     log_info "Installing antcam CLI to ${CAMERA_CLI_TARGET}"
     install -m 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
+
+    log_info "Installing antcam helper libraries to ${ANTCAM_HELPER_TARGET_DIR}"
+    mkdir -p "${ANTCAM_HELPER_TARGET_DIR}"
+    rm -f "${ANTCAM_HELPER_TARGET_DIR}"/antcam_*_helpers.sh
+    install -m 0644 "${ANTCAM_UPLOAD_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_upload_helpers.sh"
+    install -m 0644 "${ANTCAM_DIAGNOSTIC_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_diagnostic_helpers.sh"
 
     log_info "Installing focus helper script to ${FOCUS_SCRIPT_TARGET}"
     mkdir -p "/etc/antscihub"
@@ -387,6 +407,7 @@ main() {
     log_info "Installation/update complete"
     log_info "Camera profiles dir: ${CAMERA_PROFILE_TARGET_DIR}"
     log_info "Camera CLI: ${CAMERA_CLI_TARGET}"
+    log_info "Antcam helper libs dir: ${ANTCAM_HELPER_TARGET_DIR}"
     log_info "Focus helper script: ${FOCUS_SCRIPT_TARGET}"
     log_info "Recording scripts dir: ${RECORDING_SCRIPT_TARGET_DIR}"
     log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"

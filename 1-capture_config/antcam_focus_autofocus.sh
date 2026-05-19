@@ -6,12 +6,18 @@ timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
 image_file="${capture_dir}/focus-check-${timestamp}.jpg"
 metadata_file="${capture_dir}/focus-check-${timestamp}.txt"
 log_file="${capture_dir}/focus-check-${timestamp}.log"
+focus_sweep_start_lens_position="${ANTCAM_FOCUS_SWEEP_START_LENS_POSITION:-10.0}"
 
 log() {
     echo "[focus] $*" >&2
 }
 
 mkdir -p "${capture_dir}"
+
+if [[ ! "${focus_sweep_start_lens_position}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    log "invalid close-start lens position: ${focus_sweep_start_lens_position} (set ANTCAM_FOCUS_SWEEP_START_LENS_POSITION to a numeric value)"
+    exit 3
+fi
 
 camera_cmd=()
 if command -v rpicam-still >/dev/null 2>&1; then
@@ -28,12 +34,28 @@ log "Image output: ${image_file}"
 log "Metadata output: ${metadata_file}"
 log "FOCUS_IMAGE_PATH=${image_file}"
 log "FOCUS_METADATA_PATH=${metadata_file}"
+log "Pre-positioning lens at close start: ${focus_sweep_start_lens_position}"
+
+set +e
+"${camera_cmd[@]}" \
+    --nopreview \
+    --timeout 1 \
+    --autofocus-mode manual \
+    --lens-position "${focus_sweep_start_lens_position}" \
+    --output /dev/null >/dev/null 2>>"${log_file}"
+preposition_exit="$?"
+set -e
+
+if [[ "${preposition_exit}" -ne 0 ]]; then
+    log "warning: close-start pre-position failed (exit=${preposition_exit}); continuing with autofocus probe"
+fi
 
 set +e
 "${camera_cmd[@]}" \
     --nopreview \
     --timeout 1500 \
     --autofocus-mode auto \
+    --autofocus-range full \
     --autofocus-on-capture \
     --metadata "${metadata_file}" \
     --metadata-format txt \

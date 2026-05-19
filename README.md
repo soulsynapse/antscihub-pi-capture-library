@@ -170,7 +170,7 @@ The upload worker:
 5. Waits for minimum age + size stability
    - still images: `3s` age + `3s` stability
    - `state.env` and `*.log`: `5m` age
-6. Applies first-attempt jitter for newly queued artifacts (`0-30s` by default, configurable)
+6. Applies first-attempt jitter after an artifact is ready to upload (`0-30s` by default, configurable)
 7. Ships by copy only (no source-file move in normal flow)
    - cloud: `rclone copyto`
    - local target: atomic local copy (temp -> final)

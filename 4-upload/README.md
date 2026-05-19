@@ -161,17 +161,30 @@ Identity string:
 Registration lookup order:
 
 1. `SELECT id WHERE file_key = ?`
+2. If not found, check newest pending row for the same `relative_path` (`status IN QUEUED, RETRY_WAIT`).
 
-If not found:
-
-- Insert new row as `status='QUEUED'`, retry_count `0`, next_retry_epoch `now + jitter`.
-- `jitter` is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..30`).
-- Emit `queued` event with reason `artifact_registered_jitter_<N>s`.
-
-If found:
+If file_key is found:
 
 - Update existing row fields: `file_key`, `relative_path`, `full_path`, `inode`, `size_bytes`, `mtime_epoch`, `last_seen_epoch`, `updated_at_epoch`.
 - Existing `status` is preserved.
+
+If file_key is not found and same-path pending row exists:
+
+- Re-arm that same pending row as a fresh queue candidate:
+- set `status='QUEUED'`
+- reset `retry_count=0`
+- set `next_retry_epoch=0`
+- clear `last_error`
+- update identity/path/stat fields and timestamps
+- set `discovered_at_epoch=now`
+- delete prior `artifact_targets` rows for that artifact id
+- mark any other pending rows for the same `relative_path` as `DEAD_LETTER` with `last_error='superseded_by_newer_file_state'` to prevent duplicate uploads
+- Emit `queued` event with reason `artifact_requeued_after_write_activity`.
+
+If neither file_key nor same-path pending row is found:
+
+- Insert new row as `status='QUEUED'`, retry_count `0`, next_retry_epoch `0`.
+- Emit `queued` event with reason `artifact_registered`.
 
 ## Due Attempt Selection
 
@@ -193,7 +206,12 @@ Per due row:
 6. If `relative_path` is empty, derive from current path and update DB.
 7. Re-check `can_attempt_artifact_now()`.
 8. Re-check readiness gates (maturity/open-file/stability + exclusions).
-9. If ready, call `attempt_ship_artifact(...)`; if not ready, continue scanning older->newer candidates for oldest-ready behavior.
+9. If `status='QUEUED'` and ready and `next_retry_epoch==0`, schedule one-time readiness jitter before first upload attempt:
+10. jitter is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..30`).
+11. if jitter > 0, set `next_retry_epoch=now+jitter`, emit `queued` reason `ready_jitter_<N>s`, and skip immediate upload this cycle.
+12. if jitter == 0, continue directly to upload attempt.
+13. For due `RETRY_WAIT`, no readiness jitter is added (normal retry backoff semantics apply).
+14. If ready and not delayed, call `attempt_ship_artifact(...)`; if not ready, continue scanning older->newer candidates for oldest-ready behavior.
 
 ## Attempt Eligibility
 

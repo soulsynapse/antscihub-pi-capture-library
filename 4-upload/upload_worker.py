@@ -1094,18 +1094,78 @@ VALUES (?, ?, ?, ?, ?, ?);
 """
         self.db_exec(sql, (artifact_id, target_name, current_epoch, action, exit_code, message))
 
-    def register_artifact_if_needed(self, file_path: str, relative_path: str, file_key: str) -> Tuple[int, bool, int]:
+    def register_artifact_if_needed(self, file_path: str, relative_path: str, file_key: str) -> Tuple[int, bool, bool]:
         st = os.stat(file_path, follow_symlinks=False)
         inode = int(st.st_ino)
         size_bytes = int(st.st_size)
         mtime_epoch = int(st.st_mtime)
         current_epoch = _epoch_now()
-        initial_jitter_seconds = random.randint(0, self.initial_upload_jitter_max_seconds)
-        first_attempt_epoch = current_epoch + initial_jitter_seconds
 
         existing = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
 
         if existing is None:
+            pending_same_path = self.db_query_one(
+                """
+SELECT id
+FROM artifacts
+WHERE relative_path=? AND status IN ('QUEUED', 'RETRY_WAIT')
+ORDER BY id DESC
+LIMIT 1;
+""",
+                (relative_path,),
+            )
+            if pending_same_path is not None:
+                artifact_id = int(pending_same_path["id"])
+                with self.db_transaction():
+                    self.db_exec(
+                        """
+UPDATE artifacts
+SET file_key=?,
+    relative_path=?,
+    full_path=?,
+    inode=?,
+    size_bytes=?,
+    mtime_epoch=?,
+    status='QUEUED',
+    retry_count=0,
+    next_retry_epoch=0,
+    last_error='',
+    discovered_at_epoch=?,
+    last_seen_epoch=?,
+    updated_at_epoch=?
+WHERE id=?;
+""",
+                        (
+                            file_key,
+                            relative_path,
+                            file_path,
+                            inode,
+                            size_bytes,
+                            mtime_epoch,
+                            current_epoch,
+                            current_epoch,
+                            current_epoch,
+                            artifact_id,
+                        ),
+                    )
+                    # If multiple pending rows exist for this same source path,
+                    # keep the newest one and retire older duplicates.
+                    self.db_exec(
+                        """
+UPDATE artifacts
+SET status='DEAD_LETTER',
+    next_retry_epoch=0,
+    last_error='superseded_by_newer_file_state',
+    updated_at_epoch=?
+WHERE relative_path=?
+  AND id<>?
+  AND status IN ('QUEUED', 'RETRY_WAIT');
+""",
+                        (current_epoch, relative_path, artifact_id),
+                    )
+                    self.db_exec("DELETE FROM artifact_targets WHERE artifact_id=?;", (artifact_id,))
+                return artifact_id, True, True
+
             self.db_exec(
                 """
 INSERT OR IGNORE INTO artifacts (
@@ -1120,7 +1180,7 @@ INSERT OR IGNORE INTO artifacts (
                     inode,
                     size_bytes,
                     mtime_epoch,
-                    first_attempt_epoch,
+                    0,
                     current_epoch,
                     current_epoch,
                     current_epoch,
@@ -1129,7 +1189,7 @@ INSERT OR IGNORE INTO artifacts (
             row = self.db_query_one("SELECT id FROM artifacts WHERE file_key=? LIMIT 1;", (file_key,))
             if row is None:
                 raise RuntimeError(f"unable to register artifact for {relative_path}")
-            return int(row["id"]), True, initial_jitter_seconds
+            return int(row["id"]), True, False
 
         artifact_id = int(existing["id"])
         self.db_exec(
@@ -1147,7 +1207,7 @@ WHERE id=?;
 """,
             (file_key, relative_path, file_path, inode, size_bytes, mtime_epoch, current_epoch, current_epoch, artifact_id),
         )
-        return artifact_id, False, 0
+        return artifact_id, False, False
 
     def can_attempt_artifact_now(self, artifact_id: int, current_epoch: int) -> bool:
         row = self.db_query_one("SELECT status, next_retry_epoch FROM artifacts WHERE id=?;", (artifact_id,))
@@ -1701,21 +1761,26 @@ WHERE id IN (
 
         file_identity = self.make_file_identity(file_path, relative_path)
         file_key = self.hash_text(file_identity)
-        artifact_id, was_new, initial_jitter_seconds = self.register_artifact_if_needed(
+        artifact_id, should_emit_queue_event, was_rearmed = self.register_artifact_if_needed(
             file_path, relative_path, file_key
         )
-        if not was_new:
+        if not should_emit_queue_event:
             return
 
         size = self._file_size(file_path)
-        self.log("INFO", f"Queued artifact: {relative_path} (id={artifact_id})")
+        if was_rearmed:
+            self.log("INFO", f"Re-queued artifact after write activity: {relative_path} (id={artifact_id})")
+            queue_reason = "artifact_requeued_after_write_activity"
+        else:
+            self.log("INFO", f"Queued artifact: {relative_path} (id={artifact_id})")
+            queue_reason = "artifact_registered"
         self.emit_upload_event(
             "queued",
             relative_path,
             "",
             str(size),
             "",
-            f"artifact_registered_jitter_{initial_jitter_seconds}s",
+            queue_reason,
             "",
         )
 
@@ -1798,6 +1863,8 @@ LIMIT ?;
                 full_path = str(row["full_path"] or "")
                 relative_path = str(row["relative_path"] or "")
                 size_bytes = str(row["size_bytes"] or 0)
+                status = str(row["status"] or "").upper()
+                next_retry_epoch = int(row["next_retry_epoch"] or 0)
 
                 file_path = self.resolve_due_artifact_path(full_path, relative_path)
                 if not file_path:
@@ -1828,6 +1895,26 @@ LIMIT ?;
                 if not self.is_artifact_ready_for_upload(file_path, relative_path, current_epoch):
                     # Oldest candidate may still be writing. Keep searching for the oldest ready candidate.
                     continue
+
+                if status == "QUEUED" and next_retry_epoch <= 0:
+                    jitter_seconds = random.randint(0, self.initial_upload_jitter_max_seconds)
+                    if jitter_seconds > 0:
+                        next_attempt_epoch = current_epoch + jitter_seconds
+                        self.db_exec(
+                            "UPDATE artifacts SET next_retry_epoch=?, updated_at_epoch=? WHERE id=? AND status='QUEUED';",
+                            (next_attempt_epoch, current_epoch, artifact_id),
+                        )
+                        self.emit_upload_event(
+                            "queued",
+                            relative_path,
+                            "",
+                            size_bytes,
+                            "",
+                            f"ready_jitter_{jitter_seconds}s",
+                            "",
+                        )
+                        made_progress = True
+                        continue
 
                 try:
                     self.attempt_ship_artifact(artifact_id, file_path, relative_path, current_epoch)

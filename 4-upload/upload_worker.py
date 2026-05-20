@@ -219,7 +219,7 @@ class UploadWorker:
         self.file_stability_interval_default = _as_int("FILE_STABILITY_CHECK_INTERVAL_DEFAULT", 10)
         self.file_stability_interval_still_image = _as_int("FILE_STABILITY_CHECK_INTERVAL_STILL_IMAGE", 3)
         self.protect_stop_cooldown_seconds = _as_int("PROTECT_STOP_COOLDOWN_SECONDS", 300)
-        self.retry_base_delay_seconds = _as_int("RETRY_BASE_DELAY_SECONDS", 30)
+        self.retry_base_delay_seconds = _as_int("RETRY_BASE_DELAY_SECONDS", 2)
         self.retry_max_delay_seconds = _as_int("RETRY_MAX_DELAY_SECONDS", 600)
         self.retry_jitter_max_seconds = max(0, _as_int("RETRY_JITTER_MAX_SECONDS", 30))
         self.rclone_lsf_timeout_seconds = max(5, _as_int("RCLONE_LSF_TIMEOUT_SECONDS", 20))
@@ -233,7 +233,6 @@ class UploadWorker:
         self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 50))
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
-        self.rate_limit_cooldown_seconds = max(30, _as_int("RATE_LIMIT_COOLDOWN_SECONDS", 300))
         self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 30))
         if self.attempt_log_max_rows < 0:
             self.attempt_log_max_rows = 0
@@ -1017,14 +1016,13 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                 event_reason = final_error
             else:
                 backoff = self.calculate_backoff(new_retry_count)
-                if self._is_rate_limited_error(final_error):
-                    backoff = max(backoff, self.rate_limit_cooldown_seconds)
-                    self.global_retry_pause_until_epoch = max(
-                        self.global_retry_pause_until_epoch,
-                        current_epoch + self.rate_limit_cooldown_seconds,
-                    )
                 retry_jitter_seconds = random.randint(0, self.retry_jitter_max_seconds)
                 retry_delay_seconds = backoff + retry_jitter_seconds
+                if self._is_rate_limited_error(final_error):
+                    self.global_retry_pause_until_epoch = max(
+                        self.global_retry_pause_until_epoch,
+                        current_epoch + retry_delay_seconds,
+                    )
                 next_retry_epoch = current_epoch + retry_delay_seconds
                 self.db_exec(
                     "UPDATE artifacts SET status='RETRY_WAIT', retry_count=?, next_retry_epoch=?, last_error=?, updated_at_epoch=? WHERE id=?;",

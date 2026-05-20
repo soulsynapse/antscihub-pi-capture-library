@@ -93,7 +93,9 @@ While running:
 `SCAN_INTERVAL` default: `10` seconds.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
-`RATE_LIMIT_COOLDOWN_SECONDS` default: `300`.
+`RETRY_BASE_DELAY_SECONDS` default: `2`.
+`RETRY_MAX_DELAY_SECONDS` default: `600`.
+`RETRY_JITTER_MAX_SECONDS` default: `30`.
 `INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `30`.
 
 ## Candidate File Filters
@@ -320,19 +322,17 @@ After all targets fail:
 6. Emit `dead_letter`.
 7. Else:
 8. Backoff = `RETRY_BASE_DELAY_SECONDS * 2^(attempt-1)` capped by `RETRY_MAX_DELAY_SECONDS`.
-9. If `final_error` is rate-limit (`rclone_rate_limited`), enforce minimum backoff of `RATE_LIMIT_COOLDOWN_SECONDS`.
-10. Compute retry jitter as random integer seconds in `[0, RETRY_JITTER_MAX_SECONDS]` (default `0..30`).
-11. If `final_error` is rate-limit, set global retry pause until `now + RATE_LIMIT_COOLDOWN_SECONDS`.
-12. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff+jitter`, set `last_error`, set `updated_at_epoch`.
-13. Emit `retry` with reason `retry_backoff_<N>s` (and `_jitter_<N>s` when jitter > 0).
+9. Compute retry jitter as random integer seconds in `[0, RETRY_JITTER_MAX_SECONDS]` (default `0..30`).
+10. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff+jitter`, set `last_error`, set `updated_at_epoch`.
+11. If `final_error` is rate-limit (`rclone_rate_limited`), set global retry pause until `now + backoff + jitter`.
+12. Emit `retry` with reason `retry_backoff_<N>s` (and `_jitter_<N>s` when jitter > 0).
 
 Defaults:
 
 - `MAX_RETRIES=5`
-- `RETRY_BASE_DELAY_SECONDS=30`
+- `RETRY_BASE_DELAY_SECONDS=2`
 - `RETRY_MAX_DELAY_SECONDS=600`
 - `RETRY_JITTER_MAX_SECONDS=30`
-- `RATE_LIMIT_COOLDOWN_SECONDS=300`
 
 ## Exception Handling Around Attempts
 

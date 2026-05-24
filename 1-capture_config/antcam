@@ -24,6 +24,8 @@ DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.e
 RECORDING_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_STATE_RELATIVE_PATH}}"
 DEFAULT_RECORDING_LAST_START_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-last-start-context.env"
 RECORDING_LAST_START_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_LAST_START_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_LAST_START_STATE_RELATIVE_PATH}}"
+DEFAULT_RECORDING_RESUME_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-resume-state.env"
+RECORDING_RESUME_STATE_RELATIVE_PATH="${ANTCAM_RECORDING_RESUME_STATE_RELATIVE_PATH:-${DEFAULT_RECORDING_RESUME_STATE_RELATIVE_PATH}}"
 DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-profile.txt"
 UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_PROFILE_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_UPLOAD_RETENTION_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-retention.txt"
@@ -77,6 +79,7 @@ Usage:
   sudo antcam cam report
   antcam start <recording-script-name>
   antcam stop
+  antcam recording resume-if-needed
   antcam capture report
   antcam diagnostic
   antcam focus check
@@ -120,6 +123,7 @@ Examples:
   antcam start video
   antcam start photos
   antcam stop
+  antcam recording resume-if-needed
   antcam capture report
   antcam diagnostic
   antcam focus check
@@ -458,6 +462,24 @@ resolve_recording_last_start_state_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${RECORDING_LAST_START_STATE_RELATIVE_PATH#./}"
 }
 
+resolve_recording_resume_state_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_RECORDING_RESUME_STATE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_RECORDING_RESUME_STATE_FILE}"
+        return 0
+    fi
+
+    if [[ "${RECORDING_RESUME_STATE_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${RECORDING_RESUME_STATE_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${RECORDING_RESUME_STATE_RELATIVE_PATH#./}"
+}
+
 write_recording_last_start_context_for_home() {
     local user_home="$1"
     local context_payload="$2"
@@ -469,6 +491,87 @@ write_recording_last_start_context_for_home() {
     printf '%s\n' "${context_payload}" > "${context_tmp}"
     mv -f "${context_tmp}" "${context_file}"
     printf '%s\n' "${context_file}"
+}
+
+seconds_to_duration_value() {
+    local total_seconds="${1:-0}"
+    if [[ ! "${total_seconds}" =~ ^[0-9]+$ ]]; then
+        return 1
+    fi
+
+    local remaining="${total_seconds}"
+    local hours=0 minutes=0 seconds=0 duration_value=""
+    hours=$((remaining / 3600))
+    remaining=$((remaining % 3600))
+    minutes=$((remaining / 60))
+    seconds=$((remaining % 60))
+
+    if [[ "${hours}" -gt 0 ]]; then
+        duration_value+="${hours}h"
+    fi
+    if [[ "${minutes}" -gt 0 ]]; then
+        duration_value+="${minutes}m"
+    fi
+    if [[ "${seconds}" -gt 0 || -z "${duration_value}" ]]; then
+        duration_value+="${seconds}s"
+    fi
+
+    printf '%s\n' "${duration_value}"
+}
+
+clear_recording_resume_state_for_home() {
+    local user_home="$1"
+    local resume_state_file
+    resume_state_file="$(resolve_recording_resume_state_file_for_home "${user_home}")"
+    rm -f "${resume_state_file}" >/dev/null 2>&1 || true
+}
+
+write_recording_resume_state_for_home() {
+    local user_home="$1"
+    local requested_script_name="$2"
+    local record_script="$3"
+    local capture_dir="$4"
+    local upload_dir="$5"
+    local focus_value="$6"
+    local fps_value="$7"
+    local length_value="$8"
+    local segment_value="$9"
+    local photo_every_value="${10}"
+    local name_value="${11}"
+    local start_epoch="${12}"
+    local end_epoch="${13}"
+    local resume_reason="${14:-recording_start}"
+
+    [[ "${start_epoch}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${end_epoch}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${end_epoch}" -gt "${start_epoch}" ]] || return 1
+
+    local resume_state_file resume_state_dir resume_state_tmp
+    resume_state_file="$(resolve_recording_resume_state_file_for_home "${user_home}")"
+    resume_state_dir="$(dirname "${resume_state_file}")"
+    mkdir -p "${resume_state_dir}"
+    resume_state_tmp="$(mktemp "${resume_state_dir}/.recording-resume-state.XXXXXX")"
+
+    {
+        echo "resume_enabled=true"
+        echo "resume_reason=${resume_reason}"
+        echo "effective_home=${user_home}"
+        echo "requested_script_name=${requested_script_name}"
+        echo "record_script=${record_script}"
+        echo "capture_dir=${capture_dir}"
+        echo "upload_dir=${upload_dir}"
+        echo "focus_value=${focus_value}"
+        echo "fps_value=${fps_value}"
+        echo "length_value=${length_value}"
+        echo "segment_value=${segment_value}"
+        echo "photo_every_value=${photo_every_value}"
+        echo "name_value=${name_value}"
+        echo "recording_start_epoch=${start_epoch}"
+        echo "recording_end_epoch=${end_epoch}"
+        echo "updated_at_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    } > "${resume_state_tmp}"
+
+    mv -f "${resume_state_tmp}" "${resume_state_file}"
 }
 
 resolve_upload_setting_file_for_home() {
@@ -1708,7 +1811,7 @@ report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
-    local capture_dir upload_dir focus_file focus_value state_file last_start_state_file
+    local capture_dir upload_dir focus_file focus_value state_file last_start_state_file resume_state_file
     local fps_file fps_value length_file length_value segment_file segment_value photo_every_file photo_every_value name_file name_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
@@ -1720,6 +1823,7 @@ report_capture_settings() {
     name_file="$(resolve_name_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
+    resume_state_file="$(resolve_recording_resume_state_file_for_home "${user_home}")"
 
     if [[ -f "${focus_file}" ]]; then
         focus_value="$(head -n 1 "${focus_file}" 2>/dev/null | tr -d '[:space:]' || true)"
@@ -1778,6 +1882,7 @@ report_capture_settings() {
     echo "recording_name=${name_value}"
     echo "recording_state_file=${state_file}"
     echo "recording_last_start_state_file=${last_start_state_file}"
+    echo "recording_resume_state_file=${resume_state_file}"
 }
 
 start_recording() {
@@ -1794,10 +1899,15 @@ start_recording() {
     local length_source photo_every_source name_source strict_service_context
     local recording_last_start_state_file last_start_context_payload
     local recording_state_file existing_record_pid
+    local recording_resume_state_file
+    local length_ms recording_start_epoch recording_end_epoch
+    local resume_enabled resume_window_source
+    local override_start_epoch override_end_epoch
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     recording_last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
+    recording_resume_state_file="$(resolve_recording_resume_state_file_for_home "${user_home}")"
     record_script="$(resolve_recording_script_path "${requested_script_name}")"
     script_basename="$(basename "${record_script}")"
     focus_value="$(read_focus_setting_for_home "${user_home}")"
@@ -1849,6 +1959,36 @@ start_recording() {
         fi
     fi
 
+    length_ms="$(duration_to_milliseconds "${length_value}" || true)"
+    [[ -n "${length_ms}" ]] || die "invalid recording length value: ${length_value}"
+
+    resume_enabled="false"
+    resume_window_source="computed_from_length"
+    recording_start_epoch="$(date +%s)"
+    recording_end_epoch="${recording_start_epoch}"
+
+    if [[ "${length_ms}" -gt 0 ]]; then
+        local length_seconds
+        length_seconds=$((length_ms / 1000))
+        recording_end_epoch=$((recording_start_epoch + length_seconds))
+        if [[ $((length_ms % 1000)) -gt 0 ]]; then
+            recording_end_epoch=$((recording_end_epoch + 1))
+        fi
+        resume_enabled="true"
+    fi
+
+    override_start_epoch="${ANTCAM_RECORDING_RESUME_ORIGINAL_START_EPOCH:-}"
+    override_end_epoch="${ANTCAM_RECORDING_RESUME_WINDOW_END_EPOCH:-}"
+    if [[ -n "${override_start_epoch}" || -n "${override_end_epoch}" ]]; then
+        [[ "${override_start_epoch}" =~ ^[0-9]+$ ]] || die "invalid resume start epoch override: ${override_start_epoch}"
+        [[ "${override_end_epoch}" =~ ^[0-9]+$ ]] || die "invalid resume end epoch override: ${override_end_epoch}"
+        [[ "${override_end_epoch}" -gt "${override_start_epoch}" ]] || die "invalid resume window override: end must be after start"
+        recording_start_epoch="${override_start_epoch}"
+        recording_end_epoch="${override_end_epoch}"
+        resume_enabled="true"
+        resume_window_source="resume_override"
+    fi
+
     last_start_context_payload="$(
         cat <<EOF
 timestamp_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)
@@ -1880,6 +2020,11 @@ name_value=${name_value}
 name_source=${name_source}
 photos_one_shot_guard=${photos_one_shot_guard}
 recording_state_file=${recording_state_file}
+recording_resume_state_file=${recording_resume_state_file}
+recording_resume_enabled=${resume_enabled}
+recording_resume_start_epoch=${recording_start_epoch}
+recording_resume_end_epoch=${recording_end_epoch}
+recording_resume_window_source=${resume_window_source}
 EOF
     )"
     write_recording_last_start_context_for_home "${user_home}" "${last_start_context_payload}" >/dev/null 2>&1 || true
@@ -1923,6 +2068,12 @@ EOF
     echo "recording upload dir: ${upload_dir}"
     echo "recording state file: ${recording_state_file}"
     echo "recording last-start context file: ${recording_last_start_state_file}"
+    echo "recording resume state file: ${recording_resume_state_file}"
+    if [[ "${resume_enabled}" == "true" ]]; then
+        echo "recording resume window: start_epoch=${recording_start_epoch} end_epoch=${recording_end_epoch} source=${resume_window_source}"
+    else
+        echo "recording resume window: disabled (length <= 0s)"
+    fi
 
     publish_recording_event \
         "recording_start" \
@@ -1955,6 +2106,7 @@ EOF
             ANTCAM_RECORDING_NAME="${name_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
+            ANTCAM_RECORDING_START_EPOCH_MS="${ANTCAM_RECORDING_START_EPOCH_MS:-}" \
             "${record_script}"
     ) >> "${record_console_log}" 2>&1 &
     record_pid="$!"
@@ -1968,6 +2120,28 @@ EOF
         die "unable to write recording state file: ${recording_state_file}"
     fi
 
+    if [[ "${resume_enabled}" == "true" ]]; then
+        if ! write_recording_resume_state_for_home \
+            "${user_home}" \
+            "${requested_script_name}" \
+            "${record_script}" \
+            "${capture_dir}" \
+            "${upload_dir}" \
+            "${focus_value}" \
+            "${fps_value}" \
+            "${length_value}" \
+            "${segment_value}" \
+            "${photo_every_value}" \
+            "${name_value}" \
+            "${recording_start_epoch}" \
+            "${recording_end_epoch}" \
+            "${resume_window_source}"; then
+            echo "antcam: warning: failed to write recording resume state file: ${recording_resume_state_file}" >&2
+        fi
+    else
+        clear_recording_resume_state_for_home "${user_home}"
+    fi
+
     wait "${record_pid}"
     record_exit_code="$?"
     stop_requested="$(read_recording_state_field "${recording_state_file}" "stop_requested" || true)"
@@ -1975,6 +2149,7 @@ EOF
     set -e
 
     if [[ "${record_exit_code}" -eq 0 ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
         publish_recording_event \
             "recording_end" \
             "INFO" \
@@ -1984,6 +2159,7 @@ EOF
             "${record_script}" \
             "${record_exit_code}" || true
     elif [[ "${stop_requested}" == "true" ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
         publish_recording_event \
             "recording_end" \
             "INFO" \
@@ -1994,6 +2170,11 @@ EOF
             "${record_exit_code}" || true
         record_exit_code=0
     else
+        local now_epoch_after_failure
+        now_epoch_after_failure="$(date +%s)"
+        if [[ "${resume_enabled}" == "true" && "${now_epoch_after_failure}" -ge "${recording_end_epoch}" ]]; then
+            clear_recording_resume_state_for_home "${user_home}"
+        fi
         write_script_failure_diagnostic \
             "${user_home}" \
             "${capture_dir}" \
@@ -2024,6 +2205,7 @@ stop_recording() {
     recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
 
     if [[ ! -f "${recording_state_file}" ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
         echo "no active recording found"
         return 0
     fi
@@ -2035,12 +2217,14 @@ stop_recording() {
 
     if [[ -z "${record_pid}" ]]; then
         rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+        clear_recording_resume_state_for_home "${user_home}"
         echo "removed stale recording state file with missing pid: ${recording_state_file}"
         return 0
     fi
 
     if ! is_pid_running "${record_pid}"; then
         rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+        clear_recording_resume_state_for_home "${user_home}"
         echo "removed stale recording state file (pid not running): ${recording_state_file}"
         return 0
     fi
@@ -2076,6 +2260,7 @@ stop_recording() {
     fi
 
     clear_recording_state_for_home "${user_home}"
+    clear_recording_resume_state_for_home "${user_home}"
 
     publish_recording_event \
         "recording_stop" \
@@ -2086,6 +2271,159 @@ stop_recording() {
         "${record_script}" || true
 
     echo "recording stopped"
+}
+
+resume_recording_if_needed() {
+    local mode="${1:-manual}"
+    local quiet="false"
+    if [[ "${mode}" == "--service" ]]; then
+        quiet="true"
+    fi
+
+    local user_home recording_state_file recording_resume_state_file
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for recording resume path"
+    recording_state_file="$(resolve_recording_state_file_for_home "${user_home}")"
+    recording_resume_state_file="$(resolve_recording_resume_state_file_for_home "${user_home}")"
+
+    if [[ ! -f "${recording_resume_state_file}" ]]; then
+        if [[ "${quiet}" != "true" ]]; then
+            echo "no pending recording resume window"
+        fi
+        return 0
+    fi
+
+    local existing_record_pid
+    if [[ -f "${recording_state_file}" ]]; then
+        existing_record_pid="$(read_recording_pid_from_state_file "${recording_state_file}" || true)"
+        if [[ -n "${existing_record_pid}" ]] && is_pid_running "${existing_record_pid}"; then
+            if [[ "${quiet}" != "true" ]]; then
+                echo "recording is already running (pid ${existing_record_pid}); resume skipped"
+            fi
+            return 0
+        fi
+        rm -f "${recording_state_file}" >/dev/null 2>&1 || true
+    fi
+
+    local resume_enabled requested_script_name record_script_saved
+    local focus_value_saved fps_value_saved length_value_saved segment_value_saved photo_every_value_saved name_value_saved
+    local start_epoch_saved end_epoch_saved now_epoch remaining_seconds resume_length_value
+    local record_script_path script_basename
+    local resume_start_override resume_end_override photos_schedule_start_epoch_ms
+
+    resume_enabled="$(read_recording_state_field "${recording_resume_state_file}" "resume_enabled" || true)"
+    if [[ "${resume_enabled}" != "true" ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
+        if [[ "${quiet}" != "true" ]]; then
+            echo "resume state disabled; cleared stale resume file"
+        fi
+        return 0
+    fi
+
+    requested_script_name="$(read_recording_state_field "${recording_resume_state_file}" "requested_script_name" || true)"
+    record_script_saved="$(read_recording_state_field "${recording_resume_state_file}" "record_script" || true)"
+    focus_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "focus_value" || true)"
+    fps_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "fps_value" || true)"
+    length_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "length_value" || true)"
+    segment_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "segment_value" || true)"
+    photo_every_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "photo_every_value" || true)"
+    name_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "name_value" || true)"
+    start_epoch_saved="$(read_recording_state_field "${recording_resume_state_file}" "recording_start_epoch" || true)"
+    end_epoch_saved="$(read_recording_state_field "${recording_resume_state_file}" "recording_end_epoch" || true)"
+
+    if [[ -z "${requested_script_name}" || ! "${start_epoch_saved}" =~ ^[0-9]+$ || ! "${end_epoch_saved}" =~ ^[0-9]+$ ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
+        echo "invalid recording resume state file; cleared: ${recording_resume_state_file}" >&2
+        return 1
+    fi
+    if [[ "${end_epoch_saved}" -le "${start_epoch_saved}" ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
+        echo "invalid recording resume state file; cleared: ${recording_resume_state_file}" >&2
+        return 1
+    fi
+
+    if [[ -n "${record_script_saved}" && -f "${record_script_saved}" ]]; then
+        record_script_path="${record_script_saved}"
+    else
+        record_script_path="$(resolve_recording_script_path "${requested_script_name}")"
+    fi
+    script_basename="$(basename "${record_script_path}")"
+
+    now_epoch="$(date +%s)"
+    remaining_seconds=$((end_epoch_saved - now_epoch))
+    if [[ "${remaining_seconds}" -le 0 ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
+        if [[ "${quiet}" != "true" ]]; then
+            echo "recording window ended; cleared resume state"
+        fi
+        return 0
+    fi
+
+    resume_start_override="${start_epoch_saved}"
+    resume_end_override="${end_epoch_saved}"
+    photos_schedule_start_epoch_ms=""
+
+    if [[ "${script_basename}" == "photos.py" || "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
+        resume_length_value="${length_value_saved}"
+        photos_schedule_start_epoch_ms="$((start_epoch_saved * 1000))"
+    else
+        resume_length_value="$(seconds_to_duration_value "${remaining_seconds}" || true)"
+    fi
+    if [[ -z "${resume_length_value}" ]]; then
+        clear_recording_resume_state_for_home "${user_home}"
+        echo "invalid resume length value computed for ${requested_script_name}; cleared resume state" >&2
+        return 1
+    fi
+
+    local resume_tmp_dir
+    resume_tmp_dir="$(mktemp -d /tmp/antcam-recording-resume.XXXXXX)"
+
+    local resume_focus_file resume_fps_file resume_length_file resume_segment_file resume_photo_every_file resume_name_file
+    resume_focus_file="${resume_tmp_dir}/focus-lens-position.txt"
+    resume_fps_file="${resume_tmp_dir}/recording-fps.txt"
+    resume_length_file="${resume_tmp_dir}/recording-length.txt"
+    resume_segment_file="${resume_tmp_dir}/recording-segment.txt"
+    resume_photo_every_file="${resume_tmp_dir}/recording-photo-every.txt"
+    resume_name_file="${resume_tmp_dir}/recording-name.txt"
+
+    printf '%s\n' "${focus_value_saved}" > "${resume_focus_file}"
+    printf '%s\n' "${fps_value_saved}" > "${resume_fps_file}"
+    printf '%s\n' "${resume_length_value}" > "${resume_length_file}"
+    printf '%s\n' "${segment_value_saved}" > "${resume_segment_file}"
+    printf '%s\n' "${photo_every_value_saved}" > "${resume_photo_every_file}"
+    printf '%s\n' "${name_value_saved}" > "${resume_name_file}"
+
+    if [[ "${quiet}" != "true" ]]; then
+        echo "resuming recording script '${requested_script_name}' with remaining window ${remaining_seconds}s"
+        echo "resume window: start_epoch=${start_epoch_saved} end_epoch=${end_epoch_saved}"
+    fi
+
+    local start_rc
+    start_rc=0
+    set +e
+    ANTCAM_FOCUS_VALUE_FILE="${resume_focus_file}" \
+    ANTCAM_FPS_VALUE_FILE="${resume_fps_file}" \
+    ANTCAM_LENGTH_VALUE_FILE="${resume_length_file}" \
+    ANTCAM_SEGMENT_VALUE_FILE="${resume_segment_file}" \
+    ANTCAM_PHOTO_EVERY_VALUE_FILE="${resume_photo_every_file}" \
+    ANTCAM_NAME_VALUE_FILE="${resume_name_file}" \
+    ANTCAM_RECORDING_RESUME_ORIGINAL_START_EPOCH="${resume_start_override}" \
+    ANTCAM_RECORDING_RESUME_WINDOW_END_EPOCH="${resume_end_override}" \
+    ANTCAM_RECORDING_START_EPOCH_MS="${photos_schedule_start_epoch_ms}" \
+    start_recording "${requested_script_name}"
+    start_rc="$?"
+    set -e
+
+    rm -rf "${resume_tmp_dir}" >/dev/null 2>&1 || true
+
+    if [[ "${start_rc}" -ne 0 ]]; then
+        local now_after_resume_attempt
+        now_after_resume_attempt="$(date +%s)"
+        if [[ "${now_after_resume_attempt}" -ge "${end_epoch_saved}" ]]; then
+            clear_recording_resume_state_for_home "${user_home}"
+        fi
+    fi
+
+    return "${start_rc}"
 }
 
 resolve_focus_script_path() {
@@ -2314,6 +2652,25 @@ main() {
             shift
             [[ $# -eq 0 ]] || die "usage: antcam stop"
             stop_recording
+            ;;
+        recording)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam recording resume-if-needed [--service]"
+            case "$1" in
+                resume-if-needed)
+                    shift
+                    if [[ $# -eq 0 ]]; then
+                        resume_recording_if_needed "manual"
+                    elif [[ $# -eq 1 && "$1" == "--service" ]]; then
+                        resume_recording_if_needed "--service"
+                    else
+                        die "usage: antcam recording resume-if-needed [--service]"
+                    fi
+                    ;;
+                *)
+                    die "unknown recording action: $1"
+                    ;;
+            esac
             ;;
         capture)
             shift

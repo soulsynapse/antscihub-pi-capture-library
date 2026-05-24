@@ -44,6 +44,7 @@ antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
 antcam stop
+antcam recording resume-if-needed
 antcam focus check
 ```
 
@@ -109,7 +110,9 @@ Current bundled profiles:
 - `antcam cam report` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
 - `antcam start` writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` so `antcam stop` can target the live recording process
+- `antcam start` writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` when `length > 0s`
 - `antcam stop` gracefully stops the active recording script (including `video` and `photos`) with `SIGINT` first, then `SIGTERM` if needed
+- `antcam recording resume-if-needed` resumes pending finite recording windows (used automatically by `antscihub-recording-resume.service` at boot)
 - If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - `antcam focus check` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus check` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)

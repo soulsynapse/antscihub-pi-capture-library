@@ -79,6 +79,18 @@ def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
 
 
+def parse_positive_int(raw_value: str) -> Optional[int]:
+    if re.fullmatch(r"[0-9]+", raw_value or "") is None:
+        return None
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
+
+
 def now_epoch_milliseconds() -> int:
     return int(time.time() * 1000)
 
@@ -280,6 +292,21 @@ def main() -> int:
         return rc
 
     start_epoch_ms = now_epoch_milliseconds()
+    start_epoch_override_raw = os.environ.get("ANTCAM_RECORDING_START_EPOCH_MS", "").strip()
+    if start_epoch_override_raw:
+        start_epoch_override = parse_positive_int(start_epoch_override_raw)
+        if start_epoch_override is None:
+            log(f"invalid recording start epoch override: {start_epoch_override_raw}")
+            return 8
+        if start_epoch_override > start_epoch_ms:
+            log(
+                "recording start epoch override is in the future; "
+                f"falling back to current epoch {start_epoch_ms}"
+            )
+        else:
+            start_epoch_ms = start_epoch_override
+            log(f"Recording schedule anchor epoch override: {start_epoch_ms}")
+
     total_captures = (length_ms // photo_every_ms) + 1
 
     capture_index = 0

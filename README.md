@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam focus check`)
+2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam recording resume-if-needed`, `antcam focus check`)
 3. Store-and-forward upload control (`antcam upload set ...`, `antcam upload report ...`, `antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
@@ -28,6 +28,7 @@ This install flow:
 - Installs recording scripts to `/etc/antscihub/recording-scripts`
 - Disables/removes the old dynamic camera service (`antscihub-capture-config.service`)
 - Installs/updates `antscihub-upload.service`
+- Installs/updates `antscihub-recording-resume.service` (boot-time finite-window recording resume)
 
 `install.sh` is standalone and safe to re-run after repo updates.
 
@@ -90,6 +91,7 @@ antcam segment report
 antcam photo-every report
 antcam start <recording-script-name>
 antcam stop
+antcam recording resume-if-needed
 antcam focus check
 ```
 
@@ -103,12 +105,14 @@ antcam focus check
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.py`)
 - Reads photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (defaults to `1m`; accepts `none`/`0` to disable interval scheduling and use one-shot)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
+- Writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` (`length > 0s` only)
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
 - Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.py` -> `video-%05d.h264`, `photos.py` -> `photos-%05d.jpg`)
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 `antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed).
+`antcam recording resume-if-needed` resumes pending finite recordings if the saved recording window has remaining time. `antscihub-recording-resume.service` runs this command automatically on boot.
 
 Bundled recording scripts:
 

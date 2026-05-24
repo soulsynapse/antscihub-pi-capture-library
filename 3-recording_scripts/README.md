@@ -17,6 +17,7 @@ antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
 antcam stop
+antcam recording resume-if-needed
 antcam focus check
 ```
 
@@ -33,8 +34,9 @@ antcam focus check
 9. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
 10. Run the selected script from inside `<desktop>/4-CAPTURE`.
 11. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
-12. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
-13. Publish encrypted Fleet report messages when recording starts and ends.
+12. For finite lengths (`length > 0s`), write resume-window state to `<desktop>/4-CAPTURE/config/recording-resume-state.env`.
+13. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
+14. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
 14. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
@@ -65,6 +67,7 @@ Bundled recording scripts:
   - If `photo-every` is `none` or `0`, the script runs one-shot (exactly one photo)
   - If length is `0s`, the script runs one-shot even when `photo-every` is positive
   - For positive length with positive `photo-every`, captures occur at `t=0` and then every interval while `scheduled_time <= length`
+  - Supports `ANTCAM_RECORDING_START_EPOCH_MS` schedule anchor override for power-loss resume alignment
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
   - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/photos-suffix-%05d.jpg`
 

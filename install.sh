@@ -24,6 +24,8 @@ UPLOAD_SERVICE_NAME="antscihub-upload.service"
 UPLOAD_SERVICE_PATH="/etc/systemd/system/${UPLOAD_SERVICE_NAME}"
 UPLOAD_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.sh"
 UPLOAD_PY_SCRIPT="${SCRIPT_DIR}/4-upload/upload_worker.py"
+RECORDING_RESUME_SERVICE_NAME="antscihub-recording-resume.service"
+RECORDING_RESUME_SERVICE_PATH="/etc/systemd/system/${RECORDING_RESUME_SERVICE_NAME}"
 
 DEFAULT_REMOTE="gdrive_personal"
 DEFAULT_REMOTE_PATH=""
@@ -290,6 +292,31 @@ WantedBy=multi-user.target
 EOF
 }
 
+write_recording_resume_unit() {
+    local upload_user="$1"
+    local upload_home="$2"
+
+    cat > "${RECORDING_RESUME_SERVICE_PATH}" <<EOF
+[Unit]
+Description=AntSciHub Recording Resume Worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${CAMERA_CLI_TARGET} recording resume-if-needed --service
+WorkingDirectory=${SCRIPT_DIR}
+User=${upload_user}
+Environment="HOME=${upload_home}"
+Restart=no
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 sync_upload_service() {
     local was_enabled="$1"
     local was_active="$2"
@@ -320,6 +347,31 @@ sync_upload_service() {
     log_info "Starting ${UPLOAD_SERVICE_NAME}"
     if ! systemctl start "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1; then
         log_warn "Could not start ${UPLOAD_SERVICE_NAME}. This is usually rclone-config related."
+    fi
+}
+
+sync_recording_resume_service() {
+    local was_enabled="$1"
+    local was_active="$2"
+
+    if systemctl is-enabled "${RECORDING_RESUME_SERVICE_NAME}" 2>/dev/null | grep -qi '^masked'; then
+        log_info "Unmasking ${RECORDING_RESUME_SERVICE_NAME}"
+        systemctl unmask "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1 || true
+    fi
+
+    systemctl reset-failed "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1 || true
+
+    if [[ "$was_enabled" == "true" || "$was_active" == "true" ]]; then
+        log_info "Restarting ${RECORDING_RESUME_SERVICE_NAME}"
+        if ! systemctl restart "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1; then
+            log_warn "Could not restart ${RECORDING_RESUME_SERVICE_NAME}. Check logs after install."
+        fi
+        return 0
+    fi
+
+    log_info "Starting ${RECORDING_RESUME_SERVICE_NAME}"
+    if ! systemctl start "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1; then
+        log_warn "Could not start ${RECORDING_RESUME_SERVICE_NAME}. Check logs after install."
     fi
 }
 
@@ -390,11 +442,19 @@ main() {
 
     local upload_was_enabled="false"
     local upload_was_active="false"
+    local recording_resume_was_enabled="false"
+    local recording_resume_was_active="false"
     if systemctl is-enabled --quiet "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1; then
         upload_was_enabled="true"
     fi
     if systemctl is-active --quiet "${UPLOAD_SERVICE_NAME}" >/dev/null 2>&1; then
         upload_was_active="true"
+    fi
+    if systemctl is-enabled --quiet "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1; then
+        recording_resume_was_enabled="true"
+    fi
+    if systemctl is-active --quiet "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null 2>&1; then
+        recording_resume_was_active="true"
     fi
 
     remove_legacy_units
@@ -406,15 +466,20 @@ main() {
 
     log_info "Writing ${UPLOAD_SERVICE_NAME}"
     write_upload_unit "$upload_user" "$upload_home" "$upload_dir"
+    log_info "Writing ${RECORDING_RESUME_SERVICE_NAME}"
+    write_recording_resume_unit "$upload_user" "$upload_home"
 
     log_info "Reloading systemd daemon"
     systemctl daemon-reload
 
     log_info "Enabling ${UPLOAD_SERVICE_NAME}"
     systemctl enable "${UPLOAD_SERVICE_NAME}" >/dev/null
+    log_info "Enabling ${RECORDING_RESUME_SERVICE_NAME}"
+    systemctl enable "${RECORDING_RESUME_SERVICE_NAME}" >/dev/null
 
     reconcile_single_upload_worker "$upload_user" "$upload_home"
     sync_upload_service "$upload_was_enabled" "$upload_was_active"
+    sync_recording_resume_service "$recording_resume_was_enabled" "$recording_resume_was_active"
 
     local upload_destination="${DEFAULT_REMOTE}:"
     if [[ -n "${DEFAULT_REMOTE_PATH}" ]]; then
@@ -429,6 +494,7 @@ main() {
     log_info "Recording scripts dir: ${RECORDING_SCRIPT_TARGET_DIR}"
     log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"
     log_info "Upload service user: ${upload_user}"
+    log_info "Recording resume service: ${RECORDING_RESUME_SERVICE_NAME}"
     log_info "Upload source dir: ${upload_dir}"
     log_info "Upload destination: ${upload_destination}"
     log_info "Camera commands:"
@@ -450,6 +516,7 @@ main() {
     log_info "  antcam start video"
     log_info "  antcam start photos"
     log_info "  antcam stop"
+    log_info "  antcam recording resume-if-needed"
     log_info "  antcam focus check"
     log_info "  antcam upload set profile field"
     log_info "  antcam upload set retention protect"
@@ -462,6 +529,9 @@ main() {
     log_info "Upload checks:"
     log_info "  systemctl status ${UPLOAD_SERVICE_NAME}"
     log_info "  journalctl -u ${UPLOAD_SERVICE_NAME} -n 100"
+    log_info "Recording resume checks:"
+    log_info "  systemctl status ${RECORDING_RESUME_SERVICE_NAME}"
+    log_info "  journalctl -u ${RECORDING_RESUME_SERVICE_NAME} -n 100"
 }
 
 main "$@"

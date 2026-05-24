@@ -16,8 +16,8 @@ DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
 LENGTH_SETTINGS_RELATIVE_PATH="${ANTCAM_LENGTH_SETTINGS_RELATIVE_PATH:-${DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
 SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
-DEFAULT_LOOP_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-loop.txt"
-LOOP_SETTINGS_RELATIVE_PATH="${ANTCAM_LOOP_SETTINGS_RELATIVE_PATH:-${DEFAULT_LOOP_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_PHOTO_EVERY_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-photo-every.txt"
+PHOTO_EVERY_SETTINGS_RELATIVE_PATH="${ANTCAM_PHOTO_EVERY_SETTINGS_RELATIVE_PATH:-${DEFAULT_PHOTO_EVERY_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_NAME_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-name.txt"
 NAME_SETTINGS_RELATIVE_PATH="${ANTCAM_NAME_SETTINGS_RELATIVE_PATH:-${DEFAULT_NAME_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_STATE_RELATIVE_PATH="4-CAPTURE/config/recording-active-state.env"
@@ -43,7 +43,7 @@ UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_LOW_WATERMARK_SETTI
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
-DEFAULT_RECORDING_LOOP="${ANTCAM_DEFAULT_RECORDING_LOOP:-1m}"
+DEFAULT_RECORDING_PHOTO_EVERY="${ANTCAM_DEFAULT_RECORDING_PHOTO_EVERY:-1m}"
 DEFAULT_RECORDING_NAME="${ANTCAM_DEFAULT_RECORDING_NAME:-BLANK}"
 DEFAULT_UPLOAD_PROFILE="${ANTCAM_DEFAULT_UPLOAD_PROFILE:-field}"
 DEFAULT_UPLOAD_RETENTION="${ANTCAM_DEFAULT_UPLOAD_RETENTION:-protect}"
@@ -88,8 +88,8 @@ Usage:
   antcam length report
   antcam segment set <duration>
   antcam segment report
-  antcam loop set <duration|none|0>
-  antcam loop report
+  antcam photo-every set <duration|none|0>
+  antcam photo-every report
   antcam name set <suffix>
   antcam name report
   antcam upload set profile <field|cloud|local>
@@ -102,6 +102,7 @@ Usage:
   antcam upload report
   antcam upload report queue
   antcam upload report targets
+  antcam upload test
   antcam upload pause
   antcam upload resume
   antcam upload reload
@@ -131,9 +132,9 @@ Examples:
   antcam length report
   antcam segment set 10m
   antcam segment report
-  antcam loop set 1m
-  antcam loop set none
-  antcam loop report
+  antcam photo-every set 1m
+  antcam photo-every set none
+  antcam photo-every report
   antcam name set antcam01
   antcam name report
   antcam upload set profile field
@@ -144,6 +145,7 @@ Examples:
   antcam upload report
   antcam upload report queue
   antcam upload report targets
+  antcam upload test
   antcam upload pause
   antcam upload resume
   antcam upload reload
@@ -384,22 +386,22 @@ resolve_segment_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${SEGMENT_SETTINGS_RELATIVE_PATH#./}"
 }
 
-resolve_loop_value_file_for_home() {
+resolve_photo_every_value_file_for_home() {
     local user_home="$1"
 
-    if [[ -n "${ANTCAM_LOOP_VALUE_FILE:-}" ]]; then
-        printf '%s\n' "${ANTCAM_LOOP_VALUE_FILE}"
+    if [[ -n "${ANTCAM_PHOTO_EVERY_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_PHOTO_EVERY_VALUE_FILE}"
         return 0
     fi
 
-    if [[ "${LOOP_SETTINGS_RELATIVE_PATH}" == /* ]]; then
-        printf '%s\n' "${LOOP_SETTINGS_RELATIVE_PATH}"
+    if [[ "${PHOTO_EVERY_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${PHOTO_EVERY_SETTINGS_RELATIVE_PATH}"
         return 0
     fi
 
     local desktop_dir
     desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
-    printf '%s\n' "${desktop_dir%/}/${LOOP_SETTINGS_RELATIVE_PATH#./}"
+    printf '%s\n' "${desktop_dir%/}/${PHOTO_EVERY_SETTINGS_RELATIVE_PATH#./}"
 }
 
 resolve_name_value_file_for_home() {
@@ -623,9 +625,9 @@ is_valid_duration_value() {
     duration_to_milliseconds "${value}" >/dev/null 2>&1
 }
 
-normalize_loop_setting_value() {
+normalize_photo_every_setting_value() {
     local raw_value="${1:-}"
-    local normalized_value loop_ms
+    local normalized_value photo_every_ms
     normalized_value="$(normalize_duration_value "${raw_value}")"
     [[ -n "${normalized_value}" ]] || return 1
 
@@ -635,9 +637,9 @@ normalize_loop_setting_value() {
     fi
 
     is_valid_duration_value "${normalized_value}" || return 1
-    loop_ms="$(duration_to_milliseconds "${normalized_value}" || true)"
-    [[ -n "${loop_ms}" ]] || return 1
-    if [[ "${loop_ms}" -le 0 ]]; then
+    photo_every_ms="$(duration_to_milliseconds "${normalized_value}" || true)"
+    [[ -n "${photo_every_ms}" ]] || return 1
+    if [[ "${photo_every_ms}" -le 0 ]]; then
         printf '%s\n' "none"
     else
         printf '%s\n' "${normalized_value}"
@@ -1547,22 +1549,22 @@ read_segment_setting_for_home() {
     printf '%s\n' "$(normalize_duration_value "${segment_value}")"
 }
 
-read_loop_setting_for_home() {
+read_photo_every_setting_for_home() {
     local user_home="$1"
-    local loop_file loop_value normalized_loop_value
-    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    local photo_every_file photo_every_value normalized_photo_every_value
+    photo_every_file="$(resolve_photo_every_value_file_for_home "${user_home}")"
 
-    if [[ ! -f "${loop_file}" ]]; then
-        normalized_loop_value="$(normalize_loop_setting_value "${DEFAULT_RECORDING_LOOP}" || true)"
-        [[ -n "${normalized_loop_value}" ]] || die "invalid default loop value: ${DEFAULT_RECORDING_LOOP} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
-        printf '%s\n' "${normalized_loop_value}"
+    if [[ ! -f "${photo_every_file}" ]]; then
+        normalized_photo_every_value="$(normalize_photo_every_setting_value "${DEFAULT_RECORDING_PHOTO_EVERY}" || true)"
+        [[ -n "${normalized_photo_every_value}" ]] || die "invalid default photo-every value: ${DEFAULT_RECORDING_PHOTO_EVERY} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+        printf '%s\n' "${normalized_photo_every_value}"
         return 0
     fi
 
-    loop_value="$(head -n 1 "${loop_file}" 2>/dev/null | tr -d '[:space:]' || true)"
-    normalized_loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
-    [[ -n "${normalized_loop_value}" ]] || die "invalid loop value in ${loop_file}: ${loop_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
-    printf '%s\n' "${normalized_loop_value}"
+    photo_every_value="$(head -n 1 "${photo_every_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_photo_every_value="$(normalize_photo_every_setting_value "${photo_every_value}" || true)"
+    [[ -n "${normalized_photo_every_value}" ]] || die "invalid photo-every value in ${photo_every_file}: ${photo_every_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+    printf '%s\n' "${normalized_photo_every_value}"
 }
 
 read_name_setting_for_home() {
@@ -1690,10 +1692,10 @@ report_segment_value() {
     read_segment_setting_for_home "${user_home}"
 }
 
-report_loop_value() {
+report_photo_every_value() {
     local user_home
-    user_home="$(resolve_effective_home)" || die "could not resolve user home for loop settings"
-    read_loop_setting_for_home "${user_home}"
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for photo-every settings"
+    read_photo_every_setting_for_home "${user_home}"
 }
 
 report_name_value() {
@@ -1707,14 +1709,14 @@ report_capture_settings() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
     local capture_dir upload_dir focus_file focus_value state_file last_start_state_file
-    local fps_file fps_value length_file length_value segment_file segment_value loop_file loop_value name_file name_value
+    local fps_file fps_value length_file length_value segment_file segment_value photo_every_file photo_every_value name_file name_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
-    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    photo_every_file="$(resolve_photo_every_value_file_for_home "${user_home}")"
     name_file="$(resolve_name_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
     last_start_state_file="$(resolve_recording_last_start_state_file_for_home "${user_home}")"
@@ -1743,12 +1745,12 @@ report_capture_settings() {
         segment_value="${DEFAULT_RECORDING_SEGMENT} (default)"
     fi
 
-    if [[ -f "${loop_file}" ]]; then
-        loop_value="$(read_loop_setting_for_home "${user_home}")"
+    if [[ -f "${photo_every_file}" ]]; then
+        photo_every_value="$(read_photo_every_setting_for_home "${user_home}")"
     else
-        loop_value="$(normalize_loop_setting_value "${DEFAULT_RECORDING_LOOP}" || true)"
-        [[ -n "${loop_value}" ]] || die "invalid default loop value: ${DEFAULT_RECORDING_LOOP} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
-        loop_value="${loop_value} (default)"
+        photo_every_value="$(normalize_photo_every_setting_value "${DEFAULT_RECORDING_PHOTO_EVERY}" || true)"
+        [[ -n "${photo_every_value}" ]] || die "invalid default photo-every value: ${DEFAULT_RECORDING_PHOTO_EVERY} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+        photo_every_value="${photo_every_value} (default)"
     fi
 
     if [[ -f "${name_file}" ]]; then
@@ -1770,8 +1772,8 @@ report_capture_settings() {
     echo "recording_length=${length_value}"
     echo "segment_settings_file=${segment_file}"
     echo "recording_segment=${segment_value}"
-    echo "loop_settings_file=${loop_file}"
-    echo "recording_loop=${loop_value}"
+    echo "photo_every_settings_file=${photo_every_file}"
+    echo "recording_photo_every=${photo_every_value}"
     echo "name_settings_file=${name_file}"
     echo "recording_name=${name_value}"
     echo "recording_state_file=${state_file}"
@@ -1788,8 +1790,8 @@ start_recording() {
 
     local capture_dir upload_dir record_script focus_value focus_file
     local fps_value fps_file length_value length_file segment_value segment_file
-    local loop_value loop_file name_value name_file script_basename photos_one_shot_guard
-    local length_source loop_source name_source strict_service_context
+    local photo_every_value photo_every_file name_value name_file script_basename photos_one_shot_guard
+    local length_source photo_every_source name_source strict_service_context
     local recording_last_start_state_file last_start_context_payload
     local recording_state_file existing_record_pid
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
@@ -1803,16 +1805,16 @@ start_recording() {
     fps_value="$(read_fps_setting_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
-    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
+    photo_every_file="$(resolve_photo_every_value_file_for_home "${user_home}")"
     if [[ -f "${length_file}" ]]; then
         length_source="file"
     else
         length_source="default"
     fi
-    if [[ -f "${loop_file}" ]]; then
-        loop_source="file"
+    if [[ -f "${photo_every_file}" ]]; then
+        photo_every_source="file"
     else
-        loop_source="default"
+        photo_every_source="default"
     fi
     name_file="$(resolve_name_value_file_for_home "${user_home}")"
     if [[ -f "${name_file}" ]]; then
@@ -1821,7 +1823,7 @@ start_recording() {
         name_source="default"
     fi
     length_value="$(read_length_setting_for_home "${user_home}")"
-    loop_value="$(read_loop_setting_for_home "${user_home}")"
+    photo_every_value="$(read_photo_every_setting_for_home "${user_home}")"
     name_value="$(read_name_setting_for_home "${user_home}")"
     strict_service_context="false"
     if is_service_execution_context; then
@@ -1835,12 +1837,12 @@ start_recording() {
     fi
     photos_one_shot_guard="false"
     if [[ "${script_basename}" == "photos.py" || "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
-        if [[ "${strict_service_context}" == "true" && "${loop_source}" == "default" ]]; then
-            die "photos start refused in service context: loop settings file missing at ${loop_file}. set loop explicitly first (for example: antcam loop set none)"
+        if [[ "${strict_service_context}" == "true" && "${photo_every_source}" == "default" ]]; then
+            die "photos start refused in service context: photo-every settings file missing at ${photo_every_file}. set photo-every explicitly first (for example: antcam photo-every set none)"
         fi
 
-        if [[ "${loop_value}" == "none" ]]; then
-            # Compatibility guard: force one-shot for photos when loop is disabled,
+        if [[ "${photo_every_value}" == "none" ]]; then
+            # Compatibility guard: force one-shot for photos when photo-every is disabled,
             # including older deployed photos.sh variants.
             length_value="0s"
             photos_one_shot_guard="true"
@@ -1870,9 +1872,9 @@ length_value=${length_value}
 length_source=${length_source}
 segment_file=${segment_file}
 segment_value=${segment_value}
-loop_file=${loop_file}
-loop_value=${loop_value}
-loop_source=${loop_source}
+photo_every_file=${photo_every_file}
+photo_every_value=${photo_every_value}
+photo_every_source=${photo_every_source}
 name_file=${name_file}
 name_value=${name_value}
 name_source=${name_source}
@@ -1906,10 +1908,10 @@ EOF
     echo "recording length: ${length_value}"
     echo "recording length source: ${length_source}"
     if [[ "${photos_one_shot_guard}" == "true" ]]; then
-        echo "photos one-shot guard: enabled (loop=none forces length=0s)"
+        echo "photos one-shot guard: enabled (photo-every=none forces length=0s)"
     fi
-    echo "recording loop: ${loop_value}"
-    echo "recording loop source: ${loop_source}"
+    echo "recording photo-every: ${photo_every_value}"
+    echo "recording photo-every source: ${photo_every_source}"
     echo "recording name: ${name_value}"
     echo "recording name source: ${name_source}"
     echo "service context: ${strict_service_context}"
@@ -1947,8 +1949,8 @@ EOF
             ANTCAM_RECORDING_FPS="${fps_value}" \
             ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
             ANTCAM_RECORDING_LENGTH="${length_value}" \
-            ANTCAM_LOOP_VALUE_FILE="${loop_file}" \
-            ANTCAM_RECORDING_LOOP="${loop_value}" \
+            ANTCAM_PHOTO_EVERY_VALUE_FILE="${photo_every_file}" \
+            ANTCAM_RECORDING_PHOTO_EVERY="${photo_every_value}" \
             ANTCAM_NAME_VALUE_FILE="${name_file}" \
             ANTCAM_RECORDING_NAME="${name_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
@@ -2427,22 +2429,22 @@ main() {
                     ;;
             esac
             ;;
-        loop)
+        photo-every)
             shift
-            [[ $# -ge 1 ]] || die "usage: antcam loop <set|report> ..."
+            [[ $# -ge 1 ]] || die "usage: antcam photo-every <set|report> ..."
             case "$1" in
                 set)
                     shift
-                    [[ $# -eq 1 ]] || die "usage: antcam loop set <duration|none|0>"
-                    set_loop_value "$1"
+                    [[ $# -eq 1 ]] || die "usage: antcam photo-every set <duration|none|0>"
+                    set_photo_every_value "$1"
                     ;;
                 report)
                     shift
-                    [[ $# -eq 0 ]] || die "usage: antcam loop report"
-                    report_loop_value
+                    [[ $# -eq 0 ]] || die "usage: antcam photo-every report"
+                    report_photo_every_value
                     ;;
                 *)
-                    die "unknown loop action: $1"
+                    die "unknown photo-every action: $1"
                     ;;
             esac
             ;;
@@ -2467,7 +2469,7 @@ main() {
             ;;
         upload)
             shift
-            [[ $# -ge 1 ]] || die "usage: antcam upload <set|report|pause|resume|reload|prune> ..."
+            [[ $# -ge 1 ]] || die "usage: antcam upload <set|report|test|pause|resume|reload|prune> ..."
             case "$1" in
                 set)
                     shift
@@ -2534,6 +2536,11 @@ main() {
                             die "unknown upload report target: $1"
                             ;;
                     esac
+                    ;;
+                test)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam upload test"
+                    run_upload_test_once
                     ;;
                 pause)
                     shift

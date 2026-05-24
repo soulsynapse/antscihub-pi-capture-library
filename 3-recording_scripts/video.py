@@ -54,18 +54,6 @@ def duration_to_milliseconds(raw_value: str) -> int:
     return total_ms
 
 
-def normalize_loop_setting_value(raw_value: str) -> str:
-    normalized = normalize_duration_value(raw_value)
-    if not normalized:
-        raise ValueError("empty loop value")
-    if normalized in {"none", "0"}:
-        return "none"
-    loop_ms = duration_to_milliseconds(normalized)
-    if loop_ms <= 0:
-        return "none"
-    return normalized
-
-
 def is_auto_focus_value(value: str) -> bool:
     return (value or "").strip().lower() == "auto"
 
@@ -148,13 +136,6 @@ def resolve_segment_file_path(capture_dir: Path) -> Path:
     return capture_dir / "config" / "recording-segment.txt"
 
 
-def resolve_loop_file_path(capture_dir: Path) -> Path:
-    override = os.environ.get("ANTCAM_LOOP_VALUE_FILE", "")
-    if override:
-        return Path(override)
-    return capture_dir / "config" / "recording-loop.txt"
-
-
 def resolve_name_file_path(capture_dir: Path) -> Path:
     override = os.environ.get("ANTCAM_NAME_VALUE_FILE", "")
     if override:
@@ -196,7 +177,6 @@ def main() -> int:
     fps_file = resolve_fps_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
-    loop_file = resolve_loop_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
 
     focus_value = os.environ.get("ANTCAM_FOCUS_LENS_POSITION", "")
@@ -250,36 +230,6 @@ def main() -> int:
         log("set it with: antcam segment set <duration> (example: 10m, 30s, 1h)")
         return 6
 
-    loop_raw_value = os.environ.get("ANTCAM_RECORDING_LOOP", "")
-    if not loop_raw_value:
-        loop_raw_value = read_value_with_default(loop_file, "1m")
-    try:
-        loop_value = normalize_loop_setting_value(loop_raw_value)
-    except ValueError:
-        log(f"invalid recording loop value: {loop_raw_value}")
-        log("set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)")
-        return 7
-
-    loop_enabled = loop_value != "none"
-    loop_ms = 0
-    if loop_enabled:
-        try:
-            loop_ms = duration_to_milliseconds(loop_value)
-        except ValueError:
-            loop_ms = 0
-        if loop_ms <= 0:
-            log(f"invalid recording loop value: {loop_raw_value}")
-            log("set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)")
-            return 7
-
-    if loop_enabled and segment_ms != loop_ms:
-        log(
-            "video capture now uses rpicam segment mode; "
-            f"loop ({loop_value}) must equal segment ({segment_value}) or be disabled"
-        )
-        log("set loop to match segment, or set loop to none")
-        return 8
-
     name_value = os.environ.get("ANTCAM_RECORDING_NAME", "")
     if not name_value:
         name_value = read_raw_value_with_default(name_file, "BLANK")
@@ -307,10 +257,7 @@ def main() -> int:
         log(f"Focus lens-position: {focus_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     log(f"Chunk length: {segment_value} ({segment_ms} ms)")
-    if loop_enabled:
-        log(f"Loop interval: {loop_value} ({loop_ms} ms)")
-    else:
-        log("Loop interval: none (segment mode writes contiguous clips)")
+    log("Scheduling mode: contiguous segment capture (no interval scheduling)")
     log(f"Frame rate: {fps_value} fps")
     log(f"Resolution: {width_value}x{height_value}")
     log(f"Recording name suffix: {name_value}")

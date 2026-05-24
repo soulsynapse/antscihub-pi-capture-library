@@ -18,7 +18,7 @@ antcam focus set <lens-position|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
-antcam loop set <duration|none|0>
+antcam photo-every set <duration|none|0>
 antcam name set <suffix>
 antcam upload set profile <field|cloud|local>
 antcam upload set retention <protect|rolling>
@@ -30,6 +30,7 @@ antcam upload set watermark-low <percent>
 antcam upload report
 antcam upload report queue
 antcam upload report targets
+antcam upload test
 antcam upload pause
 antcam upload resume
 antcam upload reload
@@ -39,7 +40,7 @@ antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
-antcam loop report
+antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
 antcam stop
@@ -81,10 +82,11 @@ Current bundled profiles:
 - `antcam fps set <value>` writes the fps setting file used by recording scripts
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
-- `antcam loop set <duration|none|0>` writes the loop interval used by recording scripts
+- `antcam photo-every set <duration|none|0>` writes the still-photo interval used by `photos.py`
 - `antcam name set <suffix>` writes recording filename/folder suffix (allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`; default `BLANK`)
-- Positive loop values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
-- `none` or `0` disables loop scheduling
+- Positive `photo-every` values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
+- `none` or `0` disables photo interval scheduling and keeps one-shot behavior
+- With positive `photo-every`, photos run at `t=0` and then every interval while `scheduled_time <= length` (for example, `length=10m` and `photo-every=10m` -> 2 photos)
 - `antcam upload set profile <field|cloud|local>` selects destination routing mode for store-and-forward uploader
 - `antcam upload set retention <protect|rolling>` controls threshold behavior (`protect` stops recording, `rolling` prunes shipped files)
 - `antcam upload set local-target <path>` sets attached-drive/local destination path (`none` to unset)
@@ -93,6 +95,7 @@ Current bundled profiles:
 - `antcam upload set watermark-high <percent>` and `... watermark-low <percent>` set spool thresholds (defaults `80`/`70`)
 - `antcam upload report`, `antcam upload report queue`, and `antcam upload report targets` expose upload config and queue state
 - `antcam upload report` and `antcam upload report targets` fall back to `antscihub-upload.service` environment defaults (for example `RCLONE_REMOTE`) when Desktop config files are unset
+- `antcam upload test` performs a one-shot upload probe using current profile routing with first-attempt jitter and no queue/retry loop
 - `antcam upload pause` / `resume` toggles upload processing without stopping the service
 - `antcam upload reload` restarts `antscihub-upload.service`
 - `antcam upload prune --older-than <duration> [--dry-run]` prunes old shipped artifacts from spool
@@ -101,7 +104,7 @@ Current bundled profiles:
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)
-- `antcam loop report` returns the saved loop interval (or default)
+- `antcam photo-every report` returns the saved photo interval (or default)
 - `antcam name report` returns the saved recording suffix (or default `BLANK`)
 - `antcam cam report` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)
 - `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)

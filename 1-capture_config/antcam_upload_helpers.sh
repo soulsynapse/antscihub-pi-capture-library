@@ -383,19 +383,19 @@ set_segment_setting_for_home() {
     printf '%s\n' "${segment_file}"
 }
 
-set_loop_setting_for_home() {
+set_photo_every_setting_for_home() {
     local user_home="$1"
-    local loop_value="$2"
-    local normalized_loop_value
-    normalized_loop_value="$(normalize_loop_setting_value "${loop_value}" || true)"
-    [[ -n "${normalized_loop_value}" ]] || die "invalid loop value: ${loop_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
+    local photo_every_value="$2"
+    local normalized_photo_every_value
+    normalized_photo_every_value="$(normalize_photo_every_setting_value "${photo_every_value}" || true)"
+    [[ -n "${normalized_photo_every_value}" ]] || die "invalid photo-every value: ${photo_every_value} (expected format like 30h, 10m, 45s, 1h30m, 0, or none)"
 
-    local loop_file loop_dir
-    loop_file="$(resolve_loop_value_file_for_home "${user_home}")"
-    loop_dir="$(dirname "${loop_file}")"
-    mkdir -p "${loop_dir}"
-    printf '%s\n' "${normalized_loop_value}" > "${loop_file}"
-    printf '%s\n' "${loop_file}"
+    local photo_every_file photo_every_dir
+    photo_every_file="$(resolve_photo_every_value_file_for_home "${user_home}")"
+    photo_every_dir="$(dirname "${photo_every_file}")"
+    mkdir -p "${photo_every_dir}"
+    printf '%s\n' "${normalized_photo_every_value}" > "${photo_every_file}"
+    printf '%s\n' "${photo_every_file}"
 }
 
 set_name_setting_for_home() {
@@ -521,16 +521,16 @@ set_segment_value() {
     echo "segment settings file: ${segment_file}"
 }
 
-set_loop_value() {
-    local loop_value="$1"
+set_photo_every_value() {
+    local photo_every_value="$1"
     local user_home
-    user_home="$(resolve_effective_home)" || die "could not resolve user home for loop settings"
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for photo-every settings"
 
-    local loop_file normalized_loop
-    loop_file="$(set_loop_setting_for_home "${user_home}" "${loop_value}")"
-    normalized_loop="$(read_loop_setting_for_home "${user_home}")"
-    echo "recording loop set to ${normalized_loop}"
-    echo "loop settings file: ${loop_file}"
+    local photo_every_file normalized_photo_every
+    photo_every_file="$(set_photo_every_setting_for_home "${user_home}" "${photo_every_value}")"
+    normalized_photo_every="$(read_photo_every_setting_for_home "${user_home}")"
+    echo "recording photo-every set to ${normalized_photo_every}"
+    echo "photo-every settings file: ${photo_every_file}"
 }
 
 set_name_value() {
@@ -816,6 +816,287 @@ report_upload_queue() {
             echo "oldest_pending_retry_wait_seconds=0"
         fi
     fi
+}
+
+read_upload_test_jitter_max_seconds() {
+    local explicit_value service_value
+
+    explicit_value="$(normalize_upload_text_value "${ANTCAM_UPLOAD_TEST_JITTER_MAX_SECONDS:-}")"
+    if [[ -n "${explicit_value}" ]]; then
+        [[ "${explicit_value}" =~ ^[0-9]+$ ]] || die "invalid ANTCAM_UPLOAD_TEST_JITTER_MAX_SECONDS: ${explicit_value} (expected integer >= 0)"
+        printf '%s\n' "${explicit_value}"
+        return 0
+    fi
+
+    service_value="$(read_upload_service_env_value "INITIAL_UPLOAD_JITTER_MAX_SECONDS" || true)"
+    service_value="$(normalize_upload_text_value "${service_value}")"
+    if [[ -n "${service_value}" ]]; then
+        [[ "${service_value}" =~ ^[0-9]+$ ]] || die "invalid INITIAL_UPLOAD_JITTER_MAX_SECONDS from service env: ${service_value} (expected integer >= 0)"
+        printf '%s\n' "${service_value}"
+        return 0
+    fi
+
+    printf '%s\n' "30"
+}
+
+random_upload_test_jitter_seconds() {
+    local jitter_max="${1:-0}"
+    if [[ ! "${jitter_max}" =~ ^[0-9]+$ ]]; then
+        printf '%s\n' "0"
+        return 0
+    fi
+    if [[ "${jitter_max}" -le 0 ]]; then
+        printf '%s\n' "0"
+        return 0
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        python3 - "${jitter_max}" <<'PY' 2>/dev/null || true
+import random
+import sys
+
+try:
+    upper = int(sys.argv[1])
+except Exception:
+    upper = 0
+
+if upper <= 0:
+    print("0")
+else:
+    print(random.randint(0, upper))
+PY
+        return 0
+    fi
+
+    printf '%s\n' $((RANDOM % (jitter_max + 1)))
+}
+
+build_upload_test_remote_target() {
+    local remote_name="$1"
+    local remote_path="$2"
+    local relative_path="$3"
+
+    if [[ -n "${remote_path}" ]]; then
+        printf '%s\n' "${remote_name}:${remote_path}/${relative_path}"
+    else
+        printf '%s\n' "${remote_name}:${relative_path}"
+    fi
+}
+
+UPLOAD_TEST_LAST_ERROR=""
+
+upload_test_try_local_target() {
+    local source_file="$1"
+    local relative_path="$2"
+    local upload_dir="$3"
+    local local_target="$4"
+    local target_path target_dir target_tmp
+    UPLOAD_TEST_LAST_ERROR=""
+
+    if [[ -z "${local_target}" ]]; then
+        UPLOAD_TEST_LAST_ERROR="local_target_unset"
+        return 1
+    fi
+    if is_path_within_directory "${local_target}" "${upload_dir}"; then
+        UPLOAD_TEST_LAST_ERROR="local_target_inside_upload_dir"
+        return 1
+    fi
+    if [[ ! -d "${local_target}" ]]; then
+        UPLOAD_TEST_LAST_ERROR="local_target_missing"
+        return 1
+    fi
+    if [[ ! -w "${local_target}" ]]; then
+        UPLOAD_TEST_LAST_ERROR="local_target_not_writable"
+        return 1
+    fi
+
+    target_path="${local_target%/}/${relative_path}"
+    target_dir="$(dirname "${target_path}")"
+    if ! mkdir -p "${target_dir}" >/dev/null 2>&1; then
+        UPLOAD_TEST_LAST_ERROR="local_target_mkdir_failed"
+        return 1
+    fi
+
+    target_tmp="${target_path}.tmp.$$.$RANDOM"
+    if ! cp "${source_file}" "${target_tmp}" >/dev/null 2>&1; then
+        rm -f "${target_tmp}" >/dev/null 2>&1 || true
+        UPLOAD_TEST_LAST_ERROR="local_copy_failed"
+        return 1
+    fi
+    if ! mv -f "${target_tmp}" "${target_path}" >/dev/null 2>&1; then
+        rm -f "${target_tmp}" >/dev/null 2>&1 || true
+        UPLOAD_TEST_LAST_ERROR="local_move_failed"
+        return 1
+    fi
+
+    echo "upload_test_target=local:${local_target}"
+    echo "upload_test_destination=${target_path}"
+    return 0
+}
+
+upload_test_try_cloud_target() {
+    local source_file="$1"
+    local relative_path="$2"
+    local remote_name="$3"
+    local remote_path="$4"
+    local remote_target destination_label rclone_output rclone_exit
+    UPLOAD_TEST_LAST_ERROR=""
+
+    if [[ -z "${remote_name}" ]]; then
+        UPLOAD_TEST_LAST_ERROR="cloud_remote_unset"
+        return 1
+    fi
+    if ! command -v rclone >/dev/null 2>&1; then
+        UPLOAD_TEST_LAST_ERROR="rclone_not_installed"
+        return 1
+    fi
+
+    remote_target="$(build_upload_test_remote_target "${remote_name}" "${remote_path}" "${relative_path}")"
+
+    set +e
+    rclone_output="$(
+        rclone copyto \
+            "${source_file}" \
+            "${remote_target}" \
+            --stats=0 \
+            --contimeout 15s \
+            --timeout 120s \
+            --retries 1 \
+            --low-level-retries 1 \
+            2>&1
+    )"
+    rclone_exit="$?"
+    set -e
+
+    if [[ "${rclone_exit}" -ne 0 ]]; then
+        UPLOAD_TEST_LAST_ERROR="rclone_copy_failed"
+        if [[ -n "${rclone_output}" ]]; then
+            printf '%s\n' "${rclone_output}" >&2
+        fi
+        return 1
+    fi
+
+    if [[ -n "${remote_path}" ]]; then
+        destination_label="${remote_name}:${remote_path}"
+    else
+        destination_label="${remote_name}:"
+    fi
+
+    echo "upload_test_target=${destination_label}"
+    echo "upload_test_destination=${remote_target}"
+    return 0
+}
+
+run_upload_test_once() {
+    local user_home upload_dir profile local_target remote_name remote_path
+    local jitter_max jitter_seconds timestamp_utc timestamp_slug device_id
+    local test_basename relative_path source_file source_size
+    local local_reason cloud_reason
+
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for upload test"
+    upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+    profile="$(read_upload_effective_profile_for_home "${user_home}")"
+    local_target="$(read_upload_effective_local_target_for_home "${user_home}")"
+    remote_name="$(read_upload_effective_rclone_remote_for_home "${user_home}")"
+    remote_path="$(read_upload_effective_rclone_path_for_home "${user_home}")"
+    jitter_max="$(read_upload_test_jitter_max_seconds)"
+    jitter_seconds="$(random_upload_test_jitter_seconds "${jitter_max}")"
+
+    if [[ ! "${jitter_seconds}" =~ ^[0-9]+$ ]]; then
+        jitter_seconds=0
+    fi
+
+    timestamp_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    timestamp_slug="$(date -u +%Y%m%dT%H%M%SZ)"
+    resolve_device_id >/dev/null
+    device_id="${DEVICE_ID_CACHE}"
+
+    source_file="$(mktemp "${TMPDIR:-/tmp}/antcam-upload-test.XXXXXX.txt")"
+    test_basename="upload-test-${device_id}-${timestamp_slug}-$$.txt"
+    relative_path="diagnostics/upload-tests/${test_basename}"
+
+    {
+        echo "# AntCam Upload Test Artifact"
+        echo "timestamp_utc=${timestamp_utc}"
+        echo "device_id=${device_id}"
+        echo "upload_profile=${profile}"
+        echo "upload_dir=${upload_dir}"
+        if [[ -n "${local_target}" ]]; then
+            echo "upload_local_target=${local_target}"
+        else
+            echo "upload_local_target=(unset)"
+        fi
+        if [[ -n "${remote_name}" ]]; then
+            if [[ -n "${remote_path}" ]]; then
+                echo "upload_rclone_target=${remote_name}:${remote_path}"
+            else
+                echo "upload_rclone_target=${remote_name}:"
+            fi
+        else
+            echo "upload_rclone_target=(unset)"
+        fi
+        echo "note=one_shot_upload_test_no_queue_retry_loop"
+    } > "${source_file}"
+
+    source_size="$(wc -c < "${source_file}" | tr -d '[:space:]')"
+
+    echo "upload test profile=${profile}"
+    echo "upload test source=${source_file}"
+    echo "upload test source_size_bytes=${source_size}"
+    echo "upload test destination_relative_path=${relative_path}"
+    echo "upload test jitter_seconds=${jitter_seconds} (max=${jitter_max})"
+
+    if [[ "${jitter_seconds}" -gt 0 ]]; then
+        sleep "${jitter_seconds}"
+    fi
+
+    case "${profile}" in
+        local)
+            if upload_test_try_local_target "${source_file}" "${relative_path}" "${upload_dir}" "${local_target}"; then
+                echo "upload_test_status=success"
+                rm -f "${source_file}" >/dev/null 2>&1 || true
+                return 0
+            fi
+            local_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_local_error}"
+            rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "antcam: upload test failed (profile=local, reason=${local_reason})" >&2
+            return 1
+            ;;
+        cloud)
+            if upload_test_try_cloud_target "${source_file}" "${relative_path}" "${remote_name}" "${remote_path}"; then
+                echo "upload_test_status=success"
+                rm -f "${source_file}" >/dev/null 2>&1 || true
+                return 0
+            fi
+            cloud_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_cloud_error}"
+            rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "antcam: upload test failed (profile=cloud, reason=${cloud_reason})" >&2
+            return 1
+            ;;
+        field)
+            if upload_test_try_local_target "${source_file}" "${relative_path}" "${upload_dir}" "${local_target}"; then
+                echo "upload_test_status=success"
+                rm -f "${source_file}" >/dev/null 2>&1 || true
+                return 0
+            fi
+            local_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_local_error}"
+            echo "upload test local attempt failed (reason=${local_reason}); trying cloud"
+            if upload_test_try_cloud_target "${source_file}" "${relative_path}" "${remote_name}" "${remote_path}"; then
+                echo "upload_test_status=success"
+                rm -f "${source_file}" >/dev/null 2>&1 || true
+                return 0
+            fi
+            cloud_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_cloud_error}"
+            rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "antcam: upload test failed (profile=field, local_reason=${local_reason}, cloud_reason=${cloud_reason})" >&2
+            return 1
+            ;;
+        *)
+            rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "antcam: upload test failed (unknown profile=${profile})" >&2
+            return 1
+            ;;
+    esac
 }
 
 reload_upload_worker_service() {

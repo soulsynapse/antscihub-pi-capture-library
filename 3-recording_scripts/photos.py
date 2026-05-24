@@ -55,14 +55,14 @@ def duration_to_milliseconds(raw_value: str) -> int:
     return total_ms
 
 
-def normalize_loop_setting_value(raw_value: str) -> str:
+def normalize_photo_every_setting_value(raw_value: str) -> str:
     normalized = normalize_duration_value(raw_value)
     if not normalized:
-        raise ValueError("empty loop value")
+        raise ValueError("empty photo-every value")
     if normalized in {"none", "0"}:
         return "none"
-    loop_ms = duration_to_milliseconds(normalized)
-    if loop_ms <= 0:
+    photo_every_ms = duration_to_milliseconds(normalized)
+    if photo_every_ms <= 0:
         return "none"
     return normalized
 
@@ -129,11 +129,11 @@ def resolve_length_file_path(capture_dir: Path) -> Path:
     return capture_dir / "config" / "recording-length.txt"
 
 
-def resolve_loop_file_path(capture_dir: Path) -> Path:
-    override = os.environ.get("ANTCAM_LOOP_VALUE_FILE", "")
+def resolve_photo_every_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_PHOTO_EVERY_VALUE_FILE", "")
     if override:
         return Path(override)
-    return capture_dir / "config" / "recording-loop.txt"
+    return capture_dir / "config" / "recording-photo-every.txt"
 
 
 def resolve_name_file_path(capture_dir: Path) -> Path:
@@ -175,7 +175,7 @@ def main() -> int:
 
     focus_file = resolve_focus_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
-    loop_file = resolve_loop_file_path(capture_dir)
+    photo_every_file = resolve_photo_every_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
 
     focus_value = os.environ.get("ANTCAM_FOCUS_LENS_POSITION", "")
@@ -199,30 +199,30 @@ def main() -> int:
         log("set it with: antcam length set <duration> (example: 30h, 10m, 45s)")
         return 4
 
-    loop_raw_value = os.environ.get("ANTCAM_RECORDING_LOOP", "")
-    if not loop_raw_value:
-        loop_raw_value = read_value_with_default(loop_file, "1m")
+    photo_every_raw_value = os.environ.get("ANTCAM_RECORDING_PHOTO_EVERY", "")
+    if not photo_every_raw_value:
+        photo_every_raw_value = read_value_with_default(photo_every_file, "1m")
     try:
-        loop_value = normalize_loop_setting_value(loop_raw_value)
+        photo_every_value = normalize_photo_every_setting_value(photo_every_raw_value)
     except ValueError:
-        log(f"invalid recording loop value: {loop_raw_value}")
-        log("set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)")
+        log(f"invalid recording photo-every value: {photo_every_raw_value}")
+        log("set it with: antcam photo-every set <duration|none|0> (example: 1m, 30s, 2h, none)")
         return 5
 
-    loop_enabled = loop_value != "none"
-    loop_ms = 0
-    if loop_enabled:
+    photo_every_enabled = photo_every_value != "none"
+    photo_every_ms = 0
+    if photo_every_enabled:
         try:
-            loop_ms = duration_to_milliseconds(loop_value)
+            photo_every_ms = duration_to_milliseconds(photo_every_value)
         except ValueError:
-            loop_ms = 0
-        if loop_ms <= 0:
-            log(f"invalid recording loop value: {loop_raw_value}")
-            log("set it with: antcam loop set <duration|none|0> (example: 1m, 30s, 2h, none)")
+            photo_every_ms = 0
+        if photo_every_ms <= 0:
+            log(f"invalid recording photo-every value: {photo_every_raw_value}")
+            log("set it with: antcam photo-every set <duration|none|0> (example: 1m, 30s, 2h, none)")
             return 5
-        if loop_ms < 10_000:
-            log(f"recording loop value is too small for photos: {loop_value}")
-            log("set loop >= 10s for photos")
+        if photo_every_ms < 10_000:
+            log(f"recording photo-every value is too small for photos: {photo_every_value}")
+            log("set photo-every >= 10s for photos")
             return 6
 
     name_value = os.environ.get("ANTCAM_RECORDING_NAME", "")
@@ -251,12 +251,14 @@ def main() -> int:
     else:
         log(f"Focus lens-position: {focus_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
-    if loop_enabled:
-        log(f"Loop interval: {loop_value} ({loop_ms} ms)")
+    if photo_every_enabled:
+        log(f"Photo-every interval: {photo_every_value} ({photo_every_ms} ms)")
+        if length_ms <= 0:
+            log("Recording length is 0s; photo scheduling resolves to one-shot capture")
     else:
-        log("Loop interval: none (loop scheduling disabled; one-shot capture)")
+        log("Photo-every interval: none (one-shot capture)")
         if length_ms > 0:
-            log("Loop is disabled; recording length is ignored for photos one-shot mode")
+            log("Photo-every is disabled; recording length is ignored for photos one-shot mode")
     log(f"Recording name suffix: {name_value}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {session_dir}/photos-{name_value}-%05d.jpg")
@@ -270,31 +272,29 @@ def main() -> int:
     if not is_auto_focus_value(focus_value):
         still_args.extend(["--lens-position", focus_value])
 
-    if not loop_enabled:
-        # Hard one-shot path: when loop scheduling is disabled, capture exactly one image and exit.
+    if (not photo_every_enabled) or length_ms <= 0:
+        # One-shot path: disabled scheduling, or non-positive length.
         output_file = session_dir / f"photos-{name_value}-00000.jpg"
         log(f"Starting photo index=0 output={output_file}")
         rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
         return rc
 
     start_epoch_ms = now_epoch_milliseconds()
-    end_epoch_ms = start_epoch_ms + length_ms if length_ms > 0 else 0
+    total_captures = (length_ms // photo_every_ms) + 1
 
     capture_index = 0
-    while True:
+    while capture_index < total_captures:
         now_ms = now_epoch_milliseconds()
-        expected_index = (now_ms - start_epoch_ms + loop_ms - 1) // loop_ms
+        expected_index = (now_ms - start_epoch_ms + photo_every_ms - 1) // photo_every_ms
         if expected_index > capture_index:
             skipped_slots = expected_index - capture_index
             log(f"scheduler behind by {skipped_slots} slot(s); skipping ahead to preserve start-time alignment")
             capture_index = expected_index
+            if capture_index >= total_captures:
+                break
 
-        target_epoch_ms = start_epoch_ms + (capture_index * loop_ms)
+        target_epoch_ms = start_epoch_ms + (capture_index * photo_every_ms)
         sleep_until_epoch_milliseconds(target_epoch_ms)
-
-        now_ms = now_epoch_milliseconds()
-        if end_epoch_ms > 0 and now_ms >= end_epoch_ms:
-            break
 
         output_file = session_dir / f"photos-{name_value}-{capture_index:05d}.jpg"
         log(f"Starting photo index={capture_index} output={output_file}")

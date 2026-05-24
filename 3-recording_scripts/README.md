@@ -7,13 +7,13 @@ antcam focus set <lens-position|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
-antcam loop set <duration|none|0>
+antcam photo-every set <duration|none|0>
 antcam name set <suffix>
 antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
-antcam loop report
+antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
 antcam stop
@@ -29,7 +29,7 @@ antcam focus check
 5. Read fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (or `ANTCAM_FPS_VALUE_FILE` override, defaults to `1` if unset).
 6. Read recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (or `ANTCAM_LENGTH_VALUE_FILE` override, defaults to `0s`).
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`) for scripts that use segments (for example, `video.py`).
-8. Read loop interval from `<desktop>/4-CAPTURE/config/recording-loop.txt` (or `ANTCAM_LOOP_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable loop scheduling).
+8. Read photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (or `ANTCAM_PHOTO_EVERY_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable interval scheduling and keep one-shot behavior).
 9. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
 10. Run the selected script from inside `<desktop>/4-CAPTURE`.
 11. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
@@ -53,18 +53,18 @@ Bundled recording scripts:
 - `video.py` (invoked via `video.sh` launcher)
   - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam fps set <value>`, defaults to `1`)
   - Records at 1080p by default (`1920x1080` via `--width/--height`; override with `ANTCAM_VIDEO_WIDTH` and `ANTCAM_VIDEO_HEIGHT`)
-  - Uses configurable length (`antcam length set <duration>`, default `0s`), segment size (`antcam segment set <duration>`, default `1m`), and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
+  - Uses configurable length (`antcam length set <duration>`, default `0s`) and segment size (`antcam segment set <duration>`, default `1m`)
   - Runs a single long-lived `rpicam-vid`/`libcamera-vid` process with `--segment` to avoid per-clip startup loss
-  - If loop is enabled, loop must exactly match segment (for example, `segment=1m` and `loop=1m`)
-  - If loop is `none` or `0`, loop scheduling is disabled and segment mode writes contiguous clips
+  - Segment mode writes contiguous clips for the configured recording length
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
 - `photos.py` (invoked via `photos.sh` launcher)
   - Runs `rpicam-still`/`libcamera-still` still capture
-  - Uses configurable length (`antcam length set <duration>`, default `0s`) and loop interval (`antcam loop set <duration|none|0>`, default `1m`)
-  - Uses loop (not fps) to decide when each photo starts
-  - Requires `loop >= 10s` for positive loop values
-  - If loop is `none` or `0`, loop scheduling is disabled and the script runs one-shot (exactly one photo)
-  - In one-shot mode, configured length is ignored
+  - Uses configurable length (`antcam length set <duration>`, default `0s`) and photo interval (`antcam photo-every set <duration|none|0>`, default `1m`)
+  - Uses photo interval (not fps) to decide when each photo starts
+  - Requires `photo-every >= 10s` for positive interval values
+  - If `photo-every` is `none` or `0`, the script runs one-shot (exactly one photo)
+  - If length is `0s`, the script runs one-shot even when `photo-every` is positive
+  - For positive length with positive `photo-every`, captures occur at `t=0` and then every interval while `scheduled_time <= length`
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
   - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/photos-suffix-%05d.jpg`
 

@@ -86,17 +86,24 @@ While running:
 12. If not paused and no global retry pause, repeatedly choose the oldest pending candidate set and upload oldest-ready:
 13. candidates are due `QUEUED` and due `RETRY_WAIT` (`next_retry_epoch <= now`), ordered by `mtime_epoch`, then `discovered_at_epoch`, then `id`.
 14. if oldest candidate is still being written/not stable/open/not mature, skip it for now and keep checking the next oldest candidate.
-15. attempt one oldest-ready artifact, then re-query and continue until no eligible progress remains for this cycle.
+15. attempt one oldest-ready artifact, then re-query and continue until no eligible progress remains for this cycle or the storage-pressure burst cap is reached.
 16. if a rate-limited failure sets global retry pause during this cycle, stop further due attempts immediately.
 17. Sleep `SCAN_INTERVAL`.
 
 `SCAN_INTERVAL` default: `10` seconds.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
+`MIN_DUE_ATTEMPTS_PER_LOOP` default: `5`.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
 `RETRY_BASE_DELAY_SECONDS` default: `2`.
 `RETRY_MAX_DELAY_SECONDS` default: `600`.
 `RETRY_JITTER_MAX_SECONDS` default: `30`.
 `INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `30`.
+
+Due attempt burst cap per cycle is dynamic:
+
+- if spool usage `<= low_watermark`: use `MIN_DUE_ATTEMPTS_PER_LOOP`
+- if spool usage `>= high_watermark`: use `MAX_DUE_ATTEMPTS_PER_LOOP`
+- between low/high watermarks: linearly scale between min/max
 
 ## Candidate File Filters
 
@@ -195,7 +202,7 @@ When not paused, due rows are selected with:
 
 - (`status='QUEUED'` AND `next_retry_epoch <= now`) OR (`status='RETRY_WAIT'` AND `next_retry_epoch <= now`)
 - ordered by `mtime_epoch ASC`, then `discovered_at_epoch ASC`, then `id ASC`
-- limited per fetch by `MAX_DUE_ATTEMPTS_PER_LOOP`
+- limited per fetch by the current storage-pressure burst cap (between `MIN_DUE_ATTEMPTS_PER_LOOP` and `MAX_DUE_ATTEMPTS_PER_LOOP`)
 - worker iterates that ordered list and picks the first candidate that is actually ready to upload.
 - if earlier candidates are not ready (open/still-writing/not stable yet), they are skipped for now instead of blocking newer ready artifacts.
 

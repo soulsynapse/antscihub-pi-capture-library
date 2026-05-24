@@ -231,6 +231,9 @@ class UploadWorker:
         self.stability_cache_max_entries = max(1000, _as_int("STABILITY_CACHE_MAX_ENTRIES", 50000))
         self.max_scan_files_per_loop = max(1, _as_int("MAX_SCAN_FILES_PER_LOOP", 500))
         self.max_due_attempts_per_loop = max(1, _as_int("MAX_DUE_ATTEMPTS_PER_LOOP", 50))
+        self.min_due_attempts_per_loop = max(1, _as_int("MIN_DUE_ATTEMPTS_PER_LOOP", 5))
+        if self.min_due_attempts_per_loop > self.max_due_attempts_per_loop:
+            self.min_due_attempts_per_loop = self.max_due_attempts_per_loop
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
         self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 30))
@@ -475,6 +478,34 @@ class UploadWorker:
     def upload_status_to_success(status: str) -> bool:
         return status in {"queued", "in_flight", "shipped", "pruned"}
 
+    @staticmethod
+    def format_size_for_report_message(size_bytes: str) -> str:
+        raw = str(size_bytes or "").strip()
+        if not raw:
+            return "unknown"
+        try:
+            size_value = int(raw)
+        except (TypeError, ValueError):
+            return "unknown"
+        if size_value < 0:
+            return "unknown"
+
+        units = ("B", "KB", "MB", "GB", "TB", "PB", "EB")
+        scaled = float(size_value)
+        unit = units[0]
+        for unit in units:
+            if scaled < 1024 or unit == units[-1]:
+                break
+            scaled /= 1024.0
+
+        if unit == "B":
+            return f"{int(scaled)}{unit}"
+
+        text_value = f"{scaled:.1f}"
+        if text_value.endswith(".0"):
+            text_value = text_value[:-2]
+        return f"{text_value}{unit}"
+
     def _run_quiet(self, args: Sequence[str]) -> bool:
         try:
             result = subprocess.run(args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -575,11 +606,14 @@ class UploadWorker:
         report_name = self.upload_status_to_report_name(status)
         severity = self.upload_status_to_severity(status)
         success = self.upload_status_to_success(status)
+        size_label = self.format_size_for_report_message(size_bytes)
         message = f"upload status={status}"
         if relative_path:
             message += f" file={relative_path}"
         if reason:
             message += f" reason={reason}"
+        if size_label != "unknown":
+            message += f" (SIZE: {size_label})"
 
         payload = json.dumps(
             {
@@ -1524,6 +1558,26 @@ WHERE id=?;
         except Exception:
             return 0
 
+    def due_attempt_limit_for_current_pressure(self) -> int:
+        min_limit = max(1, self.min_due_attempts_per_loop)
+        max_limit = max(1, self.max_due_attempts_per_loop)
+        if min_limit >= max_limit:
+            return max_limit
+
+        usage_percent = self.spool_usage_percent()
+        low_mark = max(0, min(99, int(self.current_settings.low_watermark)))
+        high_mark = max(low_mark + 1, min(100, int(self.current_settings.high_watermark)))
+
+        if usage_percent <= low_mark:
+            return min_limit
+        if usage_percent >= high_mark:
+            return max_limit
+
+        pressure_window = max(high_mark - low_mark, 1)
+        pressure_fraction = (usage_percent - low_mark) / pressure_window
+        scaled = min_limit + int(round((max_limit - min_limit) * pressure_fraction))
+        return max(min_limit, min(max_limit, scaled))
+
     def request_protect_stop_if_needed(self, current_epoch: int) -> None:
         last_epoch = 0
         if os.path.isfile(self.protect_stop_stamp_file):
@@ -1752,9 +1806,10 @@ WHERE id IN (
             "",
         )
 
-    def get_due_artifacts(self, current_epoch: int) -> List[sqlite3.Row]:
+    def get_due_artifacts(self, current_epoch: int, limit: int) -> List[sqlite3.Row]:
         assert self.conn is not None
         self.conn.row_factory = sqlite3.Row
+        effective_limit = max(1, int(limit))
         cursor = self.conn.execute(
             """
 SELECT id, full_path, relative_path, size_bytes, status, next_retry_epoch
@@ -1766,7 +1821,7 @@ ORDER BY
     id ASC
 LIMIT ?;
 """,
-            (current_epoch, current_epoch, self.max_due_attempts_per_loop),
+            (current_epoch, current_epoch, effective_limit),
         )
         return list(cursor.fetchall())
 
@@ -1812,6 +1867,7 @@ LIMIT ?;
         return ""
 
     def process_due_artifacts(self, current_epoch: int) -> None:
+        due_attempt_limit = self.due_attempt_limit_for_current_pressure()
         if self.global_retry_pause_until_epoch > current_epoch:
             remaining = self.global_retry_pause_until_epoch - current_epoch
             if current_epoch - self.last_global_retry_pause_notice_epoch >= 60:
@@ -1828,7 +1884,7 @@ LIMIT ?;
                     self.last_global_retry_pause_notice_epoch = current_epoch
                 return
 
-            rows = self.get_due_artifacts(current_epoch)
+            rows = self.get_due_artifacts(current_epoch, due_attempt_limit)
             if not rows:
                 return
 
@@ -1906,7 +1962,7 @@ LIMIT ?;
                 attempts += 1
                 break
 
-            if attempts >= self.max_due_attempts_per_loop:
+            if attempts >= due_attempt_limit:
                 return
             if not made_progress:
                 return
@@ -1965,6 +2021,15 @@ LIMIT ?;
         self.log(
             "INFO",
             f"Retry jitter: 0-{self.retry_jitter_max_seconds}s added to retry backoff delays",
+        )
+        self.log(
+            "INFO",
+            (
+                "Due attempt burst scaling by storage pressure: "
+                f"min={self.min_due_attempts_per_loop} "
+                f"max={self.max_due_attempts_per_loop} "
+                f"between low={self.current_settings.low_watermark}% and high={self.current_settings.high_watermark}%"
+            ),
         )
 
     def run(self) -> int:

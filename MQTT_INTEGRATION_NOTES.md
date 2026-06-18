@@ -78,13 +78,15 @@ Failure diagnostics from `antcam` are written for uploader pickup:
 
 Uploader report names:
 
-- `upload_detected`
-- `upload_renamed`
-- `upload_start`
-- `upload_success`
+- `upload_queued`
+- `upload_in_flight`
+- `upload_shipped`
 - `upload_failed`
 - `upload_retry_scheduled`
-- `upload_gave_up`
+- `upload_dead_letter`
+- `upload_pruned`
+- `upload_paused`
+- `upload_protect_stop_requested`
 
 Uploader additionally logs local operational lines for:
 
@@ -92,8 +94,8 @@ Uploader additionally logs local operational lines for:
 - rename decisions on conflict (`Renaming remote upload target: ...`)
 - retry scheduling and failures
 
-MQTT payloads include context such as `file`, `folder`, `remote`, `size_bytes`, `attempt`, `reason`, and `exit_code`.
-The uploader `message` field also includes key details at every stage (file path, size, remote target, attempt, and reason when present) so GUI-only message views remain informative.
+MQTT payloads include context such as `file`, `folder`, `remote`, `size_bytes`, `attempt`, `reason`, `reason_code`, `reason_detail`, and `exit_code`.
+The uploader `message` field also includes key details at every stage (file path, size, remote target, attempt, exit code, and detailed reason when present) so GUI-only message views remain informative. Upload failures keep a stable short `reason_code` while `reason_detail` carries compact stderr or filesystem exception text.
 
 Uploader path special-case:
 

@@ -96,10 +96,12 @@ While running:
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
 `MIN_DUE_ATTEMPTS_PER_LOOP` default: `5`.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
+`MAX_RETRIES` default: `288`.
 `RETRY_BASE_DELAY_SECONDS` default: `2`.
 `RETRY_MAX_DELAY_SECONDS` default: `600`.
 `RETRY_JITTER_MAX_SECONDS` default: `30`.
 `INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `30`.
+`UPLOAD_FAILURE_DETAIL_MAX_CHARS` default: `700`.
 
 Due attempt burst cap per cycle is dynamic:
 
@@ -334,14 +336,16 @@ After all targets fail:
 9. Compute retry jitter as random integer seconds in `[0, RETRY_JITTER_MAX_SECONDS]` (default `0..30`).
 10. Set `status='RETRY_WAIT'`, set `retry_count`, set `next_retry_epoch=now+backoff+jitter`, set `last_error`, set `updated_at_epoch`.
 11. If `final_error` is rate-limit (`rclone_rate_limited`), set global retry pause until `now + backoff + jitter`.
-12. Emit `retry` with reason `retry_backoff_<N>s` (and `_jitter_<N>s` when jitter > 0).
+12. Emit `retry` with the underlying failure reason plus `next_retry_in=<N>s`, `backoff=<N>s`, and optional `jitter=<N>s`.
 
 Defaults:
 
-- `MAX_RETRIES=5`
+- `MAX_RETRIES=288`
 - `RETRY_BASE_DELAY_SECONDS=2`
 - `RETRY_MAX_DELAY_SECONDS=600`
 - `RETRY_JITTER_MAX_SECONDS=30`
+
+With the defaults, a persistently failing artifact dead-letters on the 288th failed upload attempt. The scheduled retry waits ramp 2s, 4s, 8s, 16s, and so on until capped at 600s, plus up to 30s jitter each, with the worker waking every `SCAN_INTERVAL` seconds. Fast failures now get roughly two days of retry runway after the artifact is ready; long copy timeouts can stretch that by the command timeout duration.
 
 ## Exception Handling Around Attempts
 
@@ -388,6 +392,8 @@ Worker also attempts MQTT publish in this order:
 3. Python `mqtt_client.FleetMQTT` methods (`publish_json`, `publish`, `send`)
 
 If all publish methods fail, one warning is logged once.
+
+MQTT upload events include `reason`, `reason_code`, and `reason_detail`. Failure reasons preserve the stable short code first, then append compact stderr/exception detail where available; for example `rclone_copy_failed: exit_code=1; ...` or `local_copy_failed: source=... OSError: ...`. Details are collapsed to one line, redacted for common secret tokens, and capped by `UPLOAD_FAILURE_DETAIL_MAX_CHARS`.
 
 ## SQLite Tables
 

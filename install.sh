@@ -281,6 +281,9 @@ EnvironmentFile=-${mqtt_env_file}
 # Environment="FLEET_PUBLISH_BIN=fleet-publish"
 # Environment="MQTT_REPORT_BIN=mqtt_report.py"
 # Environment="MQTT_EVENT_ENABLED=true"
+# Optional retry/detail overrides:
+# Environment="MAX_RETRIES=288"
+# Environment="UPLOAD_FAILURE_DETAIL_MAX_CHARS=700"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

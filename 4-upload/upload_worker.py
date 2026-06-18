@@ -298,7 +298,7 @@ class UploadWorker:
         self.default_upload_high_watermark = _env("UPLOAD_HIGH_WATERMARK_PERCENT", "80")
         self.default_upload_low_watermark = _env("UPLOAD_LOW_WATERMARK_PERCENT", "70")
 
-        self.max_retries = _as_int("MAX_RETRIES", 5)
+        self.max_retries = _as_int("MAX_RETRIES", 288)
         self.scan_interval = _as_int("SCAN_INTERVAL", 10)
         self.min_file_age_default = _as_int("MIN_FILE_AGE_DEFAULT", 30)
         self.min_file_age_still_image = _as_int("MIN_FILE_AGE_STILL_IMAGE", 3)
@@ -325,6 +325,7 @@ class UploadWorker:
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
         self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 30))
+        self.failure_detail_max_chars = max(120, _as_int("UPLOAD_FAILURE_DETAIL_MAX_CHARS", 700))
         if self.attempt_log_max_rows < 0:
             self.attempt_log_max_rows = 0
 
@@ -594,6 +595,67 @@ class UploadWorker:
             text_value = text_value[:-2]
         return f"{text_value}{unit}"
 
+    @staticmethod
+    def reason_code(reason: str) -> str:
+        match = re.match(r"^[A-Za-z0-9_.-]+", str(reason or "").strip())
+        return match.group(0) if match else ""
+
+    @classmethod
+    def reason_detail(cls, reason: str) -> str:
+        reason_text = str(reason or "").strip()
+        code = cls.reason_code(reason_text)
+        if not code:
+            return reason_text
+        return reason_text[len(code) :].lstrip(" :;")
+
+    @staticmethod
+    def redact_report_text(value: str) -> str:
+        redacted = re.sub(
+            r"(?i)\b(authorization|password|passwd|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret)=\S+",
+            r"\1=<redacted>",
+            value,
+        )
+        redacted = re.sub(
+            r"(?i)\b(authorization:\s*(?:bearer|basic)\s+)\S+",
+            r"\1<redacted>",
+            redacted,
+        )
+        return redacted
+
+    def compact_report_text(self, value: str) -> str:
+        text = self.redact_report_text(str(value or "").replace("\x00", " "))
+        text = text.replace("\r\n", "\n").replace("\r", "\n")
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        collapsed = " | ".join(line for line in lines if line)
+        if not collapsed:
+            return ""
+        max_chars = self.failure_detail_max_chars
+        if len(collapsed) <= max_chars:
+            return collapsed
+        return f"{collapsed[: max_chars - 3].rstrip()}..."
+
+    def make_failure_reason(self, code: str, detail: str = "") -> str:
+        detail_text = self.compact_report_text(detail)
+        if not detail_text:
+            return code
+        return f"{code}: {detail_text}"
+
+    def make_command_failure_reason(
+        self,
+        code: str,
+        exit_code: int,
+        output_text: str,
+        timed_out: bool = False,
+        timeout_seconds: int = 0,
+    ) -> str:
+        parts = [f"exit_code={exit_code}"]
+        if timed_out:
+            parts.append(f"timeout={max(timeout_seconds, 1)}s")
+        output_detail = self.compact_report_text(output_text)
+        if output_detail:
+            parts.append(output_detail)
+        return f"{code}: {'; '.join(parts)}"
+
     def _run_quiet(self, args: Sequence[str]) -> bool:
         try:
             result = subprocess.run(args, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -695,11 +757,19 @@ class UploadWorker:
         severity = self.upload_status_to_severity(status)
         success = self.upload_status_to_success(status)
         size_label = self.format_size_for_report_message(size_bytes)
+        reason_code = self.reason_code(reason)
+        reason_detail = self.reason_detail(reason)
         message = f"upload status={status}"
         if relative_path:
             message += f" file={relative_path}"
+        if destination:
+            message += f" destination={destination}"
+        if attempt:
+            message += f" attempt={attempt}"
         if reason:
             message += f" reason={reason}"
+        if exit_code:
+            message += f" exit_code={exit_code}"
         if size_label != "unknown":
             message += f" (SIZE: {size_label})"
 
@@ -707,6 +777,7 @@ class UploadWorker:
             {
                 "event": "report",
                 "report": report_name,
+                "status": status,
                 "device_id": device_id,
                 "timestamp": _epoch_now(),
                 "service": self.upload_service_name,
@@ -718,6 +789,8 @@ class UploadWorker:
                 "size_bytes": str(size_bytes),
                 "attempt": str(attempt),
                 "reason": str(reason),
+                "reason_code": reason_code,
+                "reason_detail": reason_detail,
                 "exit_code": str(exit_code),
             },
             separators=(",", ":"),
@@ -1152,9 +1225,10 @@ CREATE TABLE IF NOT EXISTS attempt_log (
                 )
                 event_status = "retry"
                 event_attempt = str(new_retry_count)
-                event_reason = f"retry_backoff_{backoff}s"
+                retry_detail = f"next_retry_in={retry_delay_seconds}s backoff={backoff}s"
                 if retry_jitter_seconds > 0:
-                    event_reason = f"{event_reason}_jitter_{retry_jitter_seconds}s"
+                    retry_detail = f"{retry_detail} jitter={retry_jitter_seconds}s"
+                event_reason = f"{final_error}; {retry_detail}" if final_error else retry_detail
 
         if event_status:
             self.emit_upload_event(event_status, relative_path, "", size_bytes, event_attempt, event_reason, "")
@@ -1384,7 +1458,8 @@ WHERE id=?;
 
     @staticmethod
     def _is_rate_limited_error(reason: str) -> bool:
-        return reason in {
+        code = UploadWorker.reason_code(reason)
+        return code in {
             "rclone_rate_limited",
             "remote_rate_limited",
         }
@@ -1398,9 +1473,9 @@ WHERE id=?;
 
     def ship_to_cloud_target(self, file_path: str, relative_path: str) -> Tuple[bool, str, str, str, int, bool]:
         if not self.current_settings.remote_name:
-            return False, "cloud_remote_unset", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason("cloud_remote_unset", "RCLONE_REMOTE is empty"), "", "", self._file_size(file_path), False
         if not _cmd_exists("rclone"):
-            return False, "rclone_not_installed", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason("rclone_not_installed", "rclone executable was not found in PATH"), "", "", self._file_size(file_path), False
 
         remote_target = self.build_remote_target(relative_path)
         file_size = self._file_size(file_path)
@@ -1427,20 +1502,26 @@ WHERE id=?;
             )
             if size_rc != 0:
                 if self._looks_like_rate_limited(output_text):
-                    return False, "rclone_rate_limited"
-                return False, "rclone_lsjson_failed"
+                    return False, self.make_command_failure_reason("rclone_rate_limited", size_rc, output_text)
+                return False, self.make_command_failure_reason("rclone_lsjson_failed", size_rc, output_text)
             try:
                 parsed = json.loads(output_text or "{}")
-            except Exception:
-                return False, "rclone_lsjson_parse_failed"
+            except Exception as exc:
+                return False, self.make_failure_reason(
+                    "rclone_lsjson_parse_failed",
+                    f"{type(exc).__name__}: {exc}; output={output_text}",
+                )
             item = parsed[0] if isinstance(parsed, list) and parsed else parsed
             if not isinstance(item, dict) or item.get("IsDir"):
-                return False, "rclone_lsjson_not_file"
+                return False, self.make_failure_reason("rclone_lsjson_not_file", f"target={remote_target}")
             remote_size = item.get("Size")
             if not isinstance(remote_size, int):
-                return False, "rclone_lsjson_no_size"
+                return False, self.make_failure_reason("rclone_lsjson_no_size", f"target={remote_target} response={output_text}")
             if remote_size != file_size:
-                return False, "remote_destination_conflict"
+                return False, self.make_failure_reason(
+                    "remote_destination_conflict",
+                    f"target={remote_target} source_size={file_size} remote_size={remote_size}",
+                )
             return True, ""
 
         rc, timed_out, output_text = self._run_command_with_log(
@@ -1463,7 +1544,13 @@ WHERE id=?;
             timeout_seconds=self.rclone_copy_timeout_seconds,
         )
         if timed_out:
-            return False, "rclone_timeout", "", "", file_size, False
+            return False, self.make_command_failure_reason(
+                "rclone_timeout",
+                rc,
+                output_text,
+                timed_out=True,
+                timeout_seconds=self.rclone_copy_timeout_seconds,
+            ), "", "", file_size, False
         if rc != 0:
             if self._looks_like_rclone_existing_destination(output_text):
                 exists_ok, exists_reason = cloud_exists_and_matches_size()
@@ -1471,28 +1558,34 @@ WHERE id=?;
                     return True, "target_cloud_exists", destination_label, remote_target, file_size, True
                 return False, exists_reason, "", "", file_size, False
             if self._looks_like_rate_limited(output_text):
-                return False, "rclone_rate_limited", "", "", file_size, False
-            return False, "rclone_copy_failed", "", "", file_size, False
+                return False, self.make_command_failure_reason("rclone_rate_limited", rc, output_text), "", "", file_size, False
+            return False, self.make_command_failure_reason("rclone_copy_failed", rc, output_text), "", "", file_size, False
 
         return True, "target_cloud", destination_label, remote_target, file_size, False
 
     def ship_to_local_target(self, file_path: str, relative_path: str) -> Tuple[bool, str, str, str, int, bool]:
         local_target = self.current_settings.local_target
         if not local_target:
-            return False, "local_target_unset", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason("local_target_unset", "UPLOAD_LOCAL_TARGET_PATH is empty"), "", "", self._file_size(file_path), False
         if self.is_path_within_upload_dir(local_target):
-            return False, "local_target_inside_upload_dir", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason(
+                "local_target_inside_upload_dir",
+                f"target={local_target} upload_dir={self.upload_dir}",
+            ), "", "", self._file_size(file_path), False
         if not os.path.isdir(local_target):
-            return False, "local_target_missing", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason("local_target_missing", f"path={local_target}"), "", "", self._file_size(file_path), False
         if not os.access(local_target, os.W_OK):
-            return False, "local_target_not_writable", "", "", self._file_size(file_path), False
+            return False, self.make_failure_reason("local_target_not_writable", f"path={local_target}"), "", "", self._file_size(file_path), False
 
         target_path = os.path.join(local_target, relative_path)
         target_dir = os.path.dirname(target_path)
         try:
             os.makedirs(target_dir, exist_ok=True)
-        except Exception:
-            return False, "local_target_mkdir_failed", "", "", self._file_size(file_path), False
+        except Exception as exc:
+            return False, self.make_failure_reason(
+                "local_target_mkdir_failed",
+                f"path={target_dir} {type(exc).__name__}: {exc}",
+            ), "", "", self._file_size(file_path), False
         source_size = self._file_size(file_path)
 
         if os.path.isfile(target_path):
@@ -1503,26 +1596,38 @@ WHERE id=?;
                 if source_hash == target_hash and source_hash != "unreadable":
                     destination_label = f"local:{local_target}"
                     return True, "target_local_exists", destination_label, target_path, source_size, True
-                return False, "local_destination_conflict", "", "", source_size, False
-            return False, "local_destination_conflict", "", "", source_size, False
+                return False, self.make_failure_reason(
+                    "local_destination_conflict",
+                    f"path={target_path} source_size={source_size} target_size={target_size} sample_hash_mismatch=true",
+                ), "", "", source_size, False
+            return False, self.make_failure_reason(
+                "local_destination_conflict",
+                f"path={target_path} source_size={source_size} target_size={target_size}",
+            ), "", "", source_size, False
 
         tmp_path = f"{target_path}.tmp.{os.getpid()}.{random.randint(1000, 999999)}"
         try:
             shutil.copy2(file_path, tmp_path)
-        except Exception:
+        except Exception as exc:
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
-            return False, "local_copy_failed", "", "", source_size, False
+            return False, self.make_failure_reason(
+                "local_copy_failed",
+                f"source={file_path} tmp={tmp_path} {type(exc).__name__}: {exc}",
+            ), "", "", source_size, False
         try:
             os.replace(tmp_path, target_path)
-        except Exception:
+        except Exception as exc:
             try:
                 os.remove(tmp_path)
             except OSError:
                 pass
-            return False, "local_move_failed", "", "", source_size, False
+            return False, self.make_failure_reason(
+                "local_move_failed",
+                f"tmp={tmp_path} target={target_path} {type(exc).__name__}: {exc}",
+            ), "", "", source_size, False
 
         destination_label = f"local:{local_target}"
         return True, "target_local", destination_label, target_path, source_size, False
@@ -1992,7 +2097,10 @@ LIMIT ?;
                         relative_path=relative_path,
                         size_bytes=size_bytes,
                         current_epoch=current_epoch,
-                        final_error="source_file_missing",
+                        final_error=self.make_failure_reason(
+                            "source_file_missing",
+                            f"stored_full_path={full_path} relative_path={relative_path}",
+                        ),
                     )
                     made_progress = True
                     continue
@@ -2044,7 +2152,10 @@ LIMIT ?;
                         relative_path=relative_path,
                         size_bytes=str(self._file_size(file_path)),
                         current_epoch=current_epoch,
-                        final_error=f"unexpected_exception_{type(exc).__name__}",
+                        final_error=self.make_failure_reason(
+                            f"unexpected_exception_{type(exc).__name__}",
+                            str(exc),
+                        ),
                     )
                 made_progress = True
                 attempts += 1

@@ -37,6 +37,94 @@ def _env(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _parse_simple_dotenv_value(value: str) -> str:
+    value = value.strip()
+    if not value:
+        return ""
+    quote = value[0]
+    if quote in {"'", '"'}:
+        escaped = False
+        collected: List[str] = []
+        for char in value[1:]:
+            if escaped:
+                if quote == '"':
+                    collected.append({"n": "\n", "r": "\r", "t": "\t"}.get(char, char))
+                else:
+                    collected.append(char)
+                escaped = False
+                continue
+            if char == "\\":
+                escaped = True
+                continue
+            if char == quote:
+                return "".join(collected)
+            collected.append(char)
+        return "".join(collected)
+
+    comment_index = value.find(" #")
+    if comment_index >= 0:
+        value = value[:comment_index].rstrip()
+    return value
+
+
+def _resolve_desktop_dir_for_home(home: str) -> str:
+    user_dirs_file = os.path.join(home, ".config", "user-dirs.dirs")
+    if os.path.isfile(user_dirs_file):
+        try:
+            with open(user_dirs_file, "r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if not line.startswith("XDG_DESKTOP_DIR="):
+                        continue
+                    desktop = line.split("=", 1)[1].strip().strip('"')
+                    desktop = desktop.replace("$HOME", home)
+                    if not os.path.isabs(desktop):
+                        desktop = os.path.join(home, desktop.lstrip("./"))
+                    return desktop.rstrip("/\\")
+        except Exception:
+            pass
+
+    if os.path.isdir(os.path.join(home, "Desktop")):
+        return os.path.join(home, "Desktop")
+    if os.path.isdir(os.path.join(home, "desktop")):
+        return os.path.join(home, "desktop")
+    return os.path.join(home, "Desktop")
+
+
+def load_mqtt_dotenv() -> None:
+    explicit = _env("ANTCAM_MQTT_ENV_FILE", "")
+    if explicit:
+        dotenv_file = explicit
+    else:
+        home = _env("HOME", "")
+        if not home:
+            return
+        dotenv_file = os.path.join(_resolve_desktop_dir_for_home(home), "1-MQTT", ".env")
+
+    if not os.path.isfile(dotenv_file):
+        return
+
+    key_pattern = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+    try:
+        with open(dotenv_file, "r", encoding="utf-8", errors="replace") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+                if "=" not in line:
+                    continue
+                key, raw_value = line.split("=", 1)
+                key = key.strip()
+                if not key_pattern.fullmatch(key):
+                    continue
+                if key in os.environ:
+                    continue
+                os.environ[key] = _parse_simple_dotenv_value(raw_value)
+    except Exception:
+        return
+
+
 def _as_int(name: str, default: int) -> int:
     raw = os.environ.get(name)
     if raw is None:
@@ -2109,6 +2197,7 @@ def shlex_quote(value: str) -> str:
 
 
 def main() -> int:
+    load_mqtt_dotenv()
     worker = UploadWorker()
     return worker.run()
 

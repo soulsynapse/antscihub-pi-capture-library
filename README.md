@@ -134,6 +134,7 @@ The upload service defaults:
 - `RCLONE_REMOTE=gdrive_personal`
 - `RCLONE_PATH=` (remote root)
 - Source directory auto-resolved to `<desktop>/5-UPLOAD`
+- Runtime env overrides are loaded from `<desktop>/1-MQTT/.env` when present
 
 Commands:
 
@@ -159,6 +160,8 @@ antcam upload prune --older-than 72h --dry-run
 
 `antcam upload report` and `antcam upload report targets` fall back to `antscihub-upload.service` environment defaults (for example `RCLONE_REMOTE`) when Desktop upload config files are unset.
 `antcam upload test` runs a one-shot upload probe using current profile routing with first-attempt jitter and no queue/retry loop.
+
+The uploader and `antcam` CLI load simple dotenv values from `<desktop>/1-MQTT/.env` if the file exists. This is the place for shared MQTT/rclone environment flags such as `RCLONE_NO_CHECK_CERTIFICATE=true` on trusted local WebDAV targets with self-signed or IP-mismatched certificates. Explicit process/systemd environment values take precedence over the dotenv file.
 
 ## Operational Defaults
 

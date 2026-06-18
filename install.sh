@@ -248,9 +248,10 @@ write_upload_unit() {
     local upload_user="$1"
     local upload_home="$2"
     local upload_dir="$3"
-    local upload_parent upload_config_dir
+    local upload_parent upload_config_dir mqtt_env_file
     upload_parent="$(dirname "${upload_dir}")"
     upload_config_dir="${upload_parent}/4-CAPTURE/config"
+    mqtt_env_file="${upload_parent}/1-MQTT/.env"
 
     cat > "${UPLOAD_SERVICE_PATH}" <<EOF
 [Unit]
@@ -272,6 +273,7 @@ Environment="UPLOAD_PROFILE=field"
 Environment="UPLOAD_RETENTION=protect"
 Environment="UPLOAD_HIGH_WATERMARK_PERCENT=80"
 Environment="UPLOAD_LOW_WATERMARK_PERCENT=70"
+EnvironmentFile=-${mqtt_env_file}
 # Optional overrides for orchestrator event publishing:
 # Environment="DEVICE_ID=pi-0123"
 # Environment="FLEET_DEVICE_ID=pi-0123"
@@ -295,6 +297,9 @@ EOF
 write_recording_resume_unit() {
     local upload_user="$1"
     local upload_home="$2"
+    local desktop_dir mqtt_env_file
+    desktop_dir="$(resolve_desktop_dir_for_home "${upload_home}")"
+    mqtt_env_file="${desktop_dir}/1-MQTT/.env"
 
     cat > "${RECORDING_RESUME_SERVICE_PATH}" <<EOF
 [Unit]
@@ -308,6 +313,7 @@ ExecStart=${CAMERA_CLI_TARGET} recording resume-if-needed --service
 WorkingDirectory=${SCRIPT_DIR}
 User=${upload_user}
 Environment="HOME=${upload_home}"
+EnvironmentFile=-${mqtt_env_file}
 Restart=no
 StandardOutput=journal
 StandardError=journal

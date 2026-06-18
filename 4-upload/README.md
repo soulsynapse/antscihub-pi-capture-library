@@ -30,6 +30,8 @@ State/log/runtime directories:
 - `LOGS_DIRECTORY` (first `:` segment only), fallback `~/.local/state/antscihub-upload`
 - `RUNTIME_DIRECTORY` (first `:` segment only), fallback `${XDG_RUNTIME_DIR}` then `/tmp`
 
+The worker loads simple dotenv values from `<desktop>/1-MQTT/.env` at startup when present. Existing process/systemd environment values are preserved.
+
 Files used:
 
 - DB: `<state_dir>/queue.db`

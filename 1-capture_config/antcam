@@ -4,6 +4,130 @@ set -euo pipefail
 BEGIN_MARKER="# antscihub-capture-config BEGIN"
 END_MARKER="# antscihub-capture-config END"
 
+early_trim() {
+    local value="$1"
+    value="${value#"${value%%[![:space:]]*}"}"
+    value="${value%"${value##*[![:space:]]}"}"
+    printf '%s\n' "${value}"
+}
+
+early_home_for_user() {
+    local username="$1"
+    local user_home
+    if command -v getent >/dev/null 2>&1; then
+        user_home="$(getent passwd "$username" 2>/dev/null | cut -d: -f6 || true)"
+    else
+        user_home="$(awk -F: -v user="$username" '$1 == user { print $6; exit }' /etc/passwd 2>/dev/null || true)"
+    fi
+    [[ -n "${user_home}" ]] || return 1
+    printf '%s\n' "${user_home}"
+}
+
+early_effective_home() {
+    if [[ -n "${ANTCAM_EFFECTIVE_HOME:-}" ]]; then
+        printf '%s\n' "${ANTCAM_EFFECTIVE_HOME}"
+        return 0
+    fi
+
+    if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+        early_home_for_user "${SUDO_USER}" && return 0
+    fi
+
+    if [[ -n "${HOME:-}" ]]; then
+        printf '%s\n' "${HOME}"
+        return 0
+    fi
+
+    early_home_for_user "$(id -un)"
+}
+
+early_desktop_dir_for_home() {
+    local user_home="$1"
+    local desktop="" user_dirs_file="${user_home}/.config/user-dirs.dirs"
+    if [[ -f "${user_dirs_file}" ]]; then
+        local desktop_line
+        desktop_line="$(grep -E '^XDG_DESKTOP_DIR=' "${user_dirs_file}" | tail -n 1 || true)"
+        if [[ -n "${desktop_line}" ]]; then
+            desktop="${desktop_line#XDG_DESKTOP_DIR=}"
+            desktop="${desktop%\"}"
+            desktop="${desktop#\"}"
+            desktop="${desktop//\$HOME/${user_home}}"
+            if [[ "${desktop}" != /* ]]; then
+                desktop="${user_home}/${desktop#./}"
+            fi
+        fi
+    fi
+
+    if [[ -z "${desktop}" ]]; then
+        if [[ -d "${user_home}/Desktop" ]]; then
+            desktop="${user_home}/Desktop"
+        elif [[ -d "${user_home}/desktop" ]]; then
+            desktop="${user_home}/desktop"
+        else
+            desktop="${user_home}/Desktop"
+        fi
+    fi
+
+    printf '%s\n' "${desktop%/}"
+}
+
+early_parse_dotenv_value() {
+    local value="$1" first last
+    value="$(early_trim "${value}")"
+    [[ -n "${value}" ]] || return 0
+
+    first="${value:0:1}"
+    last="${value: -1}"
+    if [[ ( "${first}" == "'" || "${first}" == '"' ) && "${last}" == "${first}" ]]; then
+        value="${value:1:${#value}-2}"
+    elif [[ "${value}" == *" #"* ]]; then
+        value="${value%% #*}"
+        value="$(early_trim "${value}")"
+    fi
+
+    printf '%s\n' "${value}"
+}
+
+load_mqtt_dotenv_file() {
+    local dotenv_file="$1"
+    [[ -f "${dotenv_file}" ]] || return 0
+
+    local line dotenv_key dotenv_value
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        line="${line%$'\r'}"
+        line="$(early_trim "${line}")"
+        [[ -n "${line}" && "${line}" != \#* ]] || continue
+        if [[ "${line}" == export[[:space:]]* ]]; then
+            line="${line#export}"
+            line="$(early_trim "${line}")"
+        fi
+        [[ "${line}" == *=* ]] || continue
+
+        dotenv_key="$(early_trim "${line%%=*}")"
+        [[ "${dotenv_key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+        if [[ -v "${dotenv_key}" ]]; then
+            continue
+        fi
+
+        dotenv_value="$(early_parse_dotenv_value "${line#*=}")"
+        export "${dotenv_key}=${dotenv_value}"
+    done < "${dotenv_file}"
+}
+
+load_default_mqtt_dotenv() {
+    local dotenv_file="${ANTCAM_MQTT_ENV_FILE:-}"
+    if [[ -z "${dotenv_file}" ]]; then
+        local user_home desktop_dir
+        user_home="$(early_effective_home || true)"
+        [[ -n "${user_home}" ]] || return 0
+        desktop_dir="$(early_desktop_dir_for_home "${user_home}")"
+        dotenv_file="${desktop_dir}/1-MQTT/.env"
+    fi
+    load_mqtt_dotenv_file "${dotenv_file}"
+}
+
+load_default_mqtt_dotenv
+
 DEFAULT_PROFILE_DIR="/etc/antscihub/camera-profiles"
 PROFILE_DIR="${ANTCAM_PROFILE_DIR:-${ANTSCAM_PROFILE_DIR:-${DEFAULT_PROFILE_DIR}}}"
 DEFAULT_RECORDING_SCRIPT_DIR="/etc/antscihub/recording-scripts"

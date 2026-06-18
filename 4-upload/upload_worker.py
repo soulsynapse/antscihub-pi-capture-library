@@ -140,7 +140,7 @@ def _timestamp_local() -> str:
 
 
 def _timestamp_utc_iso() -> str:
-    return _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+    return _dt.datetime.now(_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _epoch_now() -> int:
@@ -1457,6 +1457,21 @@ WHERE id=?;
         return any(hint in lowered for hint in hints)
 
     @staticmethod
+    def _looks_like_tls_certificate_error(output_text: str) -> bool:
+        lowered = output_text.lower()
+        hints = (
+            "failed to verify certificate",
+            "x509:",
+            "cannot validate certificate",
+            "doesn't contain any ip sans",
+            "does not contain any ip sans",
+            "certificate signed by unknown authority",
+            "certificate has expired",
+            "tls: failed to verify certificate",
+        )
+        return any(hint in lowered for hint in hints)
+
+    @staticmethod
     def _is_rate_limited_error(reason: str) -> bool:
         code = UploadWorker.reason_code(reason)
         return code in {
@@ -1503,6 +1518,8 @@ WHERE id=?;
             if size_rc != 0:
                 if self._looks_like_rate_limited(output_text):
                     return False, self.make_command_failure_reason("rclone_rate_limited", size_rc, output_text)
+                if self._looks_like_tls_certificate_error(output_text):
+                    return False, self.make_command_failure_reason("rclone_tls_certificate_failed", size_rc, output_text)
                 return False, self.make_command_failure_reason("rclone_lsjson_failed", size_rc, output_text)
             try:
                 parsed = json.loads(output_text or "{}")
@@ -1559,6 +1576,8 @@ WHERE id=?;
                 return False, exists_reason, "", "", file_size, False
             if self._looks_like_rate_limited(output_text):
                 return False, self.make_command_failure_reason("rclone_rate_limited", rc, output_text), "", "", file_size, False
+            if self._looks_like_tls_certificate_error(output_text):
+                return False, self.make_command_failure_reason("rclone_tls_certificate_failed", rc, output_text), "", "", file_size, False
             return False, self.make_command_failure_reason("rclone_copy_failed", rc, output_text), "", "", file_size, False
 
         return True, "target_cloud", destination_label, remote_target, file_size, False

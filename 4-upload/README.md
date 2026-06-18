@@ -393,7 +393,7 @@ Worker also attempts MQTT publish in this order:
 
 If all publish methods fail, one warning is logged once.
 
-MQTT upload events include `reason`, `reason_code`, and `reason_detail`. Failure reasons preserve the stable short code first, then append compact stderr/exception detail where available; for example `rclone_copy_failed: exit_code=1; ...` or `local_copy_failed: source=... OSError: ...`. Details are collapsed to one line, redacted for common secret tokens, and capped by `UPLOAD_FAILURE_DETAIL_MAX_CHARS`.
+MQTT upload events include `reason`, `reason_code`, and `reason_detail`. Failure reasons preserve the stable short code first, then append compact stderr/exception detail where available; for example `rclone_tls_certificate_failed: exit_code=1; ...`, `rclone_copy_failed: exit_code=1; ...`, or `local_copy_failed: source=... OSError: ...`. Details are collapsed to one line, redacted for common secret tokens, and capped by `UPLOAD_FAILURE_DETAIL_MAX_CHARS`.
 
 ## SQLite Tables
 

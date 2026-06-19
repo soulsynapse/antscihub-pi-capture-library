@@ -433,6 +433,21 @@ set_segment_setting_for_home() {
     printf '%s\n' "${segment_file}"
 }
 
+set_intra_setting_for_home() {
+    local user_home="$1"
+    local intra_value="$2"
+    local normalized_intra_value
+    normalized_intra_value="$(normalize_intra_setting_value "${intra_value}" || true)"
+    [[ -n "${normalized_intra_value}" ]] || die "invalid intra value: ${intra_value} (expected positive integer frame period, none, or 0)"
+
+    local intra_file intra_dir
+    intra_file="$(resolve_intra_value_file_for_home "${user_home}")"
+    intra_dir="$(dirname "${intra_file}")"
+    mkdir -p "${intra_dir}"
+    printf '%s\n' "${normalized_intra_value}" > "${intra_file}"
+    printf '%s\n' "${intra_file}"
+}
+
 set_photo_every_setting_for_home() {
     local user_home="$1"
     local photo_every_value="$2"
@@ -569,6 +584,18 @@ set_segment_value() {
     normalized_segment="$(read_segment_setting_for_home "${user_home}")"
     echo "recording segment set to ${normalized_segment}"
     echo "segment settings file: ${segment_file}"
+}
+
+set_intra_value() {
+    local intra_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for intra settings"
+
+    local intra_file normalized_intra
+    intra_file="$(set_intra_setting_for_home "${user_home}" "${intra_value}")"
+    normalized_intra="$(read_intra_setting_for_home "${user_home}")"
+    echo "recording intra set to ${normalized_intra}"
+    echo "intra settings file: ${intra_file}"
 }
 
 set_photo_every_value() {

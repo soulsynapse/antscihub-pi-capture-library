@@ -71,6 +71,15 @@ def is_valid_fps_value(value: str) -> bool:
         return False
 
 
+def normalize_intra_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"none", "off", "default", "auto", "0"}:
+        return "none"
+    if re.fullmatch(r"[0-9]+", normalized) is not None and re.fullmatch(r"0+", normalized) is None:
+        return normalized
+    return ""
+
+
 def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
 
@@ -136,6 +145,13 @@ def resolve_segment_file_path(capture_dir: Path) -> Path:
     return capture_dir / "config" / "recording-segment.txt"
 
 
+def resolve_intra_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_INTRA_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-intra.txt"
+
+
 def resolve_name_file_path(capture_dir: Path) -> Path:
     override = os.environ.get("ANTCAM_NAME_VALUE_FILE", "")
     if override:
@@ -177,6 +193,7 @@ def main() -> int:
     fps_file = resolve_fps_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
+    intra_file = resolve_intra_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
 
     focus_value = os.environ.get("ANTCAM_FOCUS_LENS_POSITION", "")
@@ -230,6 +247,15 @@ def main() -> int:
         log("set it with: antcam segment set <duration> (example: 10m, 30s, 1h)")
         return 6
 
+    intra_raw_value = os.environ.get("ANTCAM_RECORDING_INTRA", "")
+    if not intra_raw_value:
+        intra_raw_value = read_value_with_default(intra_file, "none")
+    intra_value = normalize_intra_value(intra_raw_value)
+    if not intra_value:
+        log(f"invalid recording intra value: {intra_raw_value}")
+        log("set it with: antcam intra set <frames|none|0>")
+        return 11
+
     name_value = os.environ.get("ANTCAM_RECORDING_NAME", "")
     if not name_value:
         name_value = read_raw_value_with_default(name_file, "BLANK")
@@ -260,6 +286,10 @@ def main() -> int:
     log("Scheduling mode: contiguous segment capture (no interval scheduling)")
     log(f"Frame rate: {fps_value} fps")
     log(f"Resolution: {width_value}x{height_value}")
+    if intra_value == "none":
+        log("Intra period: camera default (no --intra override)")
+    else:
+        log(f"Intra period: {intra_value} frames")
     log(f"Recording name suffix: {name_value}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {session_dir}/video-{name_value}-%05d.h264")
@@ -284,6 +314,8 @@ def main() -> int:
         "--output",
         str(session_dir / f"video-{name_value}-%05d.h264"),
     ]
+    if intra_value != "none":
+        video_args.extend(["--intra", intra_value])
     if not is_auto_focus_value(focus_value):
         video_args.extend(["--lens-position", focus_value])
 

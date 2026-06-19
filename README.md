@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam recording resume-if-needed`, `antcam focus check`)
+2. Capture commands (`antcam focus set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam intra set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam recording resume-if-needed`, `antcam focus check`)
 3. Store-and-forward upload control (`antcam upload set ...`, `antcam upload report ...`, `antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
@@ -72,6 +72,7 @@ antcam focus set <lens-position|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
+antcam intra set <frames|none|0>
 antcam photo-every set <duration|none|0>
 antcam upload set profile <field|cloud|local>
 antcam upload set retention <protect|rolling>
@@ -88,6 +89,7 @@ antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
+antcam intra report
 antcam photo-every report
 antcam start <recording-script-name>
 antcam stop
@@ -103,6 +105,7 @@ antcam focus check
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.py`)
+- Reads intra frame period from `<desktop>/4-CAPTURE/config/recording-intra.txt` (defaults to `none`; positive integers add `--intra <frames>` for `video.py`)
 - Reads photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (defaults to `1m`; accepts `none`/`0` to disable interval scheduling and use one-shot)
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` (`length > 0s` only)
@@ -116,7 +119,7 @@ antcam focus check
 
 Bundled recording scripts:
 
-- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable length/segment (`antcam length set`, `antcam segment set`), and focus from saved `lens-position` or `auto`
+- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable length/segment/intra (`antcam length set`, `antcam segment set`, `antcam intra set`), and focus from saved `lens-position` or `auto`
 - `photos.py` (with `photos.sh` retained as a compatibility launcher) -> interval-driven still-photo capture (`antcam photo-every set <duration|none|0>`). Positive values require minimum `10s`; `none`/`0` keeps one-shot behavior. For positive intervals, captures occur at `t=0` and then every interval while `scheduled_time <= recording_length`
 
 `antcam focus check` resolves the active user's Desktop path and then:

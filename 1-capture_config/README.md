@@ -18,6 +18,7 @@ antcam focus set <lens-position|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
+antcam intra set <frames|none|0>
 antcam photo-every set <duration|none|0>
 antcam name set <suffix>
 antcam upload set profile <field|cloud|local>
@@ -40,6 +41,7 @@ antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
+antcam intra report
 antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
@@ -83,6 +85,7 @@ Current bundled profiles:
 - `antcam fps set <value>` writes the fps setting file used by recording scripts
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
+- `antcam intra set <frames|none|0>` writes the video intra frame period; positive integers add `--intra <frames>`, while `none`/`0` keeps the camera default
 - `antcam photo-every set <duration|none|0>` writes the still-photo interval used by `photos.py`
 - `antcam name set <suffix>` writes recording filename/folder suffix (allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`; default `BLANK`)
 - Positive `photo-every` values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
@@ -105,6 +108,7 @@ Current bundled profiles:
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)
+- `antcam intra report` returns the saved intra frame period (or default)
 - `antcam photo-every report` returns the saved photo interval (or default)
 - `antcam name report` returns the saved recording suffix (or default `BLANK`)
 - `antcam cam report` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)

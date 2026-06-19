@@ -140,6 +140,8 @@ DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
 LENGTH_SETTINGS_RELATIVE_PATH="${ANTCAM_LENGTH_SETTINGS_RELATIVE_PATH:-${DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-segment.txt"
 SEGMENT_SETTINGS_RELATIVE_PATH="${ANTCAM_SEGMENT_SETTINGS_RELATIVE_PATH:-${DEFAULT_SEGMENT_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_INTRA_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-intra.txt"
+INTRA_SETTINGS_RELATIVE_PATH="${ANTCAM_INTRA_SETTINGS_RELATIVE_PATH:-${DEFAULT_INTRA_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_PHOTO_EVERY_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-photo-every.txt"
 PHOTO_EVERY_SETTINGS_RELATIVE_PATH="${ANTCAM_PHOTO_EVERY_SETTINGS_RELATIVE_PATH:-${DEFAULT_PHOTO_EVERY_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_NAME_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-name.txt"
@@ -171,6 +173,7 @@ TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH="${ANTCAM_TRANSCODE_VIDEO_SETTINGS_RELATI
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
+DEFAULT_RECORDING_INTRA="${ANTCAM_DEFAULT_RECORDING_INTRA:-none}"
 DEFAULT_RECORDING_PHOTO_EVERY="${ANTCAM_DEFAULT_RECORDING_PHOTO_EVERY:-1m}"
 DEFAULT_RECORDING_NAME="${ANTCAM_DEFAULT_RECORDING_NAME:-BLANK}"
 DEFAULT_UPLOAD_PROFILE="${ANTCAM_DEFAULT_UPLOAD_PROFILE:-field}"
@@ -218,6 +221,8 @@ Usage:
   antcam length report
   antcam segment set <duration>
   antcam segment report
+  antcam intra set <frames|none|0>
+  antcam intra report
   antcam photo-every set <duration|none|0>
   antcam photo-every report
   antcam name set <suffix>
@@ -265,6 +270,8 @@ Examples:
   antcam length report
   antcam segment set 10m
   antcam segment report
+  antcam intra set 30
+  antcam intra report
   antcam photo-every set 1m
   antcam photo-every set none
   antcam photo-every report
@@ -522,6 +529,24 @@ resolve_segment_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${SEGMENT_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_intra_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_INTRA_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_INTRA_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${INTRA_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${INTRA_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${INTRA_SETTINGS_RELATIVE_PATH#./}"
+}
+
 resolve_photo_every_value_file_for_home() {
     local user_home="$1"
 
@@ -673,6 +698,7 @@ write_recording_resume_state_for_home() {
     local start_epoch="${12}"
     local end_epoch="${13}"
     local resume_reason="${14:-recording_start}"
+    local intra_value="${15:-none}"
 
     [[ "${start_epoch}" =~ ^[0-9]+$ ]] || return 1
     [[ "${end_epoch}" =~ ^[0-9]+$ ]] || return 1
@@ -696,6 +722,7 @@ write_recording_resume_state_for_home() {
         echo "fps_value=${fps_value}"
         echo "length_value=${length_value}"
         echo "segment_value=${segment_value}"
+        echo "intra_value=${intra_value}"
         echo "photo_every_value=${photo_every_value}"
         echo "name_value=${name_value}"
         echo "recording_start_epoch=${start_epoch}"
@@ -863,6 +890,25 @@ is_valid_fps_value() {
 is_valid_duration_value() {
     local value="${1:-}"
     duration_to_milliseconds "${value}" >/dev/null 2>&1
+}
+
+normalize_intra_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        none|off|default|auto|0)
+            printf '%s\n' "none"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+$ ]] || return 1
+            [[ ! "${normalized_value}" =~ ^0+$ ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
 }
 
 normalize_photo_every_setting_value() {
@@ -1824,6 +1870,24 @@ read_segment_setting_for_home() {
     printf '%s\n' "$(normalize_duration_value "${segment_value}")"
 }
 
+read_intra_setting_for_home() {
+    local user_home="$1"
+    local intra_file intra_value normalized_intra_value
+    intra_file="$(resolve_intra_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${intra_file}" ]]; then
+        normalized_intra_value="$(normalize_intra_setting_value "${DEFAULT_RECORDING_INTRA}" || true)"
+        [[ -n "${normalized_intra_value}" ]] || die "invalid default intra value: ${DEFAULT_RECORDING_INTRA} (expected positive integer frame period, none, or 0)"
+        printf '%s\n' "${normalized_intra_value}"
+        return 0
+    fi
+
+    intra_value="$(head -n 1 "${intra_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_intra_value="$(normalize_intra_setting_value "${intra_value}" || true)"
+    [[ -n "${normalized_intra_value}" ]] || die "invalid intra value in ${intra_file}: ${intra_value} (expected positive integer frame period, none, or 0)"
+    printf '%s\n' "${normalized_intra_value}"
+}
+
 read_photo_every_setting_for_home() {
     local user_home="$1"
     local photo_every_file photo_every_value normalized_photo_every_value
@@ -1967,6 +2031,12 @@ report_segment_value() {
     read_segment_setting_for_home "${user_home}"
 }
 
+report_intra_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for intra settings"
+    read_intra_setting_for_home "${user_home}"
+}
+
 report_photo_every_value() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for photo-every settings"
@@ -1984,13 +2054,14 @@ report_capture_settings() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
     local capture_dir upload_dir focus_file focus_value state_file last_start_state_file resume_state_file
-    local fps_file fps_value length_file length_value segment_file segment_value photo_every_file photo_every_value name_file name_value
+    local fps_file fps_value length_file length_value segment_file segment_value intra_file intra_value photo_every_file photo_every_value name_file name_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    intra_file="$(resolve_intra_value_file_for_home "${user_home}")"
     photo_every_file="$(resolve_photo_every_value_file_for_home "${user_home}")"
     name_file="$(resolve_name_value_file_for_home "${user_home}")"
     state_file="$(resolve_recording_state_file_for_home "${user_home}")"
@@ -2021,6 +2092,14 @@ report_capture_settings() {
         segment_value="${DEFAULT_RECORDING_SEGMENT} (default)"
     fi
 
+    if [[ -f "${intra_file}" ]]; then
+        intra_value="$(read_intra_setting_for_home "${user_home}")"
+    else
+        intra_value="$(normalize_intra_setting_value "${DEFAULT_RECORDING_INTRA}" || true)"
+        [[ -n "${intra_value}" ]] || die "invalid default intra value: ${DEFAULT_RECORDING_INTRA} (expected positive integer frame period, none, or 0)"
+        intra_value="${intra_value} (default)"
+    fi
+
     if [[ -f "${photo_every_file}" ]]; then
         photo_every_value="$(read_photo_every_setting_for_home "${user_home}")"
     else
@@ -2048,6 +2127,8 @@ report_capture_settings() {
     echo "recording_length=${length_value}"
     echo "segment_settings_file=${segment_file}"
     echo "recording_segment=${segment_value}"
+    echo "intra_settings_file=${intra_file}"
+    echo "recording_intra=${intra_value}"
     echo "photo_every_settings_file=${photo_every_file}"
     echo "recording_photo_every=${photo_every_value}"
     echo "name_settings_file=${name_file}"
@@ -2066,7 +2147,7 @@ start_recording() {
     [[ -n "${effective_user}" ]] || effective_user="$(id -un)"
 
     local capture_dir upload_dir record_script focus_value focus_file
-    local fps_value fps_file length_value length_file segment_value segment_file
+    local fps_value fps_file length_value length_file segment_value segment_file intra_value intra_file
     local photo_every_value photo_every_file name_value name_file script_basename photos_one_shot_guard
     local length_source photo_every_source name_source strict_service_context
     local recording_last_start_state_file last_start_context_payload
@@ -2112,10 +2193,13 @@ start_recording() {
         strict_service_context="true"
     fi
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
+    intra_file="$(resolve_intra_value_file_for_home "${user_home}")"
     if [[ "${script_basename}" == "video.py" || "${script_basename}" == "video.sh" || "${script_basename}" == "video" ]]; then
         segment_value="$(read_segment_setting_for_home "${user_home}")"
+        intra_value="$(read_intra_setting_for_home "${user_home}")"
     else
         segment_value=""
+        intra_value=""
     fi
     photos_one_shot_guard="false"
     if [[ "${script_basename}" == "photos.py" || "${script_basename}" == "photos.sh" || "${script_basename}" == "photos" ]]; then
@@ -2184,6 +2268,8 @@ length_value=${length_value}
 length_source=${length_source}
 segment_file=${segment_file}
 segment_value=${segment_value}
+intra_file=${intra_file}
+intra_value=${intra_value}
 photo_every_file=${photo_every_file}
 photo_every_value=${photo_every_value}
 photo_every_source=${photo_every_source}
@@ -2237,6 +2323,11 @@ EOF
     else
         echo "recording segment: (unused by ${script_basename})"
     fi
+    if [[ -n "${intra_value}" ]]; then
+        echo "recording intra: ${intra_value}"
+    else
+        echo "recording intra: (unused by ${script_basename})"
+    fi
     echo "recording upload dir: ${upload_dir}"
     echo "recording state file: ${recording_state_file}"
     echo "recording last-start context file: ${recording_last_start_state_file}"
@@ -2278,6 +2369,8 @@ EOF
             ANTCAM_RECORDING_NAME="${name_value}" \
             ANTCAM_SEGMENT_VALUE_FILE="${segment_file}" \
             ANTCAM_RECORDING_SEGMENT="${segment_value}" \
+            ANTCAM_INTRA_VALUE_FILE="${intra_file}" \
+            ANTCAM_RECORDING_INTRA="${intra_value}" \
             ANTCAM_RECORDING_START_EPOCH_MS="${ANTCAM_RECORDING_START_EPOCH_MS:-}" \
             "${record_script}"
     ) >> "${record_console_log}" 2>&1 &
@@ -2307,7 +2400,8 @@ EOF
             "${name_value}" \
             "${recording_start_epoch}" \
             "${recording_end_epoch}" \
-            "${resume_window_source}"; then
+            "${resume_window_source}" \
+            "${intra_value}"; then
             echo "antcam: warning: failed to write recording resume state file: ${recording_resume_state_file}" >&2
         fi
     else
@@ -2477,7 +2571,7 @@ resume_recording_if_needed() {
     fi
 
     local resume_enabled requested_script_name record_script_saved
-    local focus_value_saved fps_value_saved length_value_saved segment_value_saved photo_every_value_saved name_value_saved
+    local focus_value_saved fps_value_saved length_value_saved segment_value_saved intra_value_saved photo_every_value_saved name_value_saved
     local start_epoch_saved end_epoch_saved now_epoch remaining_seconds resume_length_value
     local record_script_path script_basename
     local resume_start_override resume_end_override photos_schedule_start_epoch_ms
@@ -2497,6 +2591,11 @@ resume_recording_if_needed() {
     fps_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "fps_value" || true)"
     length_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "length_value" || true)"
     segment_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "segment_value" || true)"
+    intra_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "intra_value" || true)"
+    if [[ -z "${intra_value_saved}" ]]; then
+        intra_value_saved="$(normalize_intra_setting_value "${DEFAULT_RECORDING_INTRA}" || true)"
+        [[ -n "${intra_value_saved}" ]] || intra_value_saved="none"
+    fi
     photo_every_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "photo_every_value" || true)"
     name_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "name_value" || true)"
     start_epoch_saved="$(read_recording_state_field "${recording_resume_state_file}" "recording_start_epoch" || true)"
@@ -2549,11 +2648,12 @@ resume_recording_if_needed() {
     local resume_tmp_dir
     resume_tmp_dir="$(mktemp -d /tmp/antcam-recording-resume.XXXXXX)"
 
-    local resume_focus_file resume_fps_file resume_length_file resume_segment_file resume_photo_every_file resume_name_file
+    local resume_focus_file resume_fps_file resume_length_file resume_segment_file resume_intra_file resume_photo_every_file resume_name_file
     resume_focus_file="${resume_tmp_dir}/focus-lens-position.txt"
     resume_fps_file="${resume_tmp_dir}/recording-fps.txt"
     resume_length_file="${resume_tmp_dir}/recording-length.txt"
     resume_segment_file="${resume_tmp_dir}/recording-segment.txt"
+    resume_intra_file="${resume_tmp_dir}/recording-intra.txt"
     resume_photo_every_file="${resume_tmp_dir}/recording-photo-every.txt"
     resume_name_file="${resume_tmp_dir}/recording-name.txt"
 
@@ -2561,6 +2661,7 @@ resume_recording_if_needed() {
     printf '%s\n' "${fps_value_saved}" > "${resume_fps_file}"
     printf '%s\n' "${resume_length_value}" > "${resume_length_file}"
     printf '%s\n' "${segment_value_saved}" > "${resume_segment_file}"
+    printf '%s\n' "${intra_value_saved}" > "${resume_intra_file}"
     printf '%s\n' "${photo_every_value_saved}" > "${resume_photo_every_file}"
     printf '%s\n' "${name_value_saved}" > "${resume_name_file}"
 
@@ -2576,6 +2677,7 @@ resume_recording_if_needed() {
     ANTCAM_FPS_VALUE_FILE="${resume_fps_file}" \
     ANTCAM_LENGTH_VALUE_FILE="${resume_length_file}" \
     ANTCAM_SEGMENT_VALUE_FILE="${resume_segment_file}" \
+    ANTCAM_INTRA_VALUE_FILE="${resume_intra_file}" \
     ANTCAM_PHOTO_EVERY_VALUE_FILE="${resume_photo_every_file}" \
     ANTCAM_NAME_VALUE_FILE="${resume_name_file}" \
     ANTCAM_RECORDING_RESUME_ORIGINAL_START_EPOCH="${resume_start_override}" \
@@ -2955,6 +3057,25 @@ main() {
                     ;;
                 *)
                     die "unknown segment action: $1"
+                    ;;
+            esac
+            ;;
+        intra)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam intra <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam intra set <frames|none|0>"
+                    set_intra_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam intra report"
+                    report_intra_value
+                    ;;
+                *)
+                    die "unknown intra action: $1"
                     ;;
             esac
             ;;

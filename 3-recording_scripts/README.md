@@ -7,12 +7,14 @@ antcam focus set <lens-position|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
+antcam intra set <frames|none|0>
 antcam photo-every set <duration|none|0>
 antcam name set <suffix>
 antcam focus report
 antcam fps report
 antcam length report
 antcam segment report
+antcam intra report
 antcam photo-every report
 antcam name report
 antcam start <recording-script-name>
@@ -30,16 +32,17 @@ antcam focus check
 5. Read fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (or `ANTCAM_FPS_VALUE_FILE` override, defaults to `1` if unset).
 6. Read recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (or `ANTCAM_LENGTH_VALUE_FILE` override, defaults to `0s`).
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`) for scripts that use segments (for example, `video.py`).
-8. Read photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (or `ANTCAM_PHOTO_EVERY_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable interval scheduling and keep one-shot behavior).
-9. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
-10. Run the selected script from inside `<desktop>/4-CAPTURE`.
-11. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
-12. For finite lengths (`length > 0s`), write resume-window state to `<desktop>/4-CAPTURE/config/recording-resume-state.env`.
-13. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
-14. Publish encrypted Fleet report messages when recording starts and ends.
+8. Read intra frame period from `<desktop>/4-CAPTURE/config/recording-intra.txt` (or `ANTCAM_INTRA_VALUE_FILE` override, defaults to `none`; positive integers add `--intra <frames>` for `video.py`).
+9. Read photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (or `ANTCAM_PHOTO_EVERY_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable interval scheduling and keep one-shot behavior).
+10. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
+11. Run the selected script from inside `<desktop>/4-CAPTURE`.
+12. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
+13. For finite lengths (`length > 0s`), write resume-window state to `<desktop>/4-CAPTURE/config/recording-resume-state.env`.
+14. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
+15. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
-14. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+16. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
 
 `antcam stop` behavior:
 
@@ -56,6 +59,7 @@ Bundled recording scripts:
   - Runs `rpicam-vid`/`libcamera-vid` using configured fps (`antcam fps set <value>`, defaults to `1`)
   - Records at 1080p by default (`1920x1080` via `--width/--height`; override with `ANTCAM_VIDEO_WIDTH` and `ANTCAM_VIDEO_HEIGHT`)
   - Uses configurable length (`antcam length set <duration>`, default `0s`) and segment size (`antcam segment set <duration>`, default `1m`)
+  - Uses configurable intra frame period (`antcam intra set <frames|none|0>`, default `none`; positive integers add `--intra <frames>`)
   - Runs a single long-lived `rpicam-vid`/`libcamera-vid` process with `--segment` to avoid per-clip startup loss
   - Segment mode writes contiguous clips for the configured recording length
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`

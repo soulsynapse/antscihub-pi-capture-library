@@ -20,7 +20,7 @@ antcam length set <duration>
 antcam segment set <duration>
 antcam intra set <frames|none|0>
 antcam photo-every set <duration|none|0>
-antcam name set <suffix>
+antcam name set <name>
 antcam upload set profile <field|cloud|local>
 antcam upload set retention <protect|rolling>
 antcam upload set local-target <path>
@@ -87,7 +87,7 @@ Current bundled profiles:
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
 - `antcam intra set <frames|none|0>` writes the video intra frame period; positive integers add `--intra <frames>`, while `none`/`0` keeps the camera default
 - `antcam photo-every set <duration|none|0>` writes the still-photo interval used by `photos.py`
-- `antcam name set <suffix>` writes recording filename/folder suffix (allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`; default `BLANK`)
+- `antcam name set <name>` writes the recording name component used in output folder/file stems (allowed characters: `A-Z`, `a-z`, `0-9`, `.`, `_`, `-`; default `BLANK`)
 - Positive `photo-every` values keep start-time aligned scheduling (examples: `1m`, `30s`, `2h`)
 - `none` or `0` disables photo interval scheduling and keeps one-shot behavior
 - With positive `photo-every`, photos run at `t=0` and then every interval while `scheduled_time <= length` (for example, `length=10m` and `photo-every=10m` -> 2 photos)
@@ -110,14 +110,14 @@ Current bundled profiles:
 - `antcam segment report` returns the saved segment length (or default)
 - `antcam intra report` returns the saved intra frame period (or default)
 - `antcam photo-every report` returns the saved photo interval (or default)
-- `antcam name report` returns the saved recording suffix (or default `BLANK`)
+- `antcam name report` returns the saved recording name (or default `BLANK`)
 - `antcam cam report` returns camera make/model label (for example `Raspberry Pi Camera Module 3 (Sony IMX708)` when using profile `imx708`)
-- `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`)
+- `antcam start` publishes encrypted Fleet report messages when recording starts/ends (`recording_start`, `recording_end`); failures include `reason_code`, `reason_detail`, and `diagnostic_file`
 - `antcam start` writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` so `antcam stop` can target the live recording process
 - `antcam start` writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` when `length > 0s`
 - `antcam stop` gracefully stops the active recording script (including `video` and `photos`) with `SIGINT` first, then `SIGTERM` if needed
 - `antcam recording resume-if-needed` resumes pending finite recording windows (used automatically by `antscihub-recording-resume.service` at boot)
-- If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/` and includes the compact failure detail in MQTT
 - `antcam focus check` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus check` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
 - `antcam focus check` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`

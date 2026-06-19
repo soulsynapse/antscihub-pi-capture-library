@@ -10,17 +10,52 @@ from __future__ import annotations
 import datetime as _dt
 import os
 import re
+import shlex
 import shutil
 import socket
 import subprocess
 import sys
 import time
+from collections import deque
 from pathlib import Path
 from typing import Optional
 
 
 def log(message: str) -> None:
     print(f"[photos] {message}", file=sys.stderr, flush=True)
+
+
+def compact_detail(value: str, max_chars: int = 900) -> str:
+    collapsed = " | ".join(re.sub(r"\s+", " ", line).strip() for line in value.splitlines() if line.strip())
+    if len(collapsed) <= max_chars:
+        return collapsed
+    return f"{collapsed[: max_chars - 3].rstrip()}..."
+
+
+def command_display(parts: list[str]) -> str:
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def setting_source(env_name: str, file_path: Path) -> str:
+    if os.environ.get(env_name, ""):
+        return f"env:{env_name}"
+    if file_path.is_file():
+        return f"file:{file_path}"
+    return f"default(file_missing={file_path})"
+
+
+def log_invalid_setting(name: str, value: str, source: str, expected: str, detail: str = "") -> None:
+    suffix = f" detail={detail}" if detail else ""
+    log(f"invalid {name}: value={value!r} source={source} expected={expected}{suffix}")
+
+
+def ensure_directory(path: Path, label: str) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        log(f"failed to create {label}: path={path} error={type(exc).__name__}: {exc}")
+        return False
+    return True
 
 
 def normalize_duration_value(value: str) -> str:
@@ -77,6 +112,19 @@ def is_valid_lens_position_value(value: str) -> bool:
 
 def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
+
+
+def sanitize_capture_tag_value(value: str, fallback: str) -> str:
+    tag = re.sub(r"[^A-Za-z0-9._+-]", "-", (value or "").strip())
+    tag = re.sub(r"-+", "-", tag).strip("-._")
+    return tag or fallback
+
+
+def build_photo_settings_tag(focus_value: str, photo_every_value: str, length_value: str) -> str:
+    focus_tag = f"focus-{sanitize_capture_tag_value(focus_value, 'unknown')}"
+    photo_every_tag = f"photo-every-{sanitize_capture_tag_value(photo_every_value, 'unknown')}"
+    length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
+    return "-".join((focus_tag, photo_every_tag, length_tag))
 
 
 def parse_positive_int(raw_value: str) -> Optional[int]:
@@ -177,8 +225,33 @@ def choose_still_command() -> Optional[str]:
 
 
 def run_capture(command: str, args: list[str]) -> int:
-    result = subprocess.run([command, *args], check=False)
-    return int(result.returncode or 0)
+    cmd = [command, *args]
+    display = command_display(cmd)
+    output_tail: deque[str] = deque(maxlen=25)
+
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+    except OSError as exc:
+        log(f"capture command launch failed: command={display} cwd={Path.cwd()} error={type(exc).__name__}: {exc}")
+        return 127 if isinstance(exc, FileNotFoundError) else 1
+
+    if process.stdout is not None:
+        for line in process.stdout:
+            sys.stderr.write(line)
+            sys.stderr.flush()
+            output_tail.append(line.rstrip())
+
+    return_code = int(process.wait() or 0)
+    if return_code != 0:
+        tail_text = compact_detail("\n".join(output_tail)) or "(empty)"
+        log(f"capture command failed: exit_code={return_code} command={display} cwd={Path.cwd()} output_tail={tail_text}")
+    return return_code
 
 
 def main() -> int:
@@ -196,7 +269,12 @@ def main() -> int:
     if is_auto_focus_value(focus_value):
         focus_value = "auto"
     elif not is_valid_lens_position_value(focus_value):
-        log(f"invalid focus lens-position value: {focus_value}")
+        log_invalid_setting(
+            "focus lens-position value",
+            focus_value,
+            setting_source("ANTCAM_FOCUS_LENS_POSITION", focus_file),
+            "numeric lens-position or auto",
+        )
         log("set it with: antcam focus set <lens-position|auto>")
         return 3
 
@@ -206,8 +284,14 @@ def main() -> int:
     length_value = normalize_duration_value(length_value)
     try:
         length_ms = duration_to_milliseconds(length_value)
-    except ValueError:
-        log(f"invalid recording length value: {length_value}")
+    except ValueError as exc:
+        log_invalid_setting(
+            "recording length value",
+            length_value,
+            setting_source("ANTCAM_RECORDING_LENGTH", length_file),
+            "duration like 30h, 10m, 45s, or 1h30m",
+            str(exc),
+        )
         log("set it with: antcam length set <duration> (example: 30h, 10m, 45s)")
         return 4
 
@@ -216,8 +300,14 @@ def main() -> int:
         photo_every_raw_value = read_value_with_default(photo_every_file, "1m")
     try:
         photo_every_value = normalize_photo_every_setting_value(photo_every_raw_value)
-    except ValueError:
-        log(f"invalid recording photo-every value: {photo_every_raw_value}")
+    except ValueError as exc:
+        log_invalid_setting(
+            "recording photo-every value",
+            photo_every_raw_value,
+            setting_source("ANTCAM_RECORDING_PHOTO_EVERY", photo_every_file),
+            "duration, none, or 0",
+            str(exc),
+        )
         log("set it with: antcam photo-every set <duration|none|0> (example: 1m, 30s, 2h, none)")
         return 5
 
@@ -229,11 +319,21 @@ def main() -> int:
         except ValueError:
             photo_every_ms = 0
         if photo_every_ms <= 0:
-            log(f"invalid recording photo-every value: {photo_every_raw_value}")
+            log_invalid_setting(
+                "recording photo-every value",
+                photo_every_raw_value,
+                setting_source("ANTCAM_RECORDING_PHOTO_EVERY", photo_every_file),
+                "duration greater than zero, none, or 0",
+            )
             log("set it with: antcam photo-every set <duration|none|0> (example: 1m, 30s, 2h, none)")
             return 5
         if photo_every_ms < 10_000:
-            log(f"recording photo-every value is too small for photos: {photo_every_value}")
+            log_invalid_setting(
+                "recording photo-every value",
+                photo_every_value,
+                setting_source("ANTCAM_RECORDING_PHOTO_EVERY", photo_every_file),
+                "at least 10s for interval photos",
+            )
             log("set photo-every >= 10s for photos")
             return 6
 
@@ -241,21 +341,31 @@ def main() -> int:
     if not name_value:
         name_value = read_raw_value_with_default(name_file, "BLANK")
     if not is_valid_recording_name_value(name_value):
-        log(f"invalid recording name value: {name_value}")
-        log("set it with: antcam name set <suffix> (allowed: A-Z a-z 0-9 . _ -)")
+        log_invalid_setting(
+            "recording name value",
+            name_value,
+            setting_source("ANTCAM_RECORDING_NAME", name_file),
+            "A-Z a-z 0-9 . _ -",
+        )
+        log("set it with: antcam name set <name> (allowed: A-Z a-z 0-9 . _ -)")
         return 7
 
     still_cmd = choose_still_command()
     if not still_cmd:
-        log("rpicam-still or libcamera-still not found. Install Raspberry Pi camera apps.")
+        log(f"rpicam-still or libcamera-still not found: tried=rpicam-still,libcamera-still PATH={os.environ.get('PATH', '')}")
         return 1
 
-    capture_dir.mkdir(parents=True, exist_ok=True)
+    if not ensure_directory(capture_dir, "capture directory"):
+        return 12
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    session_dir = upload_dir / f"{session_timestamp}__{session_hostname}__{name_value}"
-    session_dir.mkdir(parents=True, exist_ok=True)
+    settings_tag = build_photo_settings_tag(focus_value, photo_every_value, length_value)
+    session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
+    session_dir = upload_dir / session_stem
+    photo_output_pattern = session_dir / f"{session_stem}__photo-%05d.jpg"
+    if not ensure_directory(session_dir, "session directory"):
+        return 13
 
     log(f"Using still command: {still_cmd}")
     if is_auto_focus_value(focus_value):
@@ -271,9 +381,10 @@ def main() -> int:
         log("Photo-every interval: none (one-shot capture)")
         if length_ms > 0:
             log("Photo-every is disabled; recording length is ignored for photos one-shot mode")
-    log(f"Recording name suffix: {name_value}")
+    log(f"Recording name component: {name_value}")
+    log(f"Capture settings tag: {settings_tag}")
     log(f"Session folder: {session_dir}")
-    log(f"Output pattern: {session_dir}/photos-{name_value}-%05d.jpg")
+    log(f"Output pattern: {photo_output_pattern}")
 
     still_args = [
         "--nopreview",
@@ -286,7 +397,7 @@ def main() -> int:
 
     if (not photo_every_enabled) or length_ms <= 0:
         # One-shot path: disabled scheduling, or non-positive length.
-        output_file = session_dir / f"photos-{name_value}-00000.jpg"
+        output_file = session_dir / f"{session_stem}__photo-00000.jpg"
         log(f"Starting photo index=0 output={output_file}")
         rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
         return rc
@@ -296,7 +407,12 @@ def main() -> int:
     if start_epoch_override_raw:
         start_epoch_override = parse_positive_int(start_epoch_override_raw)
         if start_epoch_override is None:
-            log(f"invalid recording start epoch override: {start_epoch_override_raw}")
+            log_invalid_setting(
+                "recording start epoch override",
+                start_epoch_override_raw,
+                "env:ANTCAM_RECORDING_START_EPOCH_MS",
+                "positive integer epoch milliseconds",
+            )
             return 8
         if start_epoch_override > start_epoch_ms:
             log(
@@ -323,7 +439,7 @@ def main() -> int:
         target_epoch_ms = start_epoch_ms + (capture_index * photo_every_ms)
         sleep_until_epoch_milliseconds(target_epoch_ms)
 
-        output_file = session_dir / f"photos-{name_value}-{capture_index:05d}.jpg"
+        output_file = session_dir / f"{session_stem}__photo-{capture_index:05d}.jpg"
         log(f"Starting photo index={capture_index} output={output_file}")
         rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
         if rc != 0:

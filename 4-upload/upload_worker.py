@@ -1985,7 +1985,7 @@ WHERE id IN (
             return False
         if not _cmd_exists("ffmpeg"):
             if not self.ffmpeg_not_found_warned:
-                self.log("WARN", "transcode enabled but ffmpeg not found in PATH; uploading raw .h264")
+                self.log("WARN", f"transcode enabled but ffmpeg not found in PATH={_env('PATH', '')}; uploading raw .h264")
                 self.ffmpeg_not_found_warned = True
             return False
 
@@ -2003,10 +2003,17 @@ WHERE id IN (
             ffmpeg_cmd = ["nice", "-n", "19"] + ffmpeg_cmd
 
         self.log("INFO", f"Transcoding: {relative_path} mode={mode}")
-        rc, timed_out, _ = self._run_command_with_log(ffmpeg_cmd, timeout_seconds=3600)
+        rc, timed_out, output_text = self._run_command_with_log(ffmpeg_cmd, timeout_seconds=3600)
 
         if rc != 0 or timed_out:
-            self.log("WARN", f"Transcode failed for {relative_path} (exit={rc} timed_out={timed_out}); uploading raw .h264")
+            failure_reason = self.make_command_failure_reason(
+                "ffmpeg_transcode_failed",
+                rc,
+                output_text,
+                timed_out=timed_out,
+                timeout_seconds=3600,
+            )
+            self.log("WARN", f"Transcode failed for {relative_path}: {failure_reason}; uploading raw .h264")
             try:
                 os.remove(tmp_path)
             except OSError:

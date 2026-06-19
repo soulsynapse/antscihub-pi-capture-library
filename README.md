@@ -110,9 +110,9 @@ antcam focus check
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` (`length > 0s` only)
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- Selected recording script writes to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname/` (`video.py` -> `video-%05d.h264`, `photos.py` -> `photos-%05d.jpg`)
-- Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`)
-- On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- Selected recording script writes to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; files repeat the same stem plus `__video-%05d.h264` or `__photo-%05d.jpg`. Example video settings tag: `1fps-focus-auto-seg-10m-intra-30-len-30h-1920x1080`.
+- Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`), with failure `reason_code`, `reason_detail`, and `diagnostic_file` when a script fails
+- On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/` and publishes a compact tail of the failing output
 
 `antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed).
 `antcam recording resume-if-needed` resumes pending finite recordings if the saved recording window has remaining time. `antscihub-recording-resume.service` runs this command automatically on boot.

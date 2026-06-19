@@ -9,7 +9,7 @@ antcam length set <duration>
 antcam segment set <duration>
 antcam intra set <frames|none|0>
 antcam photo-every set <duration|none|0>
-antcam name set <suffix>
+antcam name set <name>
 antcam focus report
 antcam fps report
 antcam length report
@@ -34,15 +34,15 @@ antcam focus check
 7. Read segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (or `ANTCAM_SEGMENT_VALUE_FILE` override, defaults to `1m`) for scripts that use segments (for example, `video.py`).
 8. Read intra frame period from `<desktop>/4-CAPTURE/config/recording-intra.txt` (or `ANTCAM_INTRA_VALUE_FILE` override, defaults to `none`; positive integers add `--intra <frames>` for `video.py`).
 9. Read photo interval from `<desktop>/4-CAPTURE/config/recording-photo-every.txt` (or `ANTCAM_PHOTO_EVERY_VALUE_FILE` override, defaults to `1m`; accepts `none`/`0` to disable interval scheduling and keep one-shot behavior).
-10. Read recording name suffix from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
+10. Read recording name component from `<desktop>/4-CAPTURE/config/recording-name.txt` (or `ANTCAM_NAME_VALUE_FILE` override, defaults to `BLANK` if unset).
 11. Run the selected script from inside `<desktop>/4-CAPTURE`.
 12. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
 13. For finite lengths (`length > 0s`), write resume-window state to `<desktop>/4-CAPTURE/config/recording-resume-state.env`.
-14. Selected script writes outputs to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/` (for example, `video.py` writes `video-suffix-%05d.h264`, `photos.py` writes `photos-suffix-%05d.jpg`).
+14. Selected script writes outputs to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; output files repeat that stem plus `__video-%05d.h264` or `__photo-%05d.jpg`. Video settings look like `1fps-focus-auto-seg-10m-intra-30-len-30h-1920x1080`; photo settings look like `focus-auto-photo-every-1m-len-30h`.
 15. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
-   - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`
-16. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup.
+   - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`, plus `exit_code` and failure `reason`, `reason_code`, `reason_detail`, `diagnostic_file` when available
+16. If the recording script fails, write a timestamped diagnostic log into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup, and publish a compact failure reason with the diagnostic path.
 
 `antcam stop` behavior:
 
@@ -73,7 +73,7 @@ Bundled recording scripts:
   - For positive length with positive `photo-every`, captures occur at `t=0` and then every interval while `scheduled_time <= length`
   - Supports `ANTCAM_RECORDING_START_EPOCH_MS` schedule anchor override for power-loss resume alignment
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
-  - Writes photos to `<desktop>/5-UPLOAD/YYYY-MM-DD_HH-MM-SS__hostname__suffix/photos-suffix-%05d.jpg`
+  - Writes photos to `<desktop>/5-UPLOAD/name__hostname__focus-auto-photo-every-1m-len-30h__YYYY-MM-DD_HH-MM-SS/name__hostname__focus-auto-photo-every-1m-len-30h__YYYY-MM-DD_HH-MM-SS__photo-%05d.jpg`
 
 `antcam focus check` behavior:
 

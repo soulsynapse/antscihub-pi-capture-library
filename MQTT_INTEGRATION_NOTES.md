@@ -60,18 +60,18 @@ All emitted report events use `event=report` and include:
 - `message`
 - `success`
 
-Optional context fields are included by source (for example `service`, `folder`, `script`, `file`, `remote`, `attempt`, `reason`, `exit_code`).
+Optional context fields are included by source (for example `service`, `folder`, `script`, `file`, `remote`, `attempt`, `reason`, `reason_code`, `reason_detail`, `diagnostic_file`, `exit_code`).
 
 ## `antcam` Events
 
 ### `antcam start`
 
 - `recording_start` (`ATTENTION`, `success=true`)
-- `recording_end` (`INFO` on success, `ERROR` on failure, includes `exit_code`)
+- `recording_end` (`INFO` on success, `ERROR` on failure; failures include `exit_code`, `reason`, `reason_code`, `reason_detail`, and `diagnostic_file`)
 
 Failure diagnostics from `antcam` are written for uploader pickup:
 
-- `record.sh` failures: `<desktop>/5-UPLOAD/diagnostics/recordings/`
+- Recording/focus script failures: `<desktop>/5-UPLOAD/diagnostics/recordings/` with `reason_code`, `reason_detail`, and console output
 - If the primary diagnostic path fails, a fallback timestamped file is written in `<desktop>/5-UPLOAD/diagnostics/`
 
 ## Uploader Events
@@ -110,7 +110,7 @@ Static checks are in `2-test_scripts/run_static_checks.sh`.
 
 Current MQTT-related assertions include:
 
-- `recording_start` and `recording_end` present in `antcam`
+- `recording_start`, `recording_end`, `reason_code`, `reason_detail`, and `diagnostic_file` present in `antcam`
 - `encrypt=True` present in both `antcam` and uploader python fallbacks
 - `--no-encrypt` absent from both `antcam` and uploader scripts
 

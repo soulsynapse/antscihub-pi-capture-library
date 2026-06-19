@@ -194,6 +194,7 @@ MQTT_EVENT_ENABLED="${MQTT_EVENT_ENABLED:-true}"
 DEVICE_ID_CACHE=""
 DEVICE_ID_CACHE_READY="false"
 MQTT_PUBLISH_WARNING_EMITTED="false"
+SCRIPT_FAILURE_DIAGNOSTIC_PATH=""
 
 CONFIG_CANDIDATES=(
     /boot/firmware/config.txt
@@ -225,7 +226,7 @@ Usage:
   antcam intra report
   antcam photo-every set <duration|none|0>
   antcam photo-every report
-  antcam name set <suffix>
+  antcam name set <name>
   antcam name report
   antcam upload set profile <field|cloud|local>
   antcam upload set retention <protect|rolling>
@@ -1227,6 +1228,155 @@ json_escape() {
     printf '%s' "${input}"
 }
 
+compact_report_text_for_event() {
+    local input="${1:-}"
+    local max_chars="${2:-700}"
+    local text=""
+
+    [[ "${max_chars}" =~ ^[0-9]+$ ]] || max_chars=700
+    if [[ "${max_chars}" -le 0 ]]; then
+        printf '%s' ""
+        return 0
+    fi
+
+    if command -v python3 >/dev/null 2>&1; then
+        text="$(
+            printf '%s' "${input}" | python3 -c '
+import re
+import sys
+
+max_chars = int(sys.argv[1])
+text = sys.stdin.read().replace("\x00", " ")
+text = text.replace("\r\n", "\n").replace("\r", "\n")
+lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+text = " | ".join(line for line in lines if line)
+text = re.sub(
+    r"(?i)\b(authorization|password|passwd|token|access[_-]?token|refresh[_-]?token|client[_-]?secret|secret)=\S+",
+    r"\1=<redacted>",
+    text,
+)
+text = re.sub(
+    r"(?i)\b(authorization:\s*(?:bearer|basic)\s+)\S+",
+    r"\1<redacted>",
+    text,
+)
+if len(text) > max_chars:
+    text = text[: max_chars - 3].rstrip() + "..."
+print(text, end="")
+' "${max_chars}" 2>/dev/null || true
+        )"
+    fi
+
+    if [[ -z "${text}" && -n "${input}" ]]; then
+        text="$(printf '%s' "${input}" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//' 2>/dev/null || true)"
+        if [[ -z "${text}" ]]; then
+            text="${input//$'\r'/ }"
+            text="${text//$'\n'/ }"
+            text="${text//$'\t'/ }"
+        fi
+        if [[ "${#text}" -gt "${max_chars}" ]]; then
+            text="${text:0:$((max_chars - 3))}..."
+        fi
+    fi
+
+    printf '%s' "${text}"
+}
+
+tail_file_for_event() {
+    local file_path="$1"
+    local lines="${2:-30}"
+
+    [[ "${lines}" =~ ^[0-9]+$ ]] || lines=30
+    if [[ -f "${file_path}" ]]; then
+        tail -n "${lines}" "${file_path}" 2>/dev/null || true
+    fi
+}
+
+classify_script_failure_reason_code() {
+    local script_kind="$1"
+    local script_path="$2"
+    local exit_code="$3"
+    local console_text="${4:-}"
+    local lower_text script_base
+
+    lower_text="${console_text,,}"
+    script_base="$(basename "${script_path}")"
+
+    case "${exit_code}" in
+        126)
+            printf '%s\n' "${script_kind}_script_not_executable"
+            return 0
+            ;;
+        127)
+            printf '%s\n' "${script_kind}_script_or_command_not_found"
+            return 0
+            ;;
+        130)
+            printf '%s\n' "${script_kind}_script_interrupted"
+            return 0
+            ;;
+    esac
+
+    if [[ "${lower_text}" == *"camera still command not found"* || "${lower_text}" == *"rpicam-still or libcamera-still not found"* ]]; then
+        printf '%s\n' "camera_still_command_missing"
+    elif [[ "${lower_text}" == *"camera video command not found"* || "${lower_text}" == *"rpicam-vid or libcamera-vid not found"* ]]; then
+        printf '%s\n' "camera_video_command_missing"
+    elif [[ "${lower_text}" == *"invalid focus lens-position"* ]]; then
+        printf '%s\n' "invalid_focus_setting"
+    elif [[ "${lower_text}" == *"invalid recording fps"* ]]; then
+        printf '%s\n' "invalid_fps_setting"
+    elif [[ "${lower_text}" == *"invalid recording length"* ]]; then
+        printf '%s\n' "invalid_length_setting"
+    elif [[ "${lower_text}" == *"invalid recording segment"* ]]; then
+        printf '%s\n' "invalid_segment_setting"
+    elif [[ "${lower_text}" == *"invalid recording intra"* ]]; then
+        printf '%s\n' "invalid_intra_setting"
+    elif [[ "${lower_text}" == *"invalid recording photo-every"* || "${lower_text}" == *"photo-every value is too small"* ]]; then
+        printf '%s\n' "invalid_photo_every_setting"
+    elif [[ "${lower_text}" == *"invalid recording name"* ]]; then
+        printf '%s\n' "invalid_recording_name"
+    elif [[ "${lower_text}" == *"invalid video resolution"* ]]; then
+        printf '%s\n' "invalid_video_resolution"
+    elif [[ "${lower_text}" == *"no cameras available"* || "${lower_text}" == *"no camera available"* || "${lower_text}" == *"no cameras detected"* || "${lower_text}" == *"cannot find camera"* || "${lower_text}" == *"camera not found"* || "${lower_text}" == *"failed to register camera"* ]]; then
+        printf '%s\n' "camera_not_detected"
+    elif [[ "${lower_text}" == *"device or resource busy"* || "${lower_text}" == *"camera in use"* || "${lower_text}" == *"failed to acquire camera"* ]]; then
+        printf '%s\n' "camera_busy"
+    elif [[ "${lower_text}" == *"permission denied"* ]]; then
+        printf '%s\n' "permission_denied"
+    elif [[ "${script_base}" == "video.py" || "${script_base}" == "video.sh" || "${script_base}" == "video" ]]; then
+        printf '%s\n' "video_recording_failed"
+    elif [[ "${script_base}" == "photos.py" || "${script_base}" == "photos.sh" || "${script_base}" == "photos" ]]; then
+        printf '%s\n' "photo_recording_failed"
+    else
+        printf '%s\n' "${script_kind}_script_failed"
+    fi
+}
+
+build_script_failure_reason_detail() {
+    local script_kind="$1"
+    local capture_dir="$2"
+    local script_path="$3"
+    local exit_code="$4"
+    local console_log_path="$5"
+    local diagnostic_path="${6:-}"
+    local tail_text compact_tail detail
+
+    tail_text="$(tail_file_for_event "${console_log_path}" 30)"
+    compact_tail="$(compact_report_text_for_event "${tail_text}" 700)"
+
+    detail="script_kind=${script_kind}; script=${script_path}; capture_dir=${capture_dir}; exit_code=${exit_code}"
+    if [[ -n "${diagnostic_path}" ]]; then
+        detail+="; diagnostic=${diagnostic_path}"
+    fi
+    if [[ -n "${compact_tail}" ]]; then
+        detail+="; last_output=${compact_tail}"
+    else
+        detail+="; last_output=(empty)"
+    fi
+
+    compact_report_text_for_event "${detail}" 900
+}
+
 normalize_device_id() {
     local input="${1:-}"
     input="${input//$'\r'/}"
@@ -1457,23 +1607,36 @@ publish_recording_event() {
     local capture_dir="${5:-}"
     local script_path="${6:-}"
     local exit_code="${7:-}"
+    local reason_code="${8:-}"
+    local reason_detail="${9:-}"
+    local diagnostic_file="${10:-}"
 
     if [[ "${MQTT_EVENT_ENABLED,,}" != "true" ]]; then
         return 0
     fi
 
-    local device_id topic timestamp payload
+    local device_id topic timestamp payload event_message reason_text
     resolve_device_id >/dev/null
     device_id="${DEVICE_ID_CACHE}"
     topic="$(build_fleet_event_topic "${device_id}")"
     timestamp="$(date +%s)"
+    event_message="${message}"
+    reason_text=""
+    if [[ -n "${reason_code}" ]]; then
+        reason_text="${reason_code}"
+        event_message+="; reason=${reason_code}"
+        if [[ -n "${reason_detail}" ]]; then
+            reason_text+=": ${reason_detail}"
+            event_message+="; detail=${reason_detail}"
+        fi
+    fi
 
     payload="{\"event\":\"report\""
     payload+=",\"report\":\"$(json_escape "${report_name}")\""
     payload+=",\"device_id\":\"$(json_escape "${device_id}")\""
     payload+=",\"timestamp\":${timestamp}"
     payload+=",\"severity\":\"$(json_escape "${severity}")\""
-    payload+=",\"message\":\"$(json_escape "${message}")\""
+    payload+=",\"message\":\"$(json_escape "${event_message}")\""
     payload+=",\"success\":${success_bool}"
     payload+=",\"service\":\"antscihub-recording\""
     if [[ -n "${capture_dir}" ]]; then
@@ -1484,6 +1647,18 @@ publish_recording_event() {
     fi
     if [[ -n "${exit_code}" ]]; then
         payload+=",\"exit_code\":\"$(json_escape "${exit_code}")\""
+    fi
+    if [[ -n "${reason_code}" ]]; then
+        payload+=",\"reason_code\":\"$(json_escape "${reason_code}")\""
+    fi
+    if [[ -n "${reason_detail}" ]]; then
+        payload+=",\"reason_detail\":\"$(json_escape "${reason_detail}")\""
+    fi
+    if [[ -n "${reason_text}" ]]; then
+        payload+=",\"reason\":\"$(json_escape "${reason_text}")\""
+    fi
+    if [[ -n "${diagnostic_file}" ]]; then
+        payload+=",\"diagnostic_file\":\"$(json_escape "${diagnostic_file}")\""
     fi
     payload+="}"
 
@@ -1511,10 +1686,13 @@ write_script_failure_diagnostic() {
     local exit_code="$4"
     local console_log_path="$5"
     local script_kind="$6"
+    local reason_code="${7:-}"
+    local reason_detail="${8:-}"
 
     local upload_dir timestamp_utc timestamp_slug device_id
     local target_subdir primary_dir primary_file fallback_dir fallback_file
     local diagnostic_body_tmp
+    SCRIPT_FAILURE_DIAGNOSTIC_PATH=""
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
 
     timestamp_utc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1537,6 +1715,12 @@ write_script_failure_diagnostic() {
         echo "capture_dir=${capture_dir}"
         echo "script_path=${script_path}"
         echo "exit_code=${exit_code}"
+        if [[ -n "${reason_code}" ]]; then
+            echo "reason_code=${reason_code}"
+        fi
+        if [[ -n "${reason_detail}" ]]; then
+            echo "reason_detail=${reason_detail}"
+        fi
         echo
         echo "## Console Output"
         if [[ -f "${console_log_path}" ]]; then
@@ -1548,6 +1732,7 @@ write_script_failure_diagnostic() {
 
     if mkdir -p "${primary_dir}" && cp "${diagnostic_body_tmp}" "${primary_file}" >/dev/null 2>&1; then
         rm -f "${diagnostic_body_tmp}" >/dev/null 2>&1 || true
+        SCRIPT_FAILURE_DIAGNOSTIC_PATH="${primary_file}"
         echo "wrote script failure diagnostic: ${primary_file}"
         return 0
     fi
@@ -1559,12 +1744,19 @@ write_script_failure_diagnostic() {
             echo "device_id=${device_id}"
             echo "script_kind=${script_kind}"
             echo "intended_path=${primary_file}"
+            if [[ -n "${reason_code}" ]]; then
+                echo "reason_code=${reason_code}"
+            fi
+            if [[ -n "${reason_detail}" ]]; then
+                echo "reason_detail=${reason_detail}"
+            fi
             echo "reason=failed_to_write_primary_diagnostic"
             echo
             echo "## Original Diagnostic Content"
             cat "${diagnostic_body_tmp}"
         } > "${fallback_file}"
         rm -f "${diagnostic_body_tmp}" >/dev/null 2>&1 || true
+        SCRIPT_FAILURE_DIAGNOSTIC_PATH="${fallback_file}"
         echo "wrote fallback diagnostic: ${fallback_file}"
         return 0
     fi
@@ -2436,18 +2628,25 @@ EOF
             "${record_exit_code}" || true
         record_exit_code=0
     else
-        local now_epoch_after_failure
+        local now_epoch_after_failure failure_tail failure_reason_code failure_reason_detail diagnostic_file_path
         now_epoch_after_failure="$(date +%s)"
         if [[ "${resume_enabled}" == "true" && "${now_epoch_after_failure}" -ge "${recording_end_epoch}" ]]; then
             clear_recording_resume_state_for_home "${user_home}"
         fi
+        failure_tail="$(tail_file_for_event "${record_console_log}" 30)"
+        failure_reason_code="$(classify_script_failure_reason_code "recording" "${record_script}" "${record_exit_code}" "${failure_tail}")"
+        failure_reason_detail="$(build_script_failure_reason_detail "recording" "${capture_dir}" "${record_script}" "${record_exit_code}" "${record_console_log}" "")"
         write_script_failure_diagnostic \
             "${user_home}" \
             "${capture_dir}" \
             "${record_script}" \
             "${record_exit_code}" \
             "${record_console_log}" \
-            "recording" || true
+            "recording" \
+            "${failure_reason_code}" \
+            "${failure_reason_detail}" || true
+        diagnostic_file_path="${SCRIPT_FAILURE_DIAGNOSTIC_PATH}"
+        failure_reason_detail="$(build_script_failure_reason_detail "recording" "${capture_dir}" "${record_script}" "${record_exit_code}" "${record_console_log}" "${diagnostic_file_path}")"
         publish_recording_event \
             "recording_end" \
             "ERROR" \
@@ -2455,7 +2654,10 @@ EOF
             "false" \
             "${capture_dir}" \
             "${record_script}" \
-            "${record_exit_code}" || true
+            "${record_exit_code}" \
+            "${failure_reason_code}" \
+            "${failure_reason_detail}" \
+            "${diagnostic_file_path}" || true
     fi
 
     rm -f "${record_console_log}" >/dev/null 2>&1 || true
@@ -2864,13 +3066,19 @@ start_focus_check() {
             echo "antcam: warning: autofocus output parsing incomplete; diagnostic photo naming with lens-position skipped" >&2
         fi
     else
+        local focus_failure_tail focus_reason_code focus_reason_detail
+        focus_failure_tail="$(tail_file_for_event "${focus_console_log}" 30)"
+        focus_reason_code="$(classify_script_failure_reason_code "focus" "${focus_script}" "${focus_exit_code}" "${focus_failure_tail}")"
+        focus_reason_detail="$(build_script_failure_reason_detail "focus" "${capture_dir}" "${focus_script}" "${focus_exit_code}" "${focus_console_log}" "")"
         write_script_failure_diagnostic \
             "${user_home}" \
             "${capture_dir}" \
             "${focus_script}" \
             "${focus_exit_code}" \
             "${focus_console_log}" \
-            "focus" || true
+            "focus" \
+            "${focus_reason_code}" \
+            "${focus_reason_detail}" || true
     fi
 
     rm -f "${focus_console_log}" >/dev/null 2>&1 || true
@@ -3104,7 +3312,7 @@ main() {
             case "$1" in
                 set)
                     shift
-                    [[ $# -eq 1 ]] || die "usage: antcam name set <suffix>"
+                    [[ $# -eq 1 ]] || die "usage: antcam name set <name>"
                     set_name_value "$1"
                     ;;
                 report)

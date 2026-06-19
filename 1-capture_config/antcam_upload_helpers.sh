@@ -967,6 +967,54 @@ build_upload_test_remote_target() {
 
 UPLOAD_TEST_LAST_ERROR=""
 
+upload_test_compact_detail() {
+    local input="${1:-}"
+    local max_chars="${2:-700}"
+    local text
+
+    [[ "${max_chars}" =~ ^[0-9]+$ ]] || max_chars=700
+    text="$(printf '%s' "${input}" | tr '\r\n\t' '   ' | sed -E 's/[[:space:]]+/ /g; s/^[[:space:]]+//; s/[[:space:]]+$//' 2>/dev/null || true)"
+    if [[ -z "${text}" && -n "${input}" ]]; then
+        text="${input//$'\r'/ }"
+        text="${text//$'\n'/ }"
+        text="${text//$'\t'/ }"
+    fi
+    if [[ "${#text}" -gt "${max_chars}" ]]; then
+        text="${text:0:$((max_chars - 3))}..."
+    fi
+    printf '%s' "${text}"
+}
+
+upload_test_set_error() {
+    local code="$1"
+    local detail="${2:-}"
+    local compact_detail
+
+    compact_detail="$(upload_test_compact_detail "${detail}" 700)"
+    if [[ -n "${compact_detail}" ]]; then
+        UPLOAD_TEST_LAST_ERROR="${code}: ${compact_detail}"
+    else
+        UPLOAD_TEST_LAST_ERROR="${code}"
+    fi
+}
+
+upload_test_classify_rclone_output() {
+    local output_text="${1:-}"
+    local lowered="${output_text,,}"
+
+    if [[ "${lowered}" == *"failed to verify certificate"* || "${lowered}" == *"x509:"* || "${lowered}" == *"cannot validate certificate"* || "${lowered}" == *"doesn't contain any ip sans"* || "${lowered}" == *"does not contain any ip sans"* || "${lowered}" == *"certificate signed by unknown authority"* || "${lowered}" == *"certificate has expired"* ]]; then
+        printf '%s\n' "rclone_tls_certificate_failed"
+    elif [[ "${lowered}" == *"rate limit"* || "${lowered}" == *"too many requests"* || "${lowered}" == *"http error 429"* || "${lowered}" == *"status code 429"* || "${lowered}" == *"quota exceeded"* || "${lowered}" == *"throttl"* ]]; then
+        printf '%s\n' "rclone_rate_limited"
+    elif [[ "${lowered}" == *"unauthorized"* || "${lowered}" == *"forbidden"* || "${lowered}" == *"invalid_grant"* || "${lowered}" == *"couldn't login"* || "${lowered}" == *"authentication failed"* ]]; then
+        printf '%s\n' "rclone_auth_failed"
+    elif [[ "${lowered}" == *"no route to host"* || "${lowered}" == *"network is unreachable"* || "${lowered}" == *"connection refused"* || "${lowered}" == *"connection reset"* || "${lowered}" == *"i/o timeout"* || "${lowered}" == *"timeout"* ]]; then
+        printf '%s\n' "rclone_network_failed"
+    else
+        printf '%s\n' "rclone_copy_failed"
+    fi
+}
+
 upload_test_try_local_target() {
     local source_file="$1"
     local relative_path="$2"
@@ -976,38 +1024,39 @@ upload_test_try_local_target() {
     UPLOAD_TEST_LAST_ERROR=""
 
     if [[ -z "${local_target}" ]]; then
-        UPLOAD_TEST_LAST_ERROR="local_target_unset"
+        upload_test_set_error "local_target_unset" "UPLOAD_LOCAL_TARGET_PATH is empty"
         return 1
     fi
     if is_path_within_directory "${local_target}" "${upload_dir}"; then
-        UPLOAD_TEST_LAST_ERROR="local_target_inside_upload_dir"
+        upload_test_set_error "local_target_inside_upload_dir" "local_target=${local_target} upload_dir=${upload_dir}"
         return 1
     fi
     if [[ ! -d "${local_target}" ]]; then
-        UPLOAD_TEST_LAST_ERROR="local_target_missing"
+        upload_test_set_error "local_target_missing" "local_target=${local_target}"
         return 1
     fi
     if [[ ! -w "${local_target}" ]]; then
-        UPLOAD_TEST_LAST_ERROR="local_target_not_writable"
+        upload_test_set_error "local_target_not_writable" "local_target=${local_target} user=$(id -un 2>/dev/null || echo unknown)"
         return 1
     fi
 
     target_path="${local_target%/}/${relative_path}"
     target_dir="$(dirname "${target_path}")"
-    if ! mkdir -p "${target_dir}" >/dev/null 2>&1; then
-        UPLOAD_TEST_LAST_ERROR="local_target_mkdir_failed"
+    local mkdir_output cp_output mv_output
+    if ! mkdir_output="$(mkdir -p "${target_dir}" 2>&1)"; then
+        upload_test_set_error "local_target_mkdir_failed" "target_dir=${target_dir}; ${mkdir_output}"
         return 1
     fi
 
     target_tmp="${target_path}.tmp.$$.$RANDOM"
-    if ! cp "${source_file}" "${target_tmp}" >/dev/null 2>&1; then
+    if ! cp_output="$(cp "${source_file}" "${target_tmp}" 2>&1)"; then
         rm -f "${target_tmp}" >/dev/null 2>&1 || true
-        UPLOAD_TEST_LAST_ERROR="local_copy_failed"
+        upload_test_set_error "local_copy_failed" "source=${source_file}; target_tmp=${target_tmp}; ${cp_output}"
         return 1
     fi
-    if ! mv -f "${target_tmp}" "${target_path}" >/dev/null 2>&1; then
+    if ! mv_output="$(mv -f "${target_tmp}" "${target_path}" 2>&1)"; then
         rm -f "${target_tmp}" >/dev/null 2>&1 || true
-        UPLOAD_TEST_LAST_ERROR="local_move_failed"
+        upload_test_set_error "local_move_failed" "target_tmp=${target_tmp}; target=${target_path}; ${mv_output}"
         return 1
     fi
 
@@ -1025,11 +1074,11 @@ upload_test_try_cloud_target() {
     UPLOAD_TEST_LAST_ERROR=""
 
     if [[ -z "${remote_name}" ]]; then
-        UPLOAD_TEST_LAST_ERROR="cloud_remote_unset"
+        upload_test_set_error "cloud_remote_unset" "RCLONE_REMOTE is empty"
         return 1
     fi
     if ! command -v rclone >/dev/null 2>&1; then
-        UPLOAD_TEST_LAST_ERROR="rclone_not_installed"
+        upload_test_set_error "rclone_not_installed" "rclone executable was not found in PATH=${PATH:-}"
         return 1
     fi
 
@@ -1051,7 +1100,9 @@ upload_test_try_cloud_target() {
     set -e
 
     if [[ "${rclone_exit}" -ne 0 ]]; then
-        UPLOAD_TEST_LAST_ERROR="rclone_copy_failed"
+        local rclone_reason_code
+        rclone_reason_code="$(upload_test_classify_rclone_output "${rclone_output}")"
+        upload_test_set_error "${rclone_reason_code}" "exit_code=${rclone_exit}; target=${remote_target}; ${rclone_output}"
         if [[ -n "${rclone_output}" ]]; then
             printf '%s\n' "${rclone_output}" >&2
         fi
@@ -1141,6 +1192,8 @@ run_upload_test_once() {
             fi
             local_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_local_error}"
             rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "upload_test_status=failed"
+            echo "upload_test_reason=${local_reason}"
             echo "antcam: upload test failed (profile=local, reason=${local_reason})" >&2
             return 1
             ;;
@@ -1152,6 +1205,8 @@ run_upload_test_once() {
             fi
             cloud_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_cloud_error}"
             rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "upload_test_status=failed"
+            echo "upload_test_reason=${cloud_reason}"
             echo "antcam: upload test failed (profile=cloud, reason=${cloud_reason})" >&2
             return 1
             ;;
@@ -1170,6 +1225,9 @@ run_upload_test_once() {
             fi
             cloud_reason="${UPLOAD_TEST_LAST_ERROR:-unknown_cloud_error}"
             rm -f "${source_file}" >/dev/null 2>&1 || true
+            echo "upload_test_status=failed"
+            echo "upload_test_local_reason=${local_reason}"
+            echo "upload_test_cloud_reason=${cloud_reason}"
             echo "antcam: upload test failed (profile=field, local_reason=${local_reason}, cloud_reason=${cloud_reason})" >&2
             return 1
             ;;

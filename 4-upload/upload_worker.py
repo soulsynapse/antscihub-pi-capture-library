@@ -186,6 +186,7 @@ class RuntimeSettings:
     remote_path: str
     high_watermark: int
     low_watermark: int
+    transcode: str
 
 
 class UploadWorker:
@@ -275,6 +276,7 @@ class UploadWorker:
         self.upload_rclone_path_file = os.path.join(self.upload_config_dir, "upload-rclone-path.txt")
         self.upload_high_watermark_file = os.path.join(self.upload_config_dir, "upload-high-watermark-percent.txt")
         self.upload_low_watermark_file = os.path.join(self.upload_config_dir, "upload-low-watermark-percent.txt")
+        self.transcode_video_file = os.path.join(self.upload_config_dir, "transcode-video.txt")
 
         self.upload_service_name = _env("UPLOAD_SERVICE_NAME", "antscihub-upload.service")
         self.upload_stop_command = _env("UPLOAD_STOP_COMMAND", "antcam stop")
@@ -297,6 +299,7 @@ class UploadWorker:
         self.default_upload_rclone_path = _env("RCLONE_PATH", "")
         self.default_upload_high_watermark = _env("UPLOAD_HIGH_WATERMARK_PERCENT", "80")
         self.default_upload_low_watermark = _env("UPLOAD_LOW_WATERMARK_PERCENT", "70")
+        self.default_transcode_video = _env("UPLOAD_TRANSCODE_VIDEO", "off")
 
         self.max_retries = _as_int("MAX_RETRIES", 288)
         self.scan_interval = _as_int("SCAN_INTERVAL", 10)
@@ -331,6 +334,7 @@ class UploadWorker:
 
         self.device_id_cache: Optional[str] = None
         self.mqtt_publish_warning_emitted = False
+        self.ffmpeg_not_found_warned = False
         self.settings_warning_emitted = False
         self.pause_notice_emitted = False
         self.open_file_check_tool = "none"
@@ -343,6 +347,7 @@ class UploadWorker:
             remote_path="",
             high_watermark=80,
             low_watermark=70,
+            transcode="off",
         )
         self.seen_file_detections: Dict[str, bool] = {}
         self.seen_file_exclusions: Dict[str, bool] = {}
@@ -448,6 +453,16 @@ class UploadWorker:
         return value in {"protect", "rolling"}
 
     @staticmethod
+    def is_valid_transcode_value(value: str) -> bool:
+        if value in {"off", "mux"}:
+            return True
+        if value.startswith("crf:"):
+            remainder = value[4:]
+            if re.fullmatch(r"\d+", remainder):
+                return 0 <= int(remainder) <= 51
+        return False
+
+    @staticmethod
     def normalize_remote_path(value: str) -> str:
         normalized = _normalize_text(value).strip("/")
         return "" if normalized == "." else normalized
@@ -504,6 +519,10 @@ class UploadWorker:
         if low >= high:
             low = max(1, high - 10)
 
+        transcode = self.read_value_with_default(self.transcode_video_file, self.default_transcode_video).lower().strip()
+        if not self.is_valid_transcode_value(transcode):
+            transcode = "off"
+
         self.current_settings = RuntimeSettings(
             profile=profile,
             retention=retention,
@@ -513,6 +532,7 @@ class UploadWorker:
             remote_path=remote_path,
             high_watermark=high,
             low_watermark=low,
+            transcode=transcode,
         )
 
     def resolve_device_id(self) -> str:
@@ -1954,6 +1974,64 @@ WHERE id IN (
             batch.append(self.scan_file_queue.popleft())
         return batch
 
+    def transcode_video_in_place(self, file_path: str, relative_path: str) -> bool:
+        """Transcode a .h264 file to .mp4 in-place. Returns True if the file was transcoded
+        (caller should return; next scan will pick up the .mp4). Returns False if skipped or
+        failed (caller should proceed to queue the original file as-is)."""
+        mode = self.current_settings.transcode
+        if mode == "off":
+            return False
+        if not file_path.lower().endswith(".h264"):
+            return False
+        if not _cmd_exists("ffmpeg"):
+            if not self.ffmpeg_not_found_warned:
+                self.log("WARN", "transcode enabled but ffmpeg not found in PATH; uploading raw .h264")
+                self.ffmpeg_not_found_warned = True
+            return False
+
+        out_path = file_path[:-5] + ".mp4"
+        tmp_path = f"{out_path}.transcode.{os.getpid()}.{random.randint(1000, 999999)}.tmp"
+
+        if mode == "mux":
+            encode_args = ["-c:v", "copy"]
+        else:
+            crf = mode[4:]
+            encode_args = ["-c:v", "libx264", "-crf", crf, "-preset", "ultrafast"]
+
+        ffmpeg_cmd = ["ffmpeg", "-y", "-i", file_path] + encode_args + ["-an", "-movflags", "+faststart", tmp_path]
+        if _cmd_exists("nice"):
+            ffmpeg_cmd = ["nice", "-n", "19"] + ffmpeg_cmd
+
+        self.log("INFO", f"Transcoding: {relative_path} mode={mode}")
+        rc, timed_out, _ = self._run_command_with_log(ffmpeg_cmd, timeout_seconds=3600)
+
+        if rc != 0 or timed_out:
+            self.log("WARN", f"Transcode failed for {relative_path} (exit={rc} timed_out={timed_out}); uploading raw .h264")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False
+
+        try:
+            os.replace(tmp_path, out_path)
+        except Exception as exc:
+            self.log("WARN", f"Transcode rename failed for {relative_path}: {exc}; uploading raw .h264")
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+            return False
+
+        try:
+            os.remove(file_path)
+        except OSError as exc:
+            self.log("WARN", f"Could not remove original .h264 after transcode: {file_path}: {exc}")
+
+        new_relative = relative_path[:-5] + ".mp4"
+        self.log("INFO", f"Transcoded: {relative_path} → {new_relative}")
+        return True
+
     def process_scan_candidate(self, file_path: str) -> None:
         if not os.path.isfile(file_path):
             return
@@ -1991,6 +2069,9 @@ WHERE id IN (
 
         stability_interval = self.stability_interval_for_file(basename)
         if not self.is_file_stable(file_path, stability_interval):
+            return
+
+        if self.transcode_video_in_place(file_path, relative_path):
             return
 
         file_identity = self.make_file_identity(file_path, relative_path)

@@ -166,6 +166,8 @@ DEFAULT_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-hi
 UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_HIGH_WATERMARK_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/upload-low-watermark-percent.txt"
 UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH="${ANTCAM_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH:-${DEFAULT_UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/transcode-video.txt"
+TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH="${ANTCAM_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH:-${DEFAULT_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
@@ -176,6 +178,7 @@ DEFAULT_UPLOAD_RETENTION="${ANTCAM_DEFAULT_UPLOAD_RETENTION:-protect}"
 DEFAULT_UPLOAD_PAUSED="${ANTCAM_DEFAULT_UPLOAD_PAUSED:-false}"
 DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT="${ANTCAM_DEFAULT_UPLOAD_HIGH_WATERMARK_PERCENT:-80}"
 DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT="${ANTCAM_DEFAULT_UPLOAD_LOW_WATERMARK_PERCENT:-70}"
+DEFAULT_TRANSCODE_VIDEO="${ANTCAM_DEFAULT_TRANSCODE_VIDEO:-off}"
 DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TIMEOUT_SECONDS:-20}"
 DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS="${ANTCAM_DEFAULT_RECORDING_STOP_TERM_TIMEOUT_SECONDS:-10}"
 DEFAULT_UPLOAD_SERVICE_NAME="${ANTCAM_UPLOAD_SERVICE_NAME:-antscihub-upload.service}"
@@ -234,6 +237,8 @@ Usage:
   antcam upload resume
   antcam upload reload
   antcam upload prune --older-than <duration> [--dry-run]
+  antcam transcode set <off|mux|crf:N>
+  antcam transcode report
 
 Profiles are loaded from:
   /etc/antscihub/camera-profiles
@@ -278,6 +283,9 @@ Examples:
   antcam upload resume
   antcam upload reload
   antcam upload prune --older-than 72h --dry-run
+  antcam transcode set off
+  antcam transcode set mux
+  antcam transcode set crf:18
 EOF
 }
 
@@ -758,6 +766,11 @@ resolve_upload_low_watermark_file_for_home() {
     resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_UPLOAD_LOW_WATERMARK_FILE:-}" "${UPLOAD_LOW_WATERMARK_SETTINGS_RELATIVE_PATH}"
 }
 
+resolve_transcode_video_file_for_home() {
+    local user_home="$1"
+    resolve_upload_setting_file_for_home "${user_home}" "${ANTCAM_TRANSCODE_VIDEO_FILE:-}" "${TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH}"
+}
+
 resolve_upload_queue_db_for_home() {
     local user_home="$1"
 
@@ -975,6 +988,41 @@ is_valid_upload_remote_path_value() {
         return 1
     fi
     return 0
+}
+
+normalize_transcode_video_value() {
+    local value="${1:-}"
+    value="$(normalize_upload_text_value "${value}")"
+    value="${value,,}"
+    printf '%s\n' "${value}"
+}
+
+is_valid_transcode_video_value() {
+    local value="${1:-}"
+    case "${value}" in
+        off|mux)
+            return 0
+            ;;
+        crf:*)
+            local crf_n="${value#crf:}"
+            [[ "${crf_n}" =~ ^[0-9]+$ ]] || return 1
+            [[ "${crf_n}" -ge 0 && "${crf_n}" -le 51 ]] || return 1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+read_transcode_video_for_home() {
+    local user_home="$1"
+    local setting_file transcode_value
+    setting_file="$(resolve_transcode_video_file_for_home "${user_home}")"
+    transcode_value="$(read_setting_value_with_default "${setting_file}" "${DEFAULT_TRANSCODE_VIDEO}")"
+    transcode_value="$(normalize_transcode_video_value "${transcode_value}")"
+    is_valid_transcode_video_value "${transcode_value}" || die "invalid transcode-video in ${setting_file}: ${transcode_value} (expected off|mux|crf:N)"
+    printf '%s\n' "${transcode_value}"
 }
 
 read_setting_value_with_default() {
@@ -3065,6 +3113,25 @@ main() {
                     ;;
                 *)
                     die "unknown upload command: $1"
+                    ;;
+            esac
+            ;;
+        transcode)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam transcode <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam transcode set <off|mux|crf:N>"
+                    set_transcode_video_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam transcode report"
+                    report_transcode_video_value
+                    ;;
+                *)
+                    die "unknown transcode action: $1"
                     ;;
             esac
             ;;

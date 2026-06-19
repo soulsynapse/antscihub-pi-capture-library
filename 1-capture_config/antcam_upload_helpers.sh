@@ -85,6 +85,56 @@ write_antcam_diagnostic_payload_file() {
     return 1
 }
 
+read_transcode_video_effective_for_home() {
+    local user_home="$1"
+    local setting_file transcode_value fallback_value
+    setting_file="$(resolve_transcode_video_file_for_home "${user_home}")"
+
+    fallback_value="$(read_upload_service_env_value "UPLOAD_TRANSCODE_VIDEO" || true)"
+    fallback_value="$(normalize_transcode_video_value "${fallback_value}")"
+    if ! is_valid_transcode_video_value "${fallback_value}"; then
+        fallback_value="${DEFAULT_TRANSCODE_VIDEO}"
+    fi
+
+    transcode_value="$(read_setting_value_with_default "${setting_file}" "${fallback_value}")"
+    transcode_value="$(normalize_transcode_video_value "${transcode_value}")"
+    is_valid_transcode_video_value "${transcode_value}" || die "invalid transcode-video in ${setting_file}: ${transcode_value} (expected off|mux|crf:N)"
+    printf '%s\n' "${transcode_value}"
+}
+
+set_transcode_video_for_home() {
+    local user_home="$1"
+    local transcode_value="$2"
+    local normalized_value setting_file
+    normalized_value="$(normalize_transcode_video_value "${transcode_value}")"
+    is_valid_transcode_video_value "${normalized_value}" || die "invalid transcode-video: ${transcode_value} (expected off|mux|crf:N where N is 0-51)"
+    setting_file="$(resolve_transcode_video_file_for_home "${user_home}")"
+    write_setting_value "${setting_file}" "${normalized_value}"
+}
+
+set_transcode_video_value() {
+    local transcode_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for transcode settings"
+
+    local transcode_file normalized_transcode
+    transcode_file="$(set_transcode_video_for_home "${user_home}" "${transcode_value}")"
+    normalized_transcode="$(read_transcode_video_for_home "${user_home}")"
+    echo "transcode-video set to ${normalized_transcode}"
+    echo "transcode-video settings file: ${transcode_file}"
+}
+
+report_transcode_video_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for transcode settings"
+
+    local transcode_value transcode_file
+    transcode_value="$(read_transcode_video_effective_for_home "${user_home}")"
+    transcode_file="$(resolve_transcode_video_file_for_home "${user_home}")"
+    echo "transcode_video=${transcode_value}"
+    echo "transcode_video_settings_file=${transcode_file}"
+}
+
 read_upload_effective_profile_for_home() {
     local user_home="$1"
     local setting_file profile_value fallback_value
@@ -664,8 +714,9 @@ report_upload_settings() {
     user_home="$(resolve_effective_home)" || die "could not resolve user home for upload settings"
 
     local upload_dir queue_db profile retention paused local_target remote_name remote_path
-    local high_watermark low_watermark profile_file retention_file paused_file
-    local local_target_file remote_file remote_path_file high_file low_file
+    local high_watermark low_watermark transcode_value
+    local profile_file retention_file paused_file
+    local local_target_file remote_file remote_path_file high_file low_file transcode_file
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     queue_db="$(resolve_upload_queue_db_for_home "${user_home}")"
     profile="$(read_upload_effective_profile_for_home "${user_home}")"
@@ -676,6 +727,7 @@ report_upload_settings() {
     remote_path="$(read_upload_effective_rclone_path_for_home "${user_home}")"
     high_watermark="$(read_upload_effective_high_watermark_for_home "${user_home}")"
     low_watermark="$(read_upload_effective_low_watermark_for_home "${user_home}")"
+    transcode_value="$(read_transcode_video_effective_for_home "${user_home}")"
     profile_file="$(resolve_upload_profile_file_for_home "${user_home}")"
     retention_file="$(resolve_upload_retention_file_for_home "${user_home}")"
     paused_file="$(resolve_upload_paused_file_for_home "${user_home}")"
@@ -684,6 +736,7 @@ report_upload_settings() {
     remote_path_file="$(resolve_upload_rclone_path_file_for_home "${user_home}")"
     high_file="$(resolve_upload_high_watermark_file_for_home "${user_home}")"
     low_file="$(resolve_upload_low_watermark_file_for_home "${user_home}")"
+    transcode_file="$(resolve_transcode_video_file_for_home "${user_home}")"
 
     echo "upload_dir=${upload_dir}"
     echo "queue_db=${queue_db}"
@@ -706,6 +759,7 @@ report_upload_settings() {
     else
         echo "upload_rclone_target=(unset)"
     fi
+    echo "transcode_video=${transcode_value}"
     echo "upload_profile_settings_file=${profile_file}"
     echo "upload_retention_settings_file=${retention_file}"
     echo "upload_paused_settings_file=${paused_file}"
@@ -714,6 +768,7 @@ report_upload_settings() {
     echo "upload_rclone_path_settings_file=${remote_path_file}"
     echo "upload_high_watermark_settings_file=${high_file}"
     echo "upload_low_watermark_settings_file=${low_file}"
+    echo "transcode_video_settings_file=${transcode_file}"
 }
 
 report_upload_targets() {

@@ -110,7 +110,7 @@ antcam focus check
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` (`length > 0s` only)
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- Selected recording script writes to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; files repeat the same stem plus `__video-%05d.h264` or `__photo-%05d.jpg`. Example video settings tag: `1fps-focus-auto-seg-10m-intra-30-len-30h-1920x1080`.
+- Selected recording script writes to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; files include the session stem in their leaf names, like `<session-stem>-video-%05d.h264` or `<session-stem>-photo-%05d.jpg`, plus `capture-metadata.json`. The camera command runs from inside the session folder and receives only the leaf output name so long folder paths are not truncated by rpicam/libcamera output-argument limits. Photos also get a JPEG comment metadata block and `<photo-file>.metadata.json` sidecars. Example video settings tag: `1fps-foc-auto-seg-10m-intra-30-len-30h-1920x1080`.
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`), with failure `reason_code`, `reason_detail`, and `diagnostic_file` when a script fails
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/` and publishes a compact tail of the failing output
 

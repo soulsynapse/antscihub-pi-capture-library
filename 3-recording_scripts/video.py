@@ -8,6 +8,7 @@ Still uses rpicam-vid/libcamera-vid for actual capture.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import shlex
@@ -135,12 +136,29 @@ def build_video_settings_tag(
     height_value: int,
 ) -> str:
     fps_tag = f"{sanitize_capture_tag_value(fps_value, 'unknown')}fps"
-    focus_tag = f"focus-{sanitize_capture_tag_value(focus_value, 'unknown')}"
+    focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
     segment_tag = f"seg-{sanitize_capture_tag_value(segment_value, 'unknown')}"
     intra_tag = f"intra-{sanitize_capture_tag_value(intra_value, 'none')}"
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
     resolution_tag = f"{width_value}x{height_value}"
     return "-".join((fps_tag, focus_tag, segment_tag, intra_tag, length_tag, resolution_tag))
+
+
+def timestamp_iso_local() -> str:
+    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def write_json_metadata(path: Path, metadata: dict[str, object]) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(json.dumps(metadata, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def safe_write_json_metadata(path: Path, metadata: dict[str, object], label: str) -> None:
+    try:
+        write_json_metadata(path, metadata)
+    except Exception as exc:
+        log(f"failed to write {label}: path={path} error={type(exc).__name__}: {exc}")
 
 
 def parse_positive_int(raw_value: str) -> Optional[int]:
@@ -239,9 +257,10 @@ def choose_video_command() -> Optional[str]:
     return None
 
 
-def run_capture(command: str, args: list[str]) -> int:
+def run_capture(command: str, args: list[str], cwd: Optional[Path] = None) -> int:
     cmd = [command, *args]
     display = command_display(cmd)
+    run_cwd = cwd or Path.cwd()
     output_tail: deque[str] = deque(maxlen=25)
 
     try:
@@ -251,9 +270,10 @@ def run_capture(command: str, args: list[str]) -> int:
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            cwd=str(cwd) if cwd else None,
         )
     except OSError as exc:
-        log(f"capture command launch failed: command={display} cwd={Path.cwd()} error={type(exc).__name__}: {exc}")
+        log(f"capture command launch failed: command={display} cwd={run_cwd} error={type(exc).__name__}: {exc}")
         return 127 if isinstance(exc, FileNotFoundError) else 1
 
     if process.stdout is not None:
@@ -265,7 +285,7 @@ def run_capture(command: str, args: list[str]) -> int:
     return_code = int(process.wait() or 0)
     if return_code != 0:
         tail_text = compact_detail("\n".join(output_tail)) or "(empty)"
-        log(f"capture command failed: exit_code={return_code} command={display} cwd={Path.cwd()} output_tail={tail_text}")
+        log(f"capture command failed: exit_code={return_code} command={display} cwd={run_cwd} output_tail={tail_text}")
     return return_code
 
 
@@ -408,9 +428,42 @@ def main() -> int:
     )
     session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
     session_dir = upload_dir / session_stem
-    video_output_pattern = session_dir / f"{session_stem}__video-%05d.h264"
+    video_output_leaf_pattern = f"{session_stem}-video-%05d.h264"
+    video_output_pattern = session_dir / video_output_leaf_pattern
     if not ensure_directory(session_dir, "session directory"):
         return 13
+
+    session_metadata: dict[str, object] = {
+        "schema": "antscihub.capture.v1",
+        "capture_type": "video",
+        "created_at": timestamp_iso_local(),
+        "session": {
+            "name": name_value,
+            "hostname": session_hostname,
+            "settings_tag": settings_tag,
+            "timestamp": session_timestamp,
+            "stem": session_stem,
+            "folder": str(session_dir),
+            "output_pattern": video_output_leaf_pattern,
+        },
+        "settings": {
+            "focus_lens_position": focus_value,
+            "recording_fps": fps_value,
+            "recording_length": length_value,
+            "recording_length_ms": length_ms,
+            "recording_segment": segment_value,
+            "recording_segment_ms": segment_ms,
+            "recording_intra": intra_value,
+            "resolution": f"{width_value}x{height_value}",
+            "video_width": width_value,
+            "video_height": height_value,
+        },
+        "file_metadata": {
+            "embedded_in_video": False,
+            "reason": "raw_h264_segments_use_session_sidecar_metadata",
+        },
+    }
+    safe_write_json_metadata(session_dir / "capture-metadata.json", session_metadata, "session metadata")
 
     log(f"Using video command: {video_cmd}")
     if is_auto_focus_value(focus_value):
@@ -430,6 +483,7 @@ def main() -> int:
     log(f"Capture settings tag: {settings_tag}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {video_output_pattern}")
+    log(f"Camera command cwd: {session_dir}")
     log("Recording mode: single rpicam process with --segment (avoids per-clip startup loss)")
 
     capture_timeout_ms = length_ms if length_ms > 0 else 0
@@ -449,7 +503,7 @@ def main() -> int:
         "--segment",
         str(segment_ms),
         "--output",
-        str(video_output_pattern),
+        video_output_leaf_pattern,
     ]
     if intra_value != "none":
         video_args.extend(["--intra", intra_value])
@@ -460,7 +514,7 @@ def main() -> int:
         "Starting segmented capture: "
         f"timeout={capture_timeout_ms}ms segment={segment_ms}ms output={video_output_pattern}"
     )
-    return run_capture(video_cmd, video_args)
+    return run_capture(video_cmd, video_args, cwd=session_dir)
 
 
 if __name__ == "__main__":

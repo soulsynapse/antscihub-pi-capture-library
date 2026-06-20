@@ -38,7 +38,7 @@ antcam focus check
 11. Run the selected script from inside `<desktop>/4-CAPTURE`.
 12. Write active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for `antcam stop`.
 13. For finite lengths (`length > 0s`), write resume-window state to `<desktop>/4-CAPTURE/config/recording-resume-state.env`.
-14. Selected script writes outputs to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; output files repeat that stem plus `__video-%05d.h264` or `__photo-%05d.jpg`. Video settings look like `1fps-focus-auto-seg-10m-intra-30-len-30h-1920x1080`; photo settings look like `focus-auto-photo-every-1m-len-30h`.
+14. Selected script writes outputs to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; output files include the session stem in their leaf names, like `<session-stem>-video-%05d.h264` or `<session-stem>-photo-%05d.jpg`, plus `capture-metadata.json`. The camera command runs from inside the session folder and receives only the leaf output name so long folder paths are not truncated by rpicam/libcamera output-argument limits. Photos also get a JPEG comment metadata block and `<photo-file>.metadata.json` sidecars. Video settings look like `1fps-foc-auto-seg-10m-intra-30-len-30h-1920x1080`; photo settings look like `foc-auto-1ppm-len-30h`.
 15. Publish encrypted Fleet report messages when recording starts and ends.
    - Topic: `fleet/report/{DEVICE_ID}` (or `FLEET_EVENT_TOPIC_TEMPLATE` override)
    - Payload includes `event=report`, `report=recording_start|recording_end`, `device_id`, `timestamp`, `severity`, `success`, plus `exit_code` and failure `reason`, `reason_code`, `reason_detail`, `diagnostic_file` when available
@@ -73,7 +73,7 @@ Bundled recording scripts:
   - For positive length with positive `photo-every`, captures occur at `t=0` and then every interval while `scheduled_time <= length`
   - Supports `ANTCAM_RECORDING_START_EPOCH_MS` schedule anchor override for power-loss resume alignment
   - Applies `--lens-position` from the saved focus setting, or omits it when focus is `auto`
-  - Writes photos to `<desktop>/5-UPLOAD/name__hostname__focus-auto-photo-every-1m-len-30h__YYYY-MM-DD_HH-MM-SS/name__hostname__focus-auto-photo-every-1m-len-30h__YYYY-MM-DD_HH-MM-SS__photo-%05d.jpg`
+  - Writes photos to `<desktop>/5-UPLOAD/name__hostname__foc-auto-1ppm-len-30h__YYYY-MM-DD_HH-MM-SS/<session-stem>-photo-%05d.jpg`, with embedded JPEG metadata and `<photo-file>.metadata.json` sidecars
 
 `antcam focus check` behavior:
 

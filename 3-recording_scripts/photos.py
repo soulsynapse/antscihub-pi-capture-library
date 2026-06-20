@@ -8,6 +8,7 @@ Still uses rpicam-still/libcamera-still for actual capture.
 from __future__ import annotations
 
 import datetime as _dt
+import json
 import os
 import re
 import shlex
@@ -120,11 +121,97 @@ def sanitize_capture_tag_value(value: str, fallback: str) -> str:
     return tag or fallback
 
 
+def build_photo_interval_tag(photo_every_value: str) -> str:
+    normalized = normalize_duration_value(photo_every_value)
+    if normalized in {"none", "0"}:
+        return "oneshot"
+
+    match = re.fullmatch(r"([0-9]+)([hms])", normalized)
+    if match:
+        amount = match.group(1)
+        unit = match.group(2)
+        if amount == "1":
+            return f"1pp{unit}"
+        return f"1pp{amount}{unit}"
+
+    return f"1pp{sanitize_capture_tag_value(normalized, 'unknown')}"
+
+
 def build_photo_settings_tag(focus_value: str, photo_every_value: str, length_value: str) -> str:
-    focus_tag = f"focus-{sanitize_capture_tag_value(focus_value, 'unknown')}"
-    photo_every_tag = f"photo-every-{sanitize_capture_tag_value(photo_every_value, 'unknown')}"
+    focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
+    photo_interval_tag = build_photo_interval_tag(photo_every_value)
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
-    return "-".join((focus_tag, photo_every_tag, length_tag))
+    return "-".join((focus_tag, photo_interval_tag, length_tag))
+
+
+def timestamp_iso_local() -> str:
+    return _dt.datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def compact_json_metadata(metadata: dict[str, object]) -> str:
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def write_json_metadata(path: Path, metadata: dict[str, object]) -> None:
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    tmp_path.write_text(json.dumps(metadata, indent=2, sort_keys=True, ensure_ascii=True) + "\n", encoding="utf-8")
+    tmp_path.replace(path)
+
+
+def safe_write_json_metadata(path: Path, metadata: dict[str, object], label: str) -> None:
+    try:
+        write_json_metadata(path, metadata)
+    except Exception as exc:
+        log(f"failed to write {label}: path={path} error={type(exc).__name__}: {exc}")
+
+
+def embed_jpeg_comment(path: Path, comment_text: str) -> None:
+    comment_bytes = comment_text.encode("utf-8")
+    if len(comment_bytes) > 65530:
+        raise ValueError(f"JPEG comment too large: {len(comment_bytes)} bytes")
+
+    original = path.read_bytes()
+    if not original.startswith(b"\xff\xd8"):
+        raise ValueError("not a JPEG file; missing SOI marker")
+
+    segment_length = len(comment_bytes) + 2
+    comment_segment = b"\xff\xfe" + segment_length.to_bytes(2, "big") + comment_bytes
+    tmp_path = path.with_name(f".{path.name}.metadata-tmp")
+    tmp_path.write_bytes(original[:2] + comment_segment + original[2:])
+    tmp_path.replace(path)
+
+
+def safe_embed_jpeg_metadata(path: Path, metadata: dict[str, object]) -> None:
+    try:
+        embed_jpeg_comment(path, "AntSciHubCaptureMetadata=" + compact_json_metadata(metadata))
+    except Exception as exc:
+        log(f"failed to embed JPEG metadata: path={path} error={type(exc).__name__}: {exc}")
+
+
+def build_photo_file_metadata(
+    session_metadata: dict[str, object],
+    session_stem: str,
+    output_file: Path,
+    capture_index: int,
+    scheduled_epoch_ms: Optional[int],
+    started_at: str,
+    completed_at: str,
+) -> dict[str, object]:
+    metadata = dict(session_metadata)
+    metadata["file"] = {
+        "basename": output_file.name,
+        "relative_path": f"{session_stem}/{output_file.name}",
+        "capture_index": capture_index,
+        "scheduled_epoch_ms": scheduled_epoch_ms,
+        "capture_started_at": started_at,
+        "capture_completed_at": completed_at,
+    }
+    return metadata
+
+
+def persist_photo_file_metadata(output_file: Path, metadata: dict[str, object]) -> None:
+    safe_embed_jpeg_metadata(output_file, metadata)
+    safe_write_json_metadata(output_file.with_name(f"{output_file.name}.metadata.json"), metadata, "photo metadata sidecar")
 
 
 def parse_positive_int(raw_value: str) -> Optional[int]:
@@ -224,9 +311,10 @@ def choose_still_command() -> Optional[str]:
     return None
 
 
-def run_capture(command: str, args: list[str]) -> int:
+def run_capture(command: str, args: list[str], cwd: Optional[Path] = None) -> int:
     cmd = [command, *args]
     display = command_display(cmd)
+    run_cwd = cwd or Path.cwd()
     output_tail: deque[str] = deque(maxlen=25)
 
     try:
@@ -236,9 +324,10 @@ def run_capture(command: str, args: list[str]) -> int:
             stderr=subprocess.STDOUT,
             text=True,
             errors="replace",
+            cwd=str(cwd) if cwd else None,
         )
     except OSError as exc:
-        log(f"capture command launch failed: command={display} cwd={Path.cwd()} error={type(exc).__name__}: {exc}")
+        log(f"capture command launch failed: command={display} cwd={run_cwd} error={type(exc).__name__}: {exc}")
         return 127 if isinstance(exc, FileNotFoundError) else 1
 
     if process.stdout is not None:
@@ -250,8 +339,38 @@ def run_capture(command: str, args: list[str]) -> int:
     return_code = int(process.wait() or 0)
     if return_code != 0:
         tail_text = compact_detail("\n".join(output_tail)) or "(empty)"
-        log(f"capture command failed: exit_code={return_code} command={display} cwd={Path.cwd()} output_tail={tail_text}")
+        log(f"capture command failed: exit_code={return_code} command={display} cwd={run_cwd} output_tail={tail_text}")
     return return_code
+
+
+def describe_session_files(session_dir: Path, limit: int = 20) -> str:
+    try:
+        entries = []
+        for path in sorted(session_dir.iterdir(), key=lambda item: item.name)[:limit]:
+            if not path.is_file():
+                continue
+            try:
+                size_text = f"{path.stat().st_size}B"
+            except OSError:
+                size_text = "size-unavailable"
+            entries.append(f"{path.name}({size_text})")
+        return ",".join(entries) or "(no files)"
+    except OSError as exc:
+        return f"(unable to list session dir: {type(exc).__name__}: {exc})"
+
+
+def verify_capture_output(output_file: Path, requested_output: str, session_dir: Path) -> bool:
+    try:
+        if output_file.is_file() and output_file.stat().st_size > 0:
+            return True
+    except OSError:
+        pass
+    log(
+        "capture output missing or empty after successful command: "
+        f"requested_output={requested_output} expected_path={output_file} "
+        f"camera_cwd={session_dir} session_dir_files={describe_session_files(session_dir)}"
+    )
+    return False
 
 
 def main() -> int:
@@ -363,9 +482,34 @@ def main() -> int:
     settings_tag = build_photo_settings_tag(focus_value, photo_every_value, length_value)
     session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
     session_dir = upload_dir / session_stem
-    photo_output_pattern = session_dir / f"{session_stem}__photo-%05d.jpg"
+    photo_output_leaf_pattern = f"{session_stem}-photo-%05d.jpg"
+    photo_output_pattern = session_dir / photo_output_leaf_pattern
     if not ensure_directory(session_dir, "session directory"):
         return 13
+
+    session_metadata: dict[str, object] = {
+        "schema": "antscihub.capture.v1",
+        "capture_type": "photos",
+        "created_at": timestamp_iso_local(),
+        "session": {
+            "name": name_value,
+            "hostname": session_hostname,
+            "settings_tag": settings_tag,
+            "timestamp": session_timestamp,
+            "stem": session_stem,
+            "folder": str(session_dir),
+            "output_pattern": photo_output_leaf_pattern,
+        },
+        "settings": {
+            "focus_lens_position": focus_value,
+            "recording_length": length_value,
+            "recording_length_ms": length_ms,
+            "photo_every": photo_every_value,
+            "photo_every_ms": photo_every_ms,
+            "photo_every_enabled": photo_every_enabled,
+        },
+    }
+    safe_write_json_metadata(session_dir / "capture-metadata.json", session_metadata, "session metadata")
 
     log(f"Using still command: {still_cmd}")
     if is_auto_focus_value(focus_value):
@@ -385,6 +529,7 @@ def main() -> int:
     log(f"Capture settings tag: {settings_tag}")
     log(f"Session folder: {session_dir}")
     log(f"Output pattern: {photo_output_pattern}")
+    log(f"Camera command cwd: {session_dir}")
 
     still_args = [
         "--nopreview",
@@ -397,9 +542,24 @@ def main() -> int:
 
     if (not photo_every_enabled) or length_ms <= 0:
         # One-shot path: disabled scheduling, or non-positive length.
-        output_file = session_dir / f"{session_stem}__photo-00000.jpg"
+        output_leaf = f"{session_stem}-photo-00000.jpg"
+        output_file = session_dir / output_leaf
         log(f"Starting photo index=0 output={output_file}")
-        rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
+        capture_started_at = timestamp_iso_local()
+        rc = run_capture(still_cmd, [*still_args, "--output", output_leaf], cwd=session_dir)
+        if rc == 0 and not verify_capture_output(output_file, output_leaf, session_dir):
+            return 14
+        if rc == 0:
+            file_metadata = build_photo_file_metadata(
+                session_metadata,
+                session_stem,
+                output_file,
+                0,
+                None,
+                capture_started_at,
+                timestamp_iso_local(),
+            )
+            persist_photo_file_metadata(output_file, file_metadata)
         return rc
 
     start_epoch_ms = now_epoch_milliseconds()
@@ -439,11 +599,25 @@ def main() -> int:
         target_epoch_ms = start_epoch_ms + (capture_index * photo_every_ms)
         sleep_until_epoch_milliseconds(target_epoch_ms)
 
-        output_file = session_dir / f"{session_stem}__photo-{capture_index:05d}.jpg"
+        output_leaf = f"{session_stem}-photo-{capture_index:05d}.jpg"
+        output_file = session_dir / output_leaf
         log(f"Starting photo index={capture_index} output={output_file}")
-        rc = run_capture(still_cmd, [*still_args, "--output", str(output_file)])
+        capture_started_at = timestamp_iso_local()
+        rc = run_capture(still_cmd, [*still_args, "--output", output_leaf], cwd=session_dir)
         if rc != 0:
             return rc
+        if not verify_capture_output(output_file, output_leaf, session_dir):
+            return 14
+        file_metadata = build_photo_file_metadata(
+            session_metadata,
+            session_stem,
+            output_file,
+            capture_index,
+            target_epoch_ms,
+            capture_started_at,
+            timestamp_iso_local(),
+        )
+        persist_photo_file_metadata(output_file, file_metadata)
         capture_index += 1
 
     return 0

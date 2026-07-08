@@ -49,6 +49,7 @@ antcam focus check
 1. Resolve the active Desktop directory (including `sudo` invocation support).
 2. Read `<desktop>/4-CAPTURE/config/recording-active-state.env`.
 3. If recording PID is active, send `SIGINT` for graceful stop.
+   - Recording workers forward stop signals to any active `rpicam`/`libcamera` child and escalate if it does not exit.
    - Applies to both `video` and `photos` recording scripts.
 4. If still active after a timeout, send `SIGTERM`.
 5. Clear recording state file after the recording process exits.

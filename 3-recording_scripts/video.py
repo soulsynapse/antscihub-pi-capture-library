@@ -11,6 +11,7 @@ import datetime as _dt
 import json
 import os
 import re
+import signal
 import shlex
 import shutil
 import socket
@@ -257,11 +258,89 @@ def choose_video_command() -> Optional[str]:
     return None
 
 
+class CaptureStopRequested(Exception):
+    def __init__(self, signum: int):
+        self.signum = signum
+        super().__init__(signal_label(signum))
+
+
+def signal_label(signum: int) -> str:
+    try:
+        return signal.Signals(signum).name
+    except ValueError:
+        return f"signal-{signum}"
+
+
+def install_capture_signal_handlers() -> dict[int, object]:
+    previous_handlers: dict[int, object] = {}
+
+    def request_stop(signum: int, frame: object) -> None:
+        raise CaptureStopRequested(signum)
+
+    for signum in (signal.SIGINT, signal.SIGTERM):
+        previous_handlers[signum] = signal.getsignal(signum)
+        signal.signal(signum, request_stop)
+    return previous_handlers
+
+
+def restore_signal_handlers(previous_handlers: dict[int, object]) -> None:
+    for signum, handler in previous_handlers.items():
+        signal.signal(signum, handler)
+
+
+def signal_capture_process(process: subprocess.Popen[str], signum: int) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(process.pid, signum)
+        else:
+            process.send_signal(signum)
+    except ProcessLookupError:
+        return
+
+
+def wait_for_capture_process(process: subprocess.Popen[str], timeout_seconds: float) -> bool:
+    try:
+        process.wait(timeout=timeout_seconds)
+        return True
+    except subprocess.TimeoutExpired:
+        return False
+
+
+def stop_capture_process(process: subprocess.Popen[str], signum: int, display: str, run_cwd: Path) -> None:
+    if process.poll() is not None:
+        return
+
+    log(
+        "capture command stop requested: "
+        f"signal={signal_label(signum)} pid={process.pid} command={display} cwd={run_cwd}"
+    )
+    signal_capture_process(process, signum)
+    if wait_for_capture_process(process, 10):
+        return
+
+    if signum != signal.SIGTERM:
+        log(f"capture command still running after {signal_label(signum)}; sending SIGTERM: pid={process.pid}")
+        signal_capture_process(process, signal.SIGTERM)
+        if wait_for_capture_process(process, 5):
+            return
+
+    log(f"capture command still running after graceful stop; killing: pid={process.pid}")
+    if os.name != "nt" and hasattr(signal, "SIGKILL"):
+        signal_capture_process(process, signal.SIGKILL)
+    else:
+        process.kill()
+    wait_for_capture_process(process, 5)
+
+
 def run_capture(command: str, args: list[str], cwd: Optional[Path] = None) -> int:
     cmd = [command, *args]
     display = command_display(cmd)
     run_cwd = cwd or Path.cwd()
     output_tail: deque[str] = deque(maxlen=25)
+    process: Optional[subprocess.Popen[str]] = None
+    previous_handlers = install_capture_signal_handlers()
 
     try:
         process = subprocess.Popen(
@@ -271,22 +350,33 @@ def run_capture(command: str, args: list[str], cwd: Optional[Path] = None) -> in
             text=True,
             errors="replace",
             cwd=str(cwd) if cwd else None,
+            start_new_session=os.name != "nt",
         )
+
+        if process.stdout is not None:
+            for line in process.stdout:
+                sys.stderr.write(line)
+                sys.stderr.flush()
+                output_tail.append(line.rstrip())
+
+        return_code = int(process.wait() or 0)
+        if return_code != 0:
+            tail_text = compact_detail("\n".join(output_tail)) or "(empty)"
+            log(f"capture command failed: exit_code={return_code} command={display} cwd={run_cwd} output_tail={tail_text}")
+        return return_code
     except OSError as exc:
         log(f"capture command launch failed: command={display} cwd={run_cwd} error={type(exc).__name__}: {exc}")
         return 127 if isinstance(exc, FileNotFoundError) else 1
-
-    if process.stdout is not None:
-        for line in process.stdout:
-            sys.stderr.write(line)
-            sys.stderr.flush()
-            output_tail.append(line.rstrip())
-
-    return_code = int(process.wait() or 0)
-    if return_code != 0:
-        tail_text = compact_detail("\n".join(output_tail)) or "(empty)"
-        log(f"capture command failed: exit_code={return_code} command={display} cwd={run_cwd} output_tail={tail_text}")
-    return return_code
+    except CaptureStopRequested as exc:
+        if process is not None:
+            stop_capture_process(process, exc.signum, display, run_cwd)
+        return 128 + exc.signum
+    except KeyboardInterrupt:
+        if process is not None:
+            stop_capture_process(process, signal.SIGINT, display, run_cwd)
+        return 130
+    finally:
+        restore_signal_handlers(previous_handlers)
 
 
 def main() -> int:

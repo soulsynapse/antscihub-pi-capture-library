@@ -1165,11 +1165,11 @@ signal_pid_and_children() {
     local pid="$2"
     is_pid_value "${pid}" || return 1
 
-    kill "-${signal_name}" "${pid}" >/dev/null 2>&1 || true
-
     if command -v pkill >/dev/null 2>&1; then
         pkill "-${signal_name}" -P "${pid}" >/dev/null 2>&1 || true
     fi
+
+    kill "-${signal_name}" "${pid}" >/dev/null 2>&1 || true
 
     return 0
 }

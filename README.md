@@ -114,7 +114,7 @@ antcam focus check
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`), with failure `reason_code`, `reason_detail`, and `diagnostic_file` when a script fails
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/` and publishes a compact tail of the failing output
 
-`antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed).
+`antcam stop` resolves the active recording state file and gracefully stops the active recording process (`SIGINT` first, then `SIGTERM` if needed). The recording workers forward stop signals to any active `rpicam`/`libcamera` child so the camera pipeline is released.
 `antcam recording resume-if-needed` resumes pending finite recordings if the saved recording window has remaining time. `antscihub-recording-resume.service` runs this command automatically on boot.
 
 Bundled recording scripts:

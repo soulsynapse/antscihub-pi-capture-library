@@ -124,6 +124,7 @@ Current bundled profiles:
 - If the recording script fails, `antcam start` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/` and includes the compact failure detail in MQTT
 - `antcam focus check` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus check` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
+- `antcam focus check` uses the saved EV setting from `antcam ev set <value|auto>`; `auto` omits `--ev`, numeric values including `0` add `--ev <value>`
 - `antcam focus check` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
 - `antcam focus check` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` as `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
 - If the autofocus helper fails, `antcam focus check` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`

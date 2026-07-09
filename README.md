@@ -129,6 +129,7 @@ Bundled recording scripts:
 
 - Creates `<desktop>/4-CAPTURE` if missing
 - Runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
+- Uses the saved EV setting from `antcam ev set <value|auto>`; `auto` omits `--ev`, numeric values including `0` add `--ev <value>`
 - Final output is the `lens-position` value for direct use with `rpicam-vid --lens-position <value>`
 - Drops a focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` named `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
 - On autofocus helper failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`

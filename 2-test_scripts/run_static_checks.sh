@@ -169,6 +169,8 @@ grep -q 'autofocus-mode auto' "${REPO_ROOT}/1-capture_config/antcam_focus_autofo
 grep -q 'autofocus-on-capture' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 grep -q 'LensPosition=' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 grep -q 'FOCUS_IMAGE_PATH=' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
+grep -q 'ANTCAM_RECORDING_EV' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
+grep -q -- '--ev' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 grep -q 'rpicam-vid --lens-position' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 echo "[static-checks] OK focus helper checks"
 

@@ -3121,9 +3121,11 @@ start_focus_check() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for focus path"
 
-    local capture_dir focus_script
+    local capture_dir focus_script ev_value ev_file
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     focus_script="$(resolve_focus_script_path)" || die "focus script not found (expected 1-capture_config/antcam_focus_autofocus.sh or /etc/antscihub/antcam_focus_autofocus.sh)"
+    ev_value="$(read_ev_setting_for_home "${user_home}")"
+    ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -3135,6 +3137,11 @@ start_focus_check() {
 
     echo "capture directory: ${capture_dir}"
     echo "starting focus script: ${focus_script}"
+    if [[ "${ev_value}" == "auto" ]]; then
+        echo "focus check ev: auto (no --ev override)"
+    else
+        echo "focus check ev: ${ev_value}"
+    fi
 
     local focus_exit_code=0
     local focus_console_log
@@ -3146,6 +3153,8 @@ start_focus_check() {
     set +e
     (
         cd "${capture_dir}"
+        ANTCAM_EV_VALUE_FILE="${ev_file}" \
+        ANTCAM_RECORDING_EV="${ev_value}" \
         bash "${focus_script}"
     ) 2>&1 | tee "${focus_console_log}"
     focus_exit_code="${PIPESTATUS[0]}"

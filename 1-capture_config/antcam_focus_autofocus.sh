@@ -12,11 +12,43 @@ log() {
     echo "[focus] $*" >&2
 }
 
+normalize_ev_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="${raw_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
 mkdir -p "${capture_dir}"
 
 if [[ ! "${focus_sweep_start_lens_position}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
     log "invalid close-start lens position: ${focus_sweep_start_lens_position} (set ANTCAM_FOCUS_SWEEP_START_LENS_POSITION to a numeric value)"
     exit 3
+fi
+
+ev_raw_value="${ANTCAM_RECORDING_EV:-}"
+if [[ -z "${ev_raw_value}" && -n "${ANTCAM_EV_VALUE_FILE:-}" && -f "${ANTCAM_EV_VALUE_FILE}" ]]; then
+    ev_raw_value="$(head -n 1 "${ANTCAM_EV_VALUE_FILE}" 2>/dev/null || true)"
+fi
+ev_value="$(normalize_ev_value "${ev_raw_value:-auto}" || true)"
+if [[ -z "${ev_value}" ]]; then
+    log "invalid EV compensation value: ${ev_raw_value} (set with: antcam ev set <value|auto>)"
+    exit 4
+fi
+ev_args=()
+if [[ "${ev_value}" != "auto" ]]; then
+    ev_args=(--ev "${ev_value}")
 fi
 
 camera_cmd=()
@@ -35,6 +67,11 @@ log "Metadata output: ${metadata_file}"
 log "FOCUS_IMAGE_PATH=${image_file}"
 log "FOCUS_METADATA_PATH=${metadata_file}"
 log "Pre-positioning lens at close start: ${focus_sweep_start_lens_position}"
+if [[ "${ev_value}" == "auto" ]]; then
+    log "EV compensation: auto (no --ev override)"
+else
+    log "EV compensation: ${ev_value}"
+fi
 
 set +e
 "${camera_cmd[@]}" \
@@ -42,6 +79,7 @@ set +e
     --timeout 1 \
     --autofocus-mode manual \
     --lens-position "${focus_sweep_start_lens_position}" \
+    "${ev_args[@]}" \
     --output /dev/null >/dev/null 2>>"${log_file}"
 preposition_exit="$?"
 set -e
@@ -59,6 +97,7 @@ set +e
     --autofocus-on-capture \
     --metadata "${metadata_file}" \
     --metadata-format txt \
+    "${ev_args[@]}" \
     --output "${image_file}" 2>&1 | tee -a "${log_file}" >&2
 capture_exit="${PIPESTATUS[0]}"
 set -e

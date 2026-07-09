@@ -117,6 +117,15 @@ def normalize_intra_value(value: str) -> str:
     return ""
 
 
+def normalize_ev_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", normalized) is not None:
+        return normalized
+    return ""
+
+
 def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
 
@@ -130,6 +139,7 @@ def sanitize_capture_tag_value(value: str, fallback: str) -> str:
 def build_video_settings_tag(
     fps_value: str,
     focus_value: str,
+    ev_value: str,
     segment_value: str,
     intra_value: str,
     length_value: str,
@@ -138,11 +148,12 @@ def build_video_settings_tag(
 ) -> str:
     fps_tag = f"{sanitize_capture_tag_value(fps_value, 'unknown')}fps"
     focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
+    ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
     segment_tag = f"seg-{sanitize_capture_tag_value(segment_value, 'unknown')}"
     intra_tag = f"intra-{sanitize_capture_tag_value(intra_value, 'none')}"
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
     resolution_tag = f"{width_value}x{height_value}"
-    return "-".join((fps_tag, focus_tag, segment_tag, intra_tag, length_tag, resolution_tag))
+    return "-".join((fps_tag, focus_tag, ev_tag, segment_tag, intra_tag, length_tag, resolution_tag))
 
 
 def timestamp_iso_local() -> str:
@@ -200,6 +211,13 @@ def resolve_focus_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "focus-lens-position.txt"
+
+
+def resolve_ev_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_EV_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-ev.txt"
 
 
 def resolve_fps_file_path(capture_dir: Path) -> Path:
@@ -384,6 +402,7 @@ def main() -> int:
     capture_dir = Path(capture_dir_arg).expanduser()
 
     focus_file = resolve_focus_file_path(capture_dir)
+    ev_file = resolve_ev_file_path(capture_dir)
     fps_file = resolve_fps_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
@@ -404,6 +423,20 @@ def main() -> int:
         )
         log("set it with: antcam focus set <lens-position|auto>")
         return 3
+
+    ev_raw_value = os.environ.get("ANTCAM_RECORDING_EV", "")
+    if not ev_raw_value:
+        ev_raw_value = read_value_with_default(ev_file, "auto")
+    ev_value = normalize_ev_value(ev_raw_value)
+    if not ev_value:
+        log_invalid_setting(
+            "recording ev value",
+            ev_raw_value,
+            setting_source("ANTCAM_RECORDING_EV", ev_file),
+            "numeric EV compensation or auto",
+        )
+        log("set it with: antcam ev set <value|auto> (example: -1, 0, 0.5, auto)")
+        return 14
 
     fps_value = os.environ.get("ANTCAM_RECORDING_FPS", "")
     if not fps_value:
@@ -510,6 +543,7 @@ def main() -> int:
     settings_tag = build_video_settings_tag(
         fps_value,
         focus_value,
+        ev_value,
         segment_value,
         intra_value,
         length_value,
@@ -538,6 +572,7 @@ def main() -> int:
         },
         "settings": {
             "focus_lens_position": focus_value,
+            "recording_ev": ev_value,
             "recording_fps": fps_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
@@ -560,6 +595,10 @@ def main() -> int:
         log("Focus mode: auto (no --lens-position override)")
     else:
         log(f"Focus lens-position: {focus_value}")
+    if ev_value == "auto":
+        log("EV compensation: auto (no --ev override)")
+    else:
+        log(f"EV compensation: {ev_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     log(f"Chunk length: {segment_value} ({segment_ms} ms)")
     log("Scheduling mode: contiguous segment capture (no interval scheduling)")
@@ -597,6 +636,8 @@ def main() -> int:
     ]
     if intra_value != "none":
         video_args.extend(["--intra", intra_value])
+    if ev_value != "auto":
+        video_args.extend(["--ev", ev_value])
     if not is_auto_focus_value(focus_value):
         video_args.extend(["--lens-position", focus_value])
 

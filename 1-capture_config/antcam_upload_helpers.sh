@@ -388,6 +388,21 @@ set_focus_setting_for_home() {
     printf '%s\n' "${focus_file}"
 }
 
+set_ev_setting_for_home() {
+    local user_home="$1"
+    local ev_value="$2"
+    local normalized_ev_value
+    normalized_ev_value="$(normalize_ev_setting_value "${ev_value}" || true)"
+    [[ -n "${normalized_ev_value}" ]] || die "invalid ev value: ${ev_value} (expected numeric EV compensation or auto)"
+
+    local ev_file ev_dir
+    ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
+    ev_dir="$(dirname "${ev_file}")"
+    mkdir -p "${ev_dir}"
+    printf '%s\n' "${normalized_ev_value}" > "${ev_file}"
+    printf '%s\n' "${ev_file}"
+}
+
 set_fps_setting_for_home() {
     local user_home="$1"
     local fps_value="$2"
@@ -549,6 +564,22 @@ set_focus_value() {
     focus_file="$(set_focus_setting_for_home "${user_home}" "${focus_value}")"
     echo "focus setting set to $(read_focus_setting_for_home "${user_home}")"
     echo "focus settings file: ${focus_file}"
+}
+
+set_ev_value() {
+    local ev_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for ev settings"
+
+    local ev_file normalized_ev
+    ev_file="$(set_ev_setting_for_home "${user_home}" "${ev_value}")"
+    normalized_ev="$(read_ev_setting_for_home "${user_home}")"
+    if [[ "${normalized_ev}" == "auto" ]]; then
+        echo "recording ev set to auto (no --ev override)"
+    else
+        echo "recording ev set to ${normalized_ev}"
+    fi
+    echo "ev settings file: ${ev_file}"
 }
 
 set_fps_value() {

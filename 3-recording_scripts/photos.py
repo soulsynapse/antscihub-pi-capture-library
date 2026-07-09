@@ -104,6 +104,15 @@ def normalize_photo_every_setting_value(raw_value: str) -> str:
     return normalized
 
 
+def normalize_ev_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", normalized) is not None:
+        return normalized
+    return ""
+
+
 def is_auto_focus_value(value: str) -> bool:
     return (value or "").strip().lower() == "auto"
 
@@ -138,11 +147,12 @@ def build_photo_interval_tag(photo_every_value: str) -> str:
     return f"1pp{sanitize_capture_tag_value(normalized, 'unknown')}"
 
 
-def build_photo_settings_tag(focus_value: str, photo_every_value: str, length_value: str) -> str:
+def build_photo_settings_tag(focus_value: str, ev_value: str, photo_every_value: str, length_value: str) -> str:
     focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
+    ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
     photo_interval_tag = build_photo_interval_tag(photo_every_value)
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
-    return "-".join((focus_tag, photo_interval_tag, length_tag))
+    return "-".join((focus_tag, ev_tag, photo_interval_tag, length_tag))
 
 
 def timestamp_iso_local() -> str:
@@ -268,6 +278,13 @@ def resolve_focus_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "focus-lens-position.txt"
+
+
+def resolve_ev_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_EV_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-ev.txt"
 
 
 def resolve_length_file_path(capture_dir: Path) -> Path:
@@ -468,6 +485,7 @@ def main() -> int:
     capture_dir = Path(capture_dir_arg).expanduser()
 
     focus_file = resolve_focus_file_path(capture_dir)
+    ev_file = resolve_ev_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     photo_every_file = resolve_photo_every_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
@@ -486,6 +504,20 @@ def main() -> int:
         )
         log("set it with: antcam focus set <lens-position|auto>")
         return 3
+
+    ev_raw_value = os.environ.get("ANTCAM_RECORDING_EV", "")
+    if not ev_raw_value:
+        ev_raw_value = read_value_with_default(ev_file, "auto")
+    ev_value = normalize_ev_value(ev_raw_value)
+    if not ev_value:
+        log_invalid_setting(
+            "recording ev value",
+            ev_raw_value,
+            setting_source("ANTCAM_RECORDING_EV", ev_file),
+            "numeric EV compensation or auto",
+        )
+        log("set it with: antcam ev set <value|auto> (example: -1, 0, 0.5, auto)")
+        return 9
 
     length_value = os.environ.get("ANTCAM_RECORDING_LENGTH", "")
     if not length_value:
@@ -569,7 +601,7 @@ def main() -> int:
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    settings_tag = build_photo_settings_tag(focus_value, photo_every_value, length_value)
+    settings_tag = build_photo_settings_tag(focus_value, ev_value, photo_every_value, length_value)
     session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
     session_dir = upload_dir / session_stem
     photo_output_leaf_pattern = f"{session_stem}-photo-%05d.jpg"
@@ -592,6 +624,7 @@ def main() -> int:
         },
         "settings": {
             "focus_lens_position": focus_value,
+            "recording_ev": ev_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
             "photo_every": photo_every_value,
@@ -606,6 +639,10 @@ def main() -> int:
         log("Focus mode: auto (no --lens-position override)")
     else:
         log(f"Focus lens-position: {focus_value}")
+    if ev_value == "auto":
+        log("EV compensation: auto (no --ev override)")
+    else:
+        log(f"EV compensation: {ev_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     if photo_every_enabled:
         log(f"Photo-every interval: {photo_every_value} ({photo_every_ms} ms)")
@@ -627,6 +664,8 @@ def main() -> int:
         "--encoding",
         "jpg",
     ]
+    if ev_value != "auto":
+        still_args.extend(["--ev", ev_value])
     if not is_auto_focus_value(focus_value):
         still_args.extend(["--lens-position", focus_value])
 

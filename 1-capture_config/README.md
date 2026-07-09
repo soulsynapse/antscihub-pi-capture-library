@@ -15,6 +15,7 @@ sudo antcam apply <profile>
 sudo antcam apply <profile> --dry-run
 sudo antcam apply <profile> --no-reboot
 antcam focus set <lens-position|auto>
+antcam ev set <value|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
@@ -38,6 +39,7 @@ antcam upload reload
 antcam upload prune --older-than <duration> [--dry-run]
 antcam capture report
 antcam focus report
+antcam ev report
 antcam fps report
 antcam length report
 antcam segment report
@@ -82,6 +84,7 @@ Current bundled profiles:
 - `antcam start` requires a recording script name and resolves it from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
 - Bundled recording script names include `video` and `photos` (for example: `antcam start video`, `antcam start photos`)
 - `antcam focus set <lens-position|auto>` writes the focus setting file used by recording scripts (`auto` omits `--lens-position` at record time)
+- `antcam ev set <value|auto>` writes EV exposure compensation used by recording scripts; `auto` omits `--ev`, while numeric values including `0` add `--ev <value>`
 - `antcam fps set <value>` writes the fps setting file used by recording scripts
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
@@ -105,6 +108,7 @@ Current bundled profiles:
 - `antcam upload prune --older-than <duration> [--dry-run]` prunes old shipped artifacts from spool
 - `antcam capture report` returns a consolidated capture+recording settings report
 - `antcam focus report` returns the saved focus value (or `auto` default)
+- `antcam ev report` returns the saved EV exposure compensation value (or `auto` default)
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)

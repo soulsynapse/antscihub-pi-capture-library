@@ -3,7 +3,7 @@
 Lightweight Raspberry Pi services/scripts for:
 
 1. Manual camera profile application (`antcam`)
-2. Capture commands (`antcam focus set`, `antcam ev set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam intra set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam recording resume-if-needed`, `antcam focus check`)
+2. Capture commands (`antcam focus set`, `antcam ev set`, `antcam saturation set`, `antcam awbgains set`, `antcam fps set`, `antcam length set`, `antcam segment set`, `antcam intra set`, `antcam photo-every set`, `antcam capture report`, `antcam start`, `antcam stop`, `antcam recording resume-if-needed`, `antcam focus check`)
 3. Store-and-forward upload control (`antcam upload set ...`, `antcam upload report ...`, `antcam upload ...`) with profile routing and retention modes
 
 ## Repository Layout
@@ -70,6 +70,8 @@ Current bundled profiles:
 ```bash
 antcam focus set <lens-position|auto>
 antcam ev set <value|auto>
+antcam saturation set <value|default>
+antcam awbgains set <red,blue|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
@@ -88,6 +90,8 @@ antcam upload prune --older-than <duration> [--dry-run]
 antcam capture report
 antcam focus report
 antcam ev report
+antcam saturation report
+antcam awbgains report
 antcam fps report
 antcam length report
 antcam segment report
@@ -105,6 +109,8 @@ antcam focus check
 - Resolves `<recording-script-name>` from `/etc/antscihub/recording-scripts/` (installed) or `3-recording_scripts/` (repo)
 - Reads focus value from `<desktop>/4-CAPTURE/config/focus-lens-position.txt` (defaults to `auto` if not set)
 - Reads EV exposure compensation from `<desktop>/4-CAPTURE/config/recording-ev.txt` (defaults to `auto`; `auto` omits `--ev`, while numeric values including `0` add `--ev <value>`)
+- Reads saturation from `<desktop>/4-CAPTURE/config/recording-saturation.txt` (defaults to `default`; `default` omits `--saturation`, while numeric values including `0` add `--saturation <value>`)
+- Reads AWB gains from `<desktop>/4-CAPTURE/config/recording-awbgains.txt` (defaults to `auto`; `auto` omits `--awbgains`, while positive `red,blue` values add `--awbgains <red,blue>`)
 - Reads fps value from `<desktop>/4-CAPTURE/config/recording-fps.txt` (defaults to `1` if not set)
 - Reads recording length from `<desktop>/4-CAPTURE/config/recording-length.txt` (defaults to `0s`)
 - Reads segment length from `<desktop>/4-CAPTURE/config/recording-segment.txt` (defaults to `1m`) for scripts that use segments (for example, `video.py`)
@@ -113,7 +119,7 @@ antcam focus check
 - Writes active recording state to `<desktop>/4-CAPTURE/config/recording-active-state.env` for stop control
 - Writes finite-window resume state to `<desktop>/4-CAPTURE/config/recording-resume-state.env` (`length > 0s` only)
 - Runs the selected recording script from inside `<desktop>/4-CAPTURE`
-- Selected recording script writes to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; files include the session stem in their leaf names, like `<session-stem>-video-%05d.h264` or `<session-stem>-photo-%05d.jpg`, plus `capture-metadata.json`. The camera command runs from inside the session folder and receives only the leaf output name so long folder paths are not truncated by rpicam/libcamera output-argument limits. Photos also get a JPEG comment metadata block and `<photo-file>.metadata.json` sidecars. Example video settings tag: `1fps-foc-auto-ev-auto-seg-10m-intra-30-len-30h-1920x1080`.
+- Selected recording script writes to `<desktop>/5-UPLOAD/name__hostname__settings__YYYY-MM-DD_HH-MM-SS/`; files include the session stem in their leaf names, like `<session-stem>-video-%05d.h264` or `<session-stem>-photo-%05d.jpg`, plus `capture-metadata.json`. The camera command runs from inside the session folder and receives only the leaf output name so long folder paths are not truncated by rpicam/libcamera output-argument limits. Photos also get a JPEG comment metadata block and `<photo-file>.metadata.json` sidecars. Example video settings tag: `1fps-foc-auto-ev-auto-sat-default-awb-auto-seg-10m-intra-30-len-30h-1920x1080`.
 - Publishes encrypted Fleet report messages at recording start/end (`report=recording_start|recording_end`), with failure `reason_code`, `reason_detail`, and `diagnostic_file` when a script fails
 - On recording-script failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/` and publishes a compact tail of the failing output
 
@@ -122,16 +128,19 @@ antcam focus check
 
 Bundled recording scripts:
 
-- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable EV (`antcam ev set <value|auto>`), configurable length/segment/intra (`antcam length set`, `antcam segment set`, `antcam intra set`), and focus from saved `lens-position` or `auto`
-- `photos.py` (with `photos.sh` retained as a compatibility launcher) -> interval-driven still-photo capture (`antcam photo-every set <duration|none|0>`) with configurable EV (`antcam ev set <value|auto>`). Positive values require minimum `10s`; `none`/`0` keeps one-shot behavior. For positive intervals, captures occur at `t=0` and then every interval while `scheduled_time <= recording_length`
+- `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable EV (`antcam ev set <value|auto>`), saturation (`antcam saturation set <value|default>`), AWB gains (`antcam awbgains set <red,blue|auto>`), length/segment/intra (`antcam length set`, `antcam segment set`, `antcam intra set`), and focus from saved `lens-position` or `auto`
+- `photos.py` (with `photos.sh` retained as a compatibility launcher) -> interval-driven still-photo capture (`antcam photo-every set <duration|none|0>`) with configurable EV (`antcam ev set <value|auto>`), saturation (`antcam saturation set <value|default>`), and AWB gains (`antcam awbgains set <red,blue|auto>`). Positive values require minimum `10s`; `none`/`0` keeps one-shot behavior. For positive intervals, captures occur at `t=0` and then every interval while `scheduled_time <= recording_length`
 
 `antcam focus check` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing
 - Runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or installed copy at `/etc/antscihub/antcam_focus_autofocus.sh`)
 - Uses the saved EV setting from `antcam ev set <value|auto>`; `auto` omits `--ev`, numeric values including `0` add `--ev <value>`
+- Uses the saved saturation setting from `antcam saturation set <value|default>`; `default` omits `--saturation`, numeric values including `0` add `--saturation <value>`
+- Uses the saved AWB-gains setting from `antcam awbgains set <red,blue|auto>`; `auto` omits `--awbgains`, positive `red,blue` values add `--awbgains <red,blue>`
+- Reports the rpicam/libcamera metadata from the autofocus image, including exposure time, analogue gain, digital gain, colour gains, colour temperature, frame duration, and derived frame rate when `FrameDuration` is present
 - Final output is the `lens-position` value for direct use with `rpicam-vid --lens-position <value>`
-- Drops a focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` named `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
+- Drops a focus photo and matching `.metadata.txt` into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup
 - On autofocus helper failure, writes timestamped diagnostics to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 
 ### Upload Service

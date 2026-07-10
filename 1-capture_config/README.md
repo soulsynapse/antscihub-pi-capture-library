@@ -16,6 +16,8 @@ sudo antcam apply <profile> --dry-run
 sudo antcam apply <profile> --no-reboot
 antcam focus set <lens-position|auto>
 antcam ev set <value|auto>
+antcam saturation set <value|default>
+antcam awbgains set <red,blue|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
@@ -40,6 +42,8 @@ antcam upload prune --older-than <duration> [--dry-run]
 antcam capture report
 antcam focus report
 antcam ev report
+antcam saturation report
+antcam awbgains report
 antcam fps report
 antcam length report
 antcam segment report
@@ -85,6 +89,8 @@ Current bundled profiles:
 - Bundled recording script names include `video` and `photos` (for example: `antcam start video`, `antcam start photos`)
 - `antcam focus set <lens-position|auto>` writes the focus setting file used by recording scripts (`auto` omits `--lens-position` at record time)
 - `antcam ev set <value|auto>` writes EV exposure compensation used by recording scripts; `auto` omits `--ev`, while numeric values including `0` add `--ev <value>`
+- `antcam saturation set <value|default>` writes saturation used by recording scripts and focus check; `default` omits `--saturation`, while numeric values including `0` add `--saturation <value>`
+- `antcam awbgains set <red,blue|auto>` writes fixed red/blue AWB gains used by recording scripts and focus check; `auto` omits `--awbgains`, while positive `red,blue` values add `--awbgains <red,blue>`
 - `antcam fps set <value>` writes the fps setting file used by recording scripts
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
@@ -109,6 +115,8 @@ Current bundled profiles:
 - `antcam capture report` returns a consolidated capture+recording settings report
 - `antcam focus report` returns the saved focus value (or `auto` default)
 - `antcam ev report` returns the saved EV exposure compensation value (or `auto` default)
+- `antcam saturation report` returns the saved saturation value (or `default`)
+- `antcam awbgains report` returns the saved AWB gains value (or `auto`)
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)
@@ -125,8 +133,11 @@ Current bundled profiles:
 - `antcam focus check` does not require `sudo`; if run with `sudo`, it still targets the invoking user's Desktop
 - `antcam focus check` runs the autofocus helper script from `1-capture_config/antcam_focus_autofocus.sh` (or `/etc/antscihub/antcam_focus_autofocus.sh` on installed systems)
 - `antcam focus check` uses the saved EV setting from `antcam ev set <value|auto>`; `auto` omits `--ev`, numeric values including `0` add `--ev <value>`
+- `antcam focus check` uses the saved saturation setting from `antcam saturation set <value|default>`; `default` omits `--saturation`, numeric values including `0` add `--saturation <value>`
+- `antcam focus check` uses the saved AWB-gains setting from `antcam awbgains set <red,blue|auto>`; `auto` omits `--awbgains`, positive `red,blue` values add `--awbgains <red,blue>`
+- `antcam focus check` reports the rpicam/libcamera metadata from the autofocus image, including exposure time, analogue gain, digital gain, colour gains, colour temperature, frame duration, and derived frame rate when `FrameDuration` is present
 - `antcam focus check` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
-- `antcam focus check` copies the captured focus photo into `<desktop>/5-UPLOAD/diagnostics/recordings/` as `YYYY-MM-DD__T-HH-MM-SS__focus-result-lens-position-#.#__hostname.jpeg`
+- `antcam focus check` copies the captured focus photo and matching `.metadata.txt` into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup
 - If the autofocus helper fails, `antcam focus check` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI, profile files, focus helper, and recording scripts

@@ -403,6 +403,36 @@ set_ev_setting_for_home() {
     printf '%s\n' "${ev_file}"
 }
 
+set_saturation_setting_for_home() {
+    local user_home="$1"
+    local saturation_value="$2"
+    local normalized_saturation_value
+    normalized_saturation_value="$(normalize_saturation_setting_value "${saturation_value}" || true)"
+    [[ -n "${normalized_saturation_value}" ]] || die "invalid saturation value: ${saturation_value} (expected numeric saturation or default)"
+
+    local saturation_file saturation_dir
+    saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+    saturation_dir="$(dirname "${saturation_file}")"
+    mkdir -p "${saturation_dir}"
+    printf '%s\n' "${normalized_saturation_value}" > "${saturation_file}"
+    printf '%s\n' "${saturation_file}"
+}
+
+set_awbgains_setting_for_home() {
+    local user_home="$1"
+    local awbgains_value="$2"
+    local normalized_awbgains_value
+    normalized_awbgains_value="$(normalize_awbgains_setting_value "${awbgains_value}" || true)"
+    [[ -n "${normalized_awbgains_value}" ]] || die "invalid awbgains value: ${awbgains_value} (expected red,blue or auto)"
+
+    local awbgains_file awbgains_dir
+    awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
+    awbgains_dir="$(dirname "${awbgains_file}")"
+    mkdir -p "${awbgains_dir}"
+    printf '%s\n' "${normalized_awbgains_value}" > "${awbgains_file}"
+    printf '%s\n' "${awbgains_file}"
+}
+
 set_fps_setting_for_home() {
     local user_home="$1"
     local fps_value="$2"
@@ -580,6 +610,38 @@ set_ev_value() {
         echo "recording ev set to ${normalized_ev}"
     fi
     echo "ev settings file: ${ev_file}"
+}
+
+set_saturation_value() {
+    local saturation_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for saturation settings"
+
+    local saturation_file normalized_saturation
+    saturation_file="$(set_saturation_setting_for_home "${user_home}" "${saturation_value}")"
+    normalized_saturation="$(read_saturation_setting_for_home "${user_home}")"
+    if [[ "${normalized_saturation}" == "default" ]]; then
+        echo "recording saturation set to default (no --saturation override)"
+    else
+        echo "recording saturation set to ${normalized_saturation}"
+    fi
+    echo "saturation settings file: ${saturation_file}"
+}
+
+set_awbgains_value() {
+    local awbgains_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for awbgains settings"
+
+    local awbgains_file normalized_awbgains
+    awbgains_file="$(set_awbgains_setting_for_home "${user_home}" "${awbgains_value}")"
+    normalized_awbgains="$(read_awbgains_setting_for_home "${user_home}")"
+    if [[ "${normalized_awbgains}" == "auto" ]]; then
+        echo "recording awbgains set to auto (no --awbgains override)"
+    else
+        echo "recording awbgains set to ${normalized_awbgains}"
+    fi
+    echo "awbgains settings file: ${awbgains_file}"
 }
 
 set_fps_value() {

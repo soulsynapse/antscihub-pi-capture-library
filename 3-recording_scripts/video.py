@@ -126,6 +126,32 @@ def normalize_ev_value(value: str) -> str:
     return ""
 
 
+def normalize_saturation_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"default", "auto", "none"}:
+        return "default"
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", normalized) is not None:
+        return normalized
+    return ""
+
+
+def normalize_awbgains_value(value: str) -> str:
+    normalized = re.sub(r"\s+", "", (value or "").strip().lower())
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?),([0-9]+(?:\.[0-9]+)?)", normalized)
+    if match is None:
+        return ""
+    try:
+        red_gain = float(match.group(1))
+        blue_gain = float(match.group(2))
+    except ValueError:
+        return ""
+    if red_gain <= 0 or blue_gain <= 0:
+        return ""
+    return normalized
+
+
 def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
 
@@ -140,6 +166,8 @@ def build_video_settings_tag(
     fps_value: str,
     focus_value: str,
     ev_value: str,
+    saturation_value: str,
+    awbgains_value: str,
     segment_value: str,
     intra_value: str,
     length_value: str,
@@ -149,11 +177,13 @@ def build_video_settings_tag(
     fps_tag = f"{sanitize_capture_tag_value(fps_value, 'unknown')}fps"
     focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
     ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
+    saturation_tag = f"sat-{sanitize_capture_tag_value(saturation_value, 'default')}"
+    awbgains_tag = f"awb-{sanitize_capture_tag_value(awbgains_value.replace(',', '_'), 'auto')}"
     segment_tag = f"seg-{sanitize_capture_tag_value(segment_value, 'unknown')}"
     intra_tag = f"intra-{sanitize_capture_tag_value(intra_value, 'none')}"
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
     resolution_tag = f"{width_value}x{height_value}"
-    return "-".join((fps_tag, focus_tag, ev_tag, segment_tag, intra_tag, length_tag, resolution_tag))
+    return "-".join((fps_tag, focus_tag, ev_tag, saturation_tag, awbgains_tag, segment_tag, intra_tag, length_tag, resolution_tag))
 
 
 def timestamp_iso_local() -> str:
@@ -218,6 +248,20 @@ def resolve_ev_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "recording-ev.txt"
+
+
+def resolve_saturation_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_SATURATION_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-saturation.txt"
+
+
+def resolve_awbgains_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_AWBGAINS_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-awbgains.txt"
 
 
 def resolve_fps_file_path(capture_dir: Path) -> Path:
@@ -403,6 +447,8 @@ def main() -> int:
 
     focus_file = resolve_focus_file_path(capture_dir)
     ev_file = resolve_ev_file_path(capture_dir)
+    saturation_file = resolve_saturation_file_path(capture_dir)
+    awbgains_file = resolve_awbgains_file_path(capture_dir)
     fps_file = resolve_fps_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
@@ -437,6 +483,34 @@ def main() -> int:
         )
         log("set it with: antcam ev set <value|auto> (example: -1, 0, 0.5, auto)")
         return 14
+
+    saturation_raw_value = os.environ.get("ANTCAM_RECORDING_SATURATION", "")
+    if not saturation_raw_value:
+        saturation_raw_value = read_value_with_default(saturation_file, "default")
+    saturation_value = normalize_saturation_value(saturation_raw_value)
+    if not saturation_value:
+        log_invalid_setting(
+            "recording saturation value",
+            saturation_raw_value,
+            setting_source("ANTCAM_RECORDING_SATURATION", saturation_file),
+            "numeric saturation or default",
+        )
+        log("set it with: antcam saturation set <value|default> (example: 0, 1, 1.2, default)")
+        return 15
+
+    awbgains_raw_value = os.environ.get("ANTCAM_RECORDING_AWBGAINS", "")
+    if not awbgains_raw_value:
+        awbgains_raw_value = read_value_with_default(awbgains_file, "auto")
+    awbgains_value = normalize_awbgains_value(awbgains_raw_value)
+    if not awbgains_value:
+        log_invalid_setting(
+            "recording awbgains value",
+            awbgains_raw_value,
+            setting_source("ANTCAM_RECORDING_AWBGAINS", awbgains_file),
+            "positive red,blue gains or auto",
+        )
+        log("set it with: antcam awbgains set <red,blue|auto> (example: 1.0,1.0, 1.6,1.2, auto)")
+        return 16
 
     fps_value = os.environ.get("ANTCAM_RECORDING_FPS", "")
     if not fps_value:
@@ -544,6 +618,8 @@ def main() -> int:
         fps_value,
         focus_value,
         ev_value,
+        saturation_value,
+        awbgains_value,
         segment_value,
         intra_value,
         length_value,
@@ -573,6 +649,8 @@ def main() -> int:
         "settings": {
             "focus_lens_position": focus_value,
             "recording_ev": ev_value,
+            "recording_saturation": saturation_value,
+            "recording_awbgains": awbgains_value,
             "recording_fps": fps_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
@@ -599,6 +677,14 @@ def main() -> int:
         log("EV compensation: auto (no --ev override)")
     else:
         log(f"EV compensation: {ev_value}")
+    if saturation_value == "default":
+        log("Saturation: default (no --saturation override)")
+    else:
+        log(f"Saturation: {saturation_value}")
+    if awbgains_value == "auto":
+        log("AWB gains: auto (no --awbgains override)")
+    else:
+        log(f"AWB gains: {awbgains_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     log(f"Chunk length: {segment_value} ({segment_ms} ms)")
     log("Scheduling mode: contiguous segment capture (no interval scheduling)")
@@ -638,6 +724,10 @@ def main() -> int:
         video_args.extend(["--intra", intra_value])
     if ev_value != "auto":
         video_args.extend(["--ev", ev_value])
+    if saturation_value != "default":
+        video_args.extend(["--saturation", saturation_value])
+    if awbgains_value != "auto":
+        video_args.extend(["--awbgains", awbgains_value])
     if not is_auto_focus_value(focus_value):
         video_args.extend(["--lens-position", focus_value])
 

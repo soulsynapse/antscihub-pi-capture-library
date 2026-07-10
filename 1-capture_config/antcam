@@ -136,6 +136,10 @@ DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/focus-lens-position.txt"
 FOCUS_SETTINGS_RELATIVE_PATH="${ANTCAM_FOCUS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FOCUS_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_EV_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-ev.txt"
 EV_SETTINGS_RELATIVE_PATH="${ANTCAM_EV_SETTINGS_RELATIVE_PATH:-${DEFAULT_EV_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_SATURATION_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-saturation.txt"
+SATURATION_SETTINGS_RELATIVE_PATH="${ANTCAM_SATURATION_SETTINGS_RELATIVE_PATH:-${DEFAULT_SATURATION_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_AWBGAINS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-awbgains.txt"
+AWBGAINS_SETTINGS_RELATIVE_PATH="${ANTCAM_AWBGAINS_SETTINGS_RELATIVE_PATH:-${DEFAULT_AWBGAINS_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_FPS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-fps.txt"
 FPS_SETTINGS_RELATIVE_PATH="${ANTCAM_FPS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FPS_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
@@ -174,6 +178,8 @@ DEFAULT_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/transcode-video
 TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH="${ANTCAM_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH:-${DEFAULT_TRANSCODE_VIDEO_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_EV="${ANTCAM_DEFAULT_RECORDING_EV:-auto}"
+DEFAULT_RECORDING_SATURATION="${ANTCAM_DEFAULT_RECORDING_SATURATION:-default}"
+DEFAULT_RECORDING_AWBGAINS="${ANTCAM_DEFAULT_RECORDING_AWBGAINS:-auto}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
 DEFAULT_RECORDING_INTRA="${ANTCAM_DEFAULT_RECORDING_INTRA:-none}"
@@ -221,6 +227,10 @@ Usage:
   antcam focus report
   antcam ev set <value|auto>
   antcam ev report
+  antcam saturation set <value|default>
+  antcam saturation report
+  antcam awbgains set <red,blue|auto>
+  antcam awbgains report
   antcam fps set <value>
   antcam fps report
   antcam length set <duration>
@@ -270,6 +280,14 @@ Examples:
   antcam focus set 7.5
   antcam focus set auto
   antcam focus report
+  antcam ev set auto
+  antcam ev report
+  antcam saturation set 1.2
+  antcam saturation set default
+  antcam saturation report
+  antcam awbgains set 1.0,1.0
+  antcam awbgains set auto
+  antcam awbgains report
   antcam fps set 2
   antcam fps report
   antcam length set 30h
@@ -499,6 +517,42 @@ resolve_ev_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${EV_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_saturation_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_SATURATION_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_SATURATION_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${SATURATION_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${SATURATION_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${SATURATION_SETTINGS_RELATIVE_PATH#./}"
+}
+
+resolve_awbgains_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_AWBGAINS_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_AWBGAINS_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${AWBGAINS_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${AWBGAINS_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${AWBGAINS_SETTINGS_RELATIVE_PATH#./}"
+}
+
 resolve_fps_value_file_for_home() {
     local user_home="$1"
 
@@ -724,6 +778,8 @@ write_recording_resume_state_for_home() {
     local resume_reason="${14:-recording_start}"
     local intra_value="${15:-none}"
     local ev_value="${16:-auto}"
+    local saturation_value="${17:-default}"
+    local awbgains_value="${18:-auto}"
 
     [[ "${start_epoch}" =~ ^[0-9]+$ ]] || return 1
     [[ "${end_epoch}" =~ ^[0-9]+$ ]] || return 1
@@ -749,6 +805,8 @@ write_recording_resume_state_for_home() {
         echo "segment_value=${segment_value}"
         echo "intra_value=${intra_value}"
         echo "ev_value=${ev_value}"
+        echo "saturation_value=${saturation_value}"
+        echo "awbgains_value=${awbgains_value}"
         echo "photo_every_value=${photo_every_value}"
         echo "name_value=${name_value}"
         echo "recording_start_epoch=${start_epoch}"
@@ -925,6 +983,46 @@ normalize_ev_setting_value() {
             ;;
         *)
             [[ "${normalized_value}" =~ ^[+-]?[0-9]+([.][0-9]+)?$ ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_saturation_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        default|auto|none)
+            printf '%s\n' "default"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_awbgains_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value red_gain blue_gain
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    normalized_value="${normalized_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?,[0-9]+([.][0-9]+)?$ ]] || return 1
+            red_gain="${normalized_value%%,*}"
+            blue_gain="${normalized_value#*,}"
+            awk -v red="${red_gain}" -v blue="${blue_gain}" 'BEGIN { exit (red > 0 && blue > 0 ? 0 : 1) }' || return 1
             printf '%s\n' "${normalized_value}"
             return 0
             ;;
@@ -2076,6 +2174,42 @@ read_ev_setting_for_home() {
     printf '%s\n' "${normalized_ev_value}"
 }
 
+read_saturation_setting_for_home() {
+    local user_home="$1"
+    local saturation_file saturation_value normalized_saturation_value
+    saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${saturation_file}" ]]; then
+        normalized_saturation_value="$(normalize_saturation_setting_value "${DEFAULT_RECORDING_SATURATION}" || true)"
+        [[ -n "${normalized_saturation_value}" ]] || die "invalid default saturation value: ${DEFAULT_RECORDING_SATURATION} (expected numeric saturation or default)"
+        printf '%s\n' "${normalized_saturation_value}"
+        return 0
+    fi
+
+    saturation_value="$(head -n 1 "${saturation_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_saturation_value="$(normalize_saturation_setting_value "${saturation_value}" || true)"
+    [[ -n "${normalized_saturation_value}" ]] || die "invalid saturation value in ${saturation_file}: ${saturation_value} (expected numeric saturation or default)"
+    printf '%s\n' "${normalized_saturation_value}"
+}
+
+read_awbgains_setting_for_home() {
+    local user_home="$1"
+    local awbgains_file awbgains_value normalized_awbgains_value
+    awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${awbgains_file}" ]]; then
+        normalized_awbgains_value="$(normalize_awbgains_setting_value "${DEFAULT_RECORDING_AWBGAINS}" || true)"
+        [[ -n "${normalized_awbgains_value}" ]] || die "invalid default awbgains value: ${DEFAULT_RECORDING_AWBGAINS} (expected red,blue or auto)"
+        printf '%s\n' "${normalized_awbgains_value}"
+        return 0
+    fi
+
+    awbgains_value="$(head -n 1 "${awbgains_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_awbgains_value="$(normalize_awbgains_setting_value "${awbgains_value}" || true)"
+    [[ -n "${normalized_awbgains_value}" ]] || die "invalid awbgains value in ${awbgains_file}: ${awbgains_value} (expected red,blue or auto)"
+    printf '%s\n' "${normalized_awbgains_value}"
+}
+
 read_fps_setting_for_home() {
     local user_home="$1"
     local fps_file fps_value
@@ -2272,6 +2406,18 @@ report_ev_value() {
     read_ev_setting_for_home "${user_home}"
 }
 
+report_saturation_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for saturation settings"
+    read_saturation_setting_for_home "${user_home}"
+}
+
+report_awbgains_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for awbgains settings"
+    read_awbgains_setting_for_home "${user_home}"
+}
+
 report_fps_value() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for fps settings"
@@ -2312,12 +2458,14 @@ report_capture_settings() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for capture settings"
 
-    local capture_dir upload_dir focus_file focus_value ev_file ev_value state_file last_start_state_file resume_state_file
+    local capture_dir upload_dir focus_file focus_value ev_file ev_value saturation_file saturation_value awbgains_file awbgains_value state_file last_start_state_file resume_state_file
     local fps_file fps_value length_file length_value segment_file segment_value intra_file intra_value photo_every_file photo_every_value name_file name_value
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
+    saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+    awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
     segment_file="$(resolve_segment_value_file_for_home "${user_home}")"
@@ -2340,6 +2488,22 @@ report_capture_settings() {
         ev_value="$(normalize_ev_setting_value "${DEFAULT_RECORDING_EV}" || true)"
         [[ -n "${ev_value}" ]] || die "invalid default ev value: ${DEFAULT_RECORDING_EV} (expected numeric EV compensation or auto)"
         ev_value="${ev_value} (default)"
+    fi
+
+    if [[ -f "${saturation_file}" ]]; then
+        saturation_value="$(read_saturation_setting_for_home "${user_home}")"
+    else
+        saturation_value="$(normalize_saturation_setting_value "${DEFAULT_RECORDING_SATURATION}" || true)"
+        [[ -n "${saturation_value}" ]] || die "invalid default saturation value: ${DEFAULT_RECORDING_SATURATION} (expected numeric saturation or default)"
+        saturation_value="${saturation_value} (default)"
+    fi
+
+    if [[ -f "${awbgains_file}" ]]; then
+        awbgains_value="$(read_awbgains_setting_for_home "${user_home}")"
+    else
+        awbgains_value="$(normalize_awbgains_setting_value "${DEFAULT_RECORDING_AWBGAINS}" || true)"
+        [[ -n "${awbgains_value}" ]] || die "invalid default awbgains value: ${DEFAULT_RECORDING_AWBGAINS} (expected red,blue or auto)"
+        awbgains_value="${awbgains_value} (default)"
     fi
 
     if [[ -f "${fps_file}" ]]; then
@@ -2391,6 +2555,10 @@ report_capture_settings() {
     echo "focus_lens_position=${focus_value}"
     echo "ev_settings_file=${ev_file}"
     echo "recording_ev=${ev_value}"
+    echo "saturation_settings_file=${saturation_file}"
+    echo "recording_saturation=${saturation_value}"
+    echo "awbgains_settings_file=${awbgains_file}"
+    echo "recording_awbgains=${awbgains_value}"
     echo "fps_settings_file=${fps_file}"
     echo "recording_fps=${fps_value}"
     echo "length_settings_file=${length_file}"
@@ -2416,7 +2584,7 @@ start_recording() {
     effective_user="$(resolve_effective_user || true)"
     [[ -n "${effective_user}" ]] || effective_user="$(id -un)"
 
-    local capture_dir upload_dir record_script focus_value focus_file ev_value ev_file
+    local capture_dir upload_dir record_script focus_value focus_file ev_value ev_file saturation_value saturation_file awbgains_value awbgains_file
     local fps_value fps_file length_value length_file segment_value segment_file intra_value intra_file
     local photo_every_value photo_every_file name_value name_file script_basename photos_one_shot_guard
     local length_source photo_every_source name_source strict_service_context
@@ -2437,6 +2605,10 @@ start_recording() {
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     ev_value="$(read_ev_setting_for_home "${user_home}")"
     ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
+    saturation_value="$(read_saturation_setting_for_home "${user_home}")"
+    saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+    awbgains_value="$(read_awbgains_setting_for_home "${user_home}")"
+    awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
     fps_value="$(read_fps_setting_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
@@ -2535,6 +2707,10 @@ focus_file=${focus_file}
 focus_value=${focus_value}
 ev_file=${ev_file}
 ev_value=${ev_value}
+saturation_file=${saturation_file}
+saturation_value=${saturation_value}
+awbgains_file=${awbgains_file}
+awbgains_value=${awbgains_value}
 fps_file=${fps_file}
 fps_value=${fps_value}
 length_file=${length_file}
@@ -2585,6 +2761,16 @@ EOF
         echo "recording ev: auto (no --ev override)"
     else
         echo "recording ev: ${ev_value}"
+    fi
+    if [[ "${saturation_value}" == "default" ]]; then
+        echo "recording saturation: default (no --saturation override)"
+    else
+        echo "recording saturation: ${saturation_value}"
+    fi
+    if [[ "${awbgains_value}" == "auto" ]]; then
+        echo "recording awbgains: auto (no --awbgains override)"
+    else
+        echo "recording awbgains: ${awbgains_value}"
     fi
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
@@ -2640,6 +2826,10 @@ EOF
             ANTCAM_FOCUS_LENS_POSITION="${focus_value}" \
             ANTCAM_EV_VALUE_FILE="${ev_file}" \
             ANTCAM_RECORDING_EV="${ev_value}" \
+            ANTCAM_SATURATION_VALUE_FILE="${saturation_file}" \
+            ANTCAM_RECORDING_SATURATION="${saturation_value}" \
+            ANTCAM_AWBGAINS_VALUE_FILE="${awbgains_file}" \
+            ANTCAM_RECORDING_AWBGAINS="${awbgains_value}" \
             ANTCAM_FPS_VALUE_FILE="${fps_file}" \
             ANTCAM_RECORDING_FPS="${fps_value}" \
             ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
@@ -2683,7 +2873,9 @@ EOF
             "${recording_end_epoch}" \
             "${resume_window_source}" \
             "${intra_value}" \
-            "${ev_value}"; then
+            "${ev_value}" \
+            "${saturation_value}" \
+            "${awbgains_value}"; then
             echo "antcam: warning: failed to write recording resume state file: ${recording_resume_state_file}" >&2
         fi
     else
@@ -2863,7 +3055,7 @@ resume_recording_if_needed() {
     fi
 
     local resume_enabled requested_script_name record_script_saved
-    local focus_value_saved ev_value_saved fps_value_saved length_value_saved segment_value_saved intra_value_saved photo_every_value_saved name_value_saved
+    local focus_value_saved ev_value_saved saturation_value_saved awbgains_value_saved fps_value_saved length_value_saved segment_value_saved intra_value_saved photo_every_value_saved name_value_saved
     local start_epoch_saved end_epoch_saved now_epoch remaining_seconds resume_length_value
     local record_script_path script_basename
     local resume_start_override resume_end_override photos_schedule_start_epoch_ms
@@ -2884,6 +3076,16 @@ resume_recording_if_needed() {
     if [[ -z "${ev_value_saved}" ]]; then
         ev_value_saved="$(normalize_ev_setting_value "${DEFAULT_RECORDING_EV}" || true)"
         [[ -n "${ev_value_saved}" ]] || ev_value_saved="auto"
+    fi
+    saturation_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "saturation_value" || true)"
+    if [[ -z "${saturation_value_saved}" ]]; then
+        saturation_value_saved="$(normalize_saturation_setting_value "${DEFAULT_RECORDING_SATURATION}" || true)"
+        [[ -n "${saturation_value_saved}" ]] || saturation_value_saved="default"
+    fi
+    awbgains_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "awbgains_value" || true)"
+    if [[ -z "${awbgains_value_saved}" ]]; then
+        awbgains_value_saved="$(normalize_awbgains_setting_value "${DEFAULT_RECORDING_AWBGAINS}" || true)"
+        [[ -n "${awbgains_value_saved}" ]] || awbgains_value_saved="auto"
     fi
     fps_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "fps_value" || true)"
     length_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "length_value" || true)"
@@ -2945,9 +3147,11 @@ resume_recording_if_needed() {
     local resume_tmp_dir
     resume_tmp_dir="$(mktemp -d /tmp/antcam-recording-resume.XXXXXX)"
 
-    local resume_focus_file resume_ev_file resume_fps_file resume_length_file resume_segment_file resume_intra_file resume_photo_every_file resume_name_file
+    local resume_focus_file resume_ev_file resume_saturation_file resume_awbgains_file resume_fps_file resume_length_file resume_segment_file resume_intra_file resume_photo_every_file resume_name_file
     resume_focus_file="${resume_tmp_dir}/focus-lens-position.txt"
     resume_ev_file="${resume_tmp_dir}/recording-ev.txt"
+    resume_saturation_file="${resume_tmp_dir}/recording-saturation.txt"
+    resume_awbgains_file="${resume_tmp_dir}/recording-awbgains.txt"
     resume_fps_file="${resume_tmp_dir}/recording-fps.txt"
     resume_length_file="${resume_tmp_dir}/recording-length.txt"
     resume_segment_file="${resume_tmp_dir}/recording-segment.txt"
@@ -2957,6 +3161,8 @@ resume_recording_if_needed() {
 
     printf '%s\n' "${focus_value_saved}" > "${resume_focus_file}"
     printf '%s\n' "${ev_value_saved}" > "${resume_ev_file}"
+    printf '%s\n' "${saturation_value_saved}" > "${resume_saturation_file}"
+    printf '%s\n' "${awbgains_value_saved}" > "${resume_awbgains_file}"
     printf '%s\n' "${fps_value_saved}" > "${resume_fps_file}"
     printf '%s\n' "${resume_length_value}" > "${resume_length_file}"
     printf '%s\n' "${segment_value_saved}" > "${resume_segment_file}"
@@ -2974,6 +3180,8 @@ resume_recording_if_needed() {
     set +e
     ANTCAM_FOCUS_VALUE_FILE="${resume_focus_file}" \
     ANTCAM_EV_VALUE_FILE="${resume_ev_file}" \
+    ANTCAM_SATURATION_VALUE_FILE="${resume_saturation_file}" \
+    ANTCAM_AWBGAINS_VALUE_FILE="${resume_awbgains_file}" \
     ANTCAM_FPS_VALUE_FILE="${resume_fps_file}" \
     ANTCAM_LENGTH_VALUE_FILE="${resume_length_file}" \
     ANTCAM_SEGMENT_VALUE_FILE="${resume_segment_file}" \
@@ -3057,6 +3265,85 @@ extract_focus_image_path() {
     printf '%s\n' "${image_path}"
 }
 
+extract_focus_metadata_path() {
+    local focus_log_path="$1"
+    if [[ ! -f "${focus_log_path}" ]]; then
+        return 1
+    fi
+
+    local metadata_path
+    metadata_path="$(grep -E 'FOCUS_METADATA_PATH=' "${focus_log_path}" 2>/dev/null | tail -n 1 | sed 's/^.*FOCUS_METADATA_PATH=//')"
+    metadata_path="$(printf '%s' "${metadata_path}" | tr -d '\r')"
+    [[ -n "${metadata_path}" ]] || return 1
+    printf '%s\n' "${metadata_path}"
+}
+
+read_focus_metadata_field() {
+    local metadata_path="$1"
+    local field_name="$2"
+    [[ -f "${metadata_path}" ]] || return 1
+    grep -E "^${field_name}=" "${metadata_path}" 2>/dev/null | tail -n 1 | cut -d= -f2-
+}
+
+focus_frame_rate_from_duration_us() {
+    local frame_duration_us="$1"
+    [[ "${frame_duration_us}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+    awk -v duration_us="${frame_duration_us}" 'BEGIN {
+        if (duration_us <= 0) {
+            exit 1
+        }
+        printf "%.3f", 1000000 / duration_us
+    }'
+}
+
+report_focus_metadata() {
+    local metadata_path="$1"
+    [[ -f "${metadata_path}" ]] || return 1
+
+    local exposure_time analogue_gain digital_gain colour_gains colour_temperature lux frame_duration frame_rate
+    exposure_time="$(read_focus_metadata_field "${metadata_path}" "ExposureTime" || true)"
+    analogue_gain="$(read_focus_metadata_field "${metadata_path}" "AnalogueGain" || true)"
+    digital_gain="$(read_focus_metadata_field "${metadata_path}" "DigitalGain" || true)"
+    colour_gains="$(read_focus_metadata_field "${metadata_path}" "ColourGains" || true)"
+    colour_temperature="$(read_focus_metadata_field "${metadata_path}" "ColourTemperature" || true)"
+    lux="$(read_focus_metadata_field "${metadata_path}" "Lux" || true)"
+    frame_duration="$(read_focus_metadata_field "${metadata_path}" "FrameDuration" || true)"
+    frame_rate=""
+    if [[ -n "${frame_duration}" ]]; then
+        frame_rate="$(focus_frame_rate_from_duration_us "${frame_duration}" || true)"
+    fi
+
+    echo "focus metadata file: ${metadata_path}" >&2
+    if [[ -n "${exposure_time}" ]]; then
+        echo "focus exposure time: ${exposure_time} us" >&2
+    fi
+    if [[ -n "${analogue_gain}" ]]; then
+        echo "focus analogue gain: ${analogue_gain}" >&2
+    fi
+    if [[ -n "${digital_gain}" ]]; then
+        echo "focus digital gain: ${digital_gain}" >&2
+    fi
+    if [[ -n "${colour_gains}" ]]; then
+        echo "focus colour gains: ${colour_gains}" >&2
+    fi
+    if [[ -n "${colour_temperature}" ]]; then
+        echo "focus colour temperature: ${colour_temperature} K" >&2
+    fi
+    if [[ -n "${lux}" ]]; then
+        echo "focus lux: ${lux}" >&2
+    fi
+    if [[ -n "${frame_duration}" ]]; then
+        if [[ -n "${frame_rate}" ]]; then
+            echo "focus frame duration: ${frame_duration} us (${frame_rate} fps)" >&2
+        else
+            echo "focus frame duration: ${frame_duration} us" >&2
+        fi
+    fi
+
+    echo "focus metadata fields:" >&2
+    sed -E 's/^/  /' "${metadata_path}" >&2
+}
+
 format_lens_position_for_filename() {
     local lens_position="$1"
 
@@ -3117,15 +3404,44 @@ drop_focus_photo_to_diagnostics() {
     printf '%s\n' "${destination}"
 }
 
+drop_focus_metadata_to_diagnostics() {
+    local user_home="$1"
+    local focus_metadata_path="$2"
+    local dropped_photo_path="${3:-}"
+    local lens_position="${4:-}"
+
+    [[ -f "${focus_metadata_path}" ]] || return 1
+
+    local upload_dir diagnostics_dir timestamp_slug lens_tag host_tag destination
+    if [[ -n "${dropped_photo_path}" ]]; then
+        destination="${dropped_photo_path%.*}.metadata.txt"
+    else
+        upload_dir="$(resolve_upload_dir_for_home "${user_home}")"
+        diagnostics_dir="${upload_dir}/diagnostics/recordings"
+        timestamp_slug="$(date -u +%Y-%m-%d__T-%H-%M-%S)"
+        lens_tag="$(format_lens_position_for_filename "${lens_position}")"
+        host_tag="$(resolve_focus_hostname_for_filename)"
+        destination="${diagnostics_dir}/${timestamp_slug}__focus-result-metadata-lens-position-${lens_tag}__${host_tag}.txt"
+    fi
+
+    mkdir -p "$(dirname "${destination}")"
+    cp -f "${focus_metadata_path}" "${destination}"
+    printf '%s\n' "${destination}"
+}
+
 start_focus_check() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for focus path"
 
-    local capture_dir focus_script ev_value ev_file
+    local capture_dir focus_script ev_value ev_file saturation_value saturation_file awbgains_value awbgains_file
     capture_dir="$(resolve_capture_dir_for_home "${user_home}")"
     focus_script="$(resolve_focus_script_path)" || die "focus script not found (expected 1-capture_config/antcam_focus_autofocus.sh or /etc/antscihub/antcam_focus_autofocus.sh)"
     ev_value="$(read_ev_setting_for_home "${user_home}")"
     ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
+    saturation_value="$(read_saturation_setting_for_home "${user_home}")"
+    saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+    awbgains_value="$(read_awbgains_setting_for_home "${user_home}")"
+    awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -3142,12 +3458,24 @@ start_focus_check() {
     else
         echo "focus check ev: ${ev_value}"
     fi
+    if [[ "${saturation_value}" == "default" ]]; then
+        echo "focus check saturation: default (no --saturation override)"
+    else
+        echo "focus check saturation: ${saturation_value}"
+    fi
+    if [[ "${awbgains_value}" == "auto" ]]; then
+        echo "focus check awbgains: auto (no --awbgains override)"
+    else
+        echo "focus check awbgains: ${awbgains_value}"
+    fi
 
     local focus_exit_code=0
     local focus_console_log
     local focus_lens_position=""
     local focus_image_path=""
+    local focus_metadata_path=""
     local dropped_photo_path=""
+    local dropped_metadata_path=""
     focus_console_log="$(mktemp)"
 
     set +e
@@ -3155,6 +3483,10 @@ start_focus_check() {
         cd "${capture_dir}"
         ANTCAM_EV_VALUE_FILE="${ev_file}" \
         ANTCAM_RECORDING_EV="${ev_value}" \
+        ANTCAM_SATURATION_VALUE_FILE="${saturation_file}" \
+        ANTCAM_RECORDING_SATURATION="${saturation_value}" \
+        ANTCAM_AWBGAINS_VALUE_FILE="${awbgains_file}" \
+        ANTCAM_RECORDING_AWBGAINS="${awbgains_value}" \
         bash "${focus_script}"
     ) 2>&1 | tee "${focus_console_log}"
     focus_exit_code="${PIPESTATUS[0]}"
@@ -3162,8 +3494,15 @@ start_focus_check() {
 
     focus_lens_position="$(extract_focus_lens_position "${focus_console_log}" || true)"
     focus_image_path="$(extract_focus_image_path "${focus_console_log}" || true)"
+    focus_metadata_path="$(extract_focus_metadata_path "${focus_console_log}" || true)"
 
     if [[ "${focus_exit_code}" -eq 0 ]]; then
+        if [[ -n "${focus_metadata_path}" ]]; then
+            report_focus_metadata "${focus_metadata_path}" || true
+        else
+            echo "antcam: warning: autofocus metadata path parsing incomplete; metadata report skipped" >&2
+        fi
+
         if [[ -n "${focus_lens_position}" && -n "${focus_image_path}" ]]; then
             dropped_photo_path="$(drop_focus_photo_to_diagnostics "${user_home}" "${focus_image_path}" "${focus_lens_position}" || true)"
             if [[ -n "${dropped_photo_path}" ]]; then
@@ -3171,6 +3510,13 @@ start_focus_check() {
             fi
         else
             echo "antcam: warning: autofocus output parsing incomplete; diagnostic photo naming with lens-position skipped" >&2
+        fi
+
+        if [[ -n "${focus_metadata_path}" ]]; then
+            dropped_metadata_path="$(drop_focus_metadata_to_diagnostics "${user_home}" "${focus_metadata_path}" "${dropped_photo_path}" "${focus_lens_position}" || true)"
+            if [[ -n "${dropped_metadata_path}" ]]; then
+                echo "focus diagnostic metadata: ${dropped_metadata_path}" >&2
+            fi
         fi
     else
         local focus_failure_tail focus_reason_code focus_reason_detail
@@ -3334,6 +3680,44 @@ main() {
                     ;;
                 *)
                     die "unknown ev action: $1"
+                    ;;
+            esac
+            ;;
+        saturation)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam saturation <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam saturation set <value|default>"
+                    set_saturation_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam saturation report"
+                    report_saturation_value
+                    ;;
+                *)
+                    die "unknown saturation action: $1"
+                    ;;
+            esac
+            ;;
+        awbgains)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam awbgains <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam awbgains set <red,blue|auto>"
+                    set_awbgains_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam awbgains report"
+                    report_awbgains_value
+                    ;;
+                *)
+                    die "unknown awbgains action: $1"
                     ;;
             esac
             ;;

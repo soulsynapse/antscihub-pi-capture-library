@@ -30,6 +30,45 @@ normalize_ev_value() {
     esac
 }
 
+normalize_saturation_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="${raw_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        default|auto|none)
+            printf '%s\n' "default"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_awbgains_value() {
+    local raw_value="${1:-}"
+    local normalized_value red_gain blue_gain
+    normalized_value="${raw_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?,[0-9]+([.][0-9]+)?$ ]] || return 1
+            red_gain="${normalized_value%%,*}"
+            blue_gain="${normalized_value#*,}"
+            awk -v red="${red_gain}" -v blue="${blue_gain}" 'BEGIN { exit (red > 0 && blue > 0 ? 0 : 1) }' || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
 mkdir -p "${capture_dir}"
 
 if [[ ! "${focus_sweep_start_lens_position}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -49,6 +88,34 @@ fi
 ev_args=()
 if [[ "${ev_value}" != "auto" ]]; then
     ev_args=(--ev "${ev_value}")
+fi
+
+saturation_raw_value="${ANTCAM_RECORDING_SATURATION:-}"
+if [[ -z "${saturation_raw_value}" && -n "${ANTCAM_SATURATION_VALUE_FILE:-}" && -f "${ANTCAM_SATURATION_VALUE_FILE}" ]]; then
+    saturation_raw_value="$(head -n 1 "${ANTCAM_SATURATION_VALUE_FILE}" 2>/dev/null || true)"
+fi
+saturation_value="$(normalize_saturation_value "${saturation_raw_value:-default}" || true)"
+if [[ -z "${saturation_value}" ]]; then
+    log "invalid saturation value: ${saturation_raw_value} (set with: antcam saturation set <value|default>)"
+    exit 5
+fi
+saturation_args=()
+if [[ "${saturation_value}" != "default" ]]; then
+    saturation_args=(--saturation "${saturation_value}")
+fi
+
+awbgains_raw_value="${ANTCAM_RECORDING_AWBGAINS:-}"
+if [[ -z "${awbgains_raw_value}" && -n "${ANTCAM_AWBGAINS_VALUE_FILE:-}" && -f "${ANTCAM_AWBGAINS_VALUE_FILE}" ]]; then
+    awbgains_raw_value="$(head -n 1 "${ANTCAM_AWBGAINS_VALUE_FILE}" 2>/dev/null || true)"
+fi
+awbgains_value="$(normalize_awbgains_value "${awbgains_raw_value:-auto}" || true)"
+if [[ -z "${awbgains_value}" ]]; then
+    log "invalid AWB gains value: ${awbgains_raw_value} (set with: antcam awbgains set <red,blue|auto>)"
+    exit 6
+fi
+awbgains_args=()
+if [[ "${awbgains_value}" != "auto" ]]; then
+    awbgains_args=(--awbgains "${awbgains_value}")
 fi
 
 camera_cmd=()
@@ -72,6 +139,16 @@ if [[ "${ev_value}" == "auto" ]]; then
 else
     log "EV compensation: ${ev_value}"
 fi
+if [[ "${saturation_value}" == "default" ]]; then
+    log "Saturation: default (no --saturation override)"
+else
+    log "Saturation: ${saturation_value}"
+fi
+if [[ "${awbgains_value}" == "auto" ]]; then
+    log "AWB gains: auto (no --awbgains override)"
+else
+    log "AWB gains: ${awbgains_value}"
+fi
 
 set +e
 "${camera_cmd[@]}" \
@@ -80,6 +157,8 @@ set +e
     --autofocus-mode manual \
     --lens-position "${focus_sweep_start_lens_position}" \
     "${ev_args[@]}" \
+    "${saturation_args[@]}" \
+    "${awbgains_args[@]}" \
     --output /dev/null >/dev/null 2>>"${log_file}"
 preposition_exit="$?"
 set -e
@@ -98,6 +177,8 @@ set +e
     --metadata "${metadata_file}" \
     --metadata-format txt \
     "${ev_args[@]}" \
+    "${saturation_args[@]}" \
+    "${awbgains_args[@]}" \
     --output "${image_file}" 2>&1 | tee -a "${log_file}" >&2
 capture_exit="${PIPESTATUS[0]}"
 set -e

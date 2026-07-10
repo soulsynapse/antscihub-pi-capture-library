@@ -113,6 +113,32 @@ def normalize_ev_value(value: str) -> str:
     return ""
 
 
+def normalize_saturation_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"default", "auto", "none"}:
+        return "default"
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", normalized) is not None:
+        return normalized
+    return ""
+
+
+def normalize_awbgains_value(value: str) -> str:
+    normalized = re.sub(r"\s+", "", (value or "").strip().lower())
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    match = re.fullmatch(r"([0-9]+(?:\.[0-9]+)?),([0-9]+(?:\.[0-9]+)?)", normalized)
+    if match is None:
+        return ""
+    try:
+        red_gain = float(match.group(1))
+        blue_gain = float(match.group(2))
+    except ValueError:
+        return ""
+    if red_gain <= 0 or blue_gain <= 0:
+        return ""
+    return normalized
+
+
 def is_auto_focus_value(value: str) -> bool:
     return (value or "").strip().lower() == "auto"
 
@@ -147,12 +173,21 @@ def build_photo_interval_tag(photo_every_value: str) -> str:
     return f"1pp{sanitize_capture_tag_value(normalized, 'unknown')}"
 
 
-def build_photo_settings_tag(focus_value: str, ev_value: str, photo_every_value: str, length_value: str) -> str:
+def build_photo_settings_tag(
+    focus_value: str,
+    ev_value: str,
+    saturation_value: str,
+    awbgains_value: str,
+    photo_every_value: str,
+    length_value: str,
+) -> str:
     focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
     ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
+    saturation_tag = f"sat-{sanitize_capture_tag_value(saturation_value, 'default')}"
+    awbgains_tag = f"awb-{sanitize_capture_tag_value(awbgains_value.replace(',', '_'), 'auto')}"
     photo_interval_tag = build_photo_interval_tag(photo_every_value)
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
-    return "-".join((focus_tag, ev_tag, photo_interval_tag, length_tag))
+    return "-".join((focus_tag, ev_tag, saturation_tag, awbgains_tag, photo_interval_tag, length_tag))
 
 
 def timestamp_iso_local() -> str:
@@ -285,6 +320,20 @@ def resolve_ev_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "recording-ev.txt"
+
+
+def resolve_saturation_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_SATURATION_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-saturation.txt"
+
+
+def resolve_awbgains_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_AWBGAINS_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-awbgains.txt"
 
 
 def resolve_length_file_path(capture_dir: Path) -> Path:
@@ -486,6 +535,8 @@ def main() -> int:
 
     focus_file = resolve_focus_file_path(capture_dir)
     ev_file = resolve_ev_file_path(capture_dir)
+    saturation_file = resolve_saturation_file_path(capture_dir)
+    awbgains_file = resolve_awbgains_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     photo_every_file = resolve_photo_every_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
@@ -518,6 +569,34 @@ def main() -> int:
         )
         log("set it with: antcam ev set <value|auto> (example: -1, 0, 0.5, auto)")
         return 9
+
+    saturation_raw_value = os.environ.get("ANTCAM_RECORDING_SATURATION", "")
+    if not saturation_raw_value:
+        saturation_raw_value = read_value_with_default(saturation_file, "default")
+    saturation_value = normalize_saturation_value(saturation_raw_value)
+    if not saturation_value:
+        log_invalid_setting(
+            "recording saturation value",
+            saturation_raw_value,
+            setting_source("ANTCAM_RECORDING_SATURATION", saturation_file),
+            "numeric saturation or default",
+        )
+        log("set it with: antcam saturation set <value|default> (example: 0, 1, 1.2, default)")
+        return 15
+
+    awbgains_raw_value = os.environ.get("ANTCAM_RECORDING_AWBGAINS", "")
+    if not awbgains_raw_value:
+        awbgains_raw_value = read_value_with_default(awbgains_file, "auto")
+    awbgains_value = normalize_awbgains_value(awbgains_raw_value)
+    if not awbgains_value:
+        log_invalid_setting(
+            "recording awbgains value",
+            awbgains_raw_value,
+            setting_source("ANTCAM_RECORDING_AWBGAINS", awbgains_file),
+            "positive red,blue gains or auto",
+        )
+        log("set it with: antcam awbgains set <red,blue|auto> (example: 1.0,1.0, 1.6,1.2, auto)")
+        return 16
 
     length_value = os.environ.get("ANTCAM_RECORDING_LENGTH", "")
     if not length_value:
@@ -601,7 +680,7 @@ def main() -> int:
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    settings_tag = build_photo_settings_tag(focus_value, ev_value, photo_every_value, length_value)
+    settings_tag = build_photo_settings_tag(focus_value, ev_value, saturation_value, awbgains_value, photo_every_value, length_value)
     session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
     session_dir = upload_dir / session_stem
     photo_output_leaf_pattern = f"{session_stem}-photo-%05d.jpg"
@@ -625,6 +704,8 @@ def main() -> int:
         "settings": {
             "focus_lens_position": focus_value,
             "recording_ev": ev_value,
+            "recording_saturation": saturation_value,
+            "recording_awbgains": awbgains_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
             "photo_every": photo_every_value,
@@ -643,6 +724,14 @@ def main() -> int:
         log("EV compensation: auto (no --ev override)")
     else:
         log(f"EV compensation: {ev_value}")
+    if saturation_value == "default":
+        log("Saturation: default (no --saturation override)")
+    else:
+        log(f"Saturation: {saturation_value}")
+    if awbgains_value == "auto":
+        log("AWB gains: auto (no --awbgains override)")
+    else:
+        log(f"AWB gains: {awbgains_value}")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     if photo_every_enabled:
         log(f"Photo-every interval: {photo_every_value} ({photo_every_ms} ms)")
@@ -666,6 +755,10 @@ def main() -> int:
     ]
     if ev_value != "auto":
         still_args.extend(["--ev", ev_value])
+    if saturation_value != "default":
+        still_args.extend(["--saturation", saturation_value])
+    if awbgains_value != "auto":
+        still_args.extend(["--awbgains", awbgains_value])
     if not is_auto_focus_value(focus_value):
         still_args.extend(["--lens-position", focus_value])
 

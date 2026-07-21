@@ -108,6 +108,11 @@ require_inputs() {
         log_error "Missing photos python worker: ${RECORDING_SCRIPT_SOURCE_DIR}/photos.py"
         exit 1
     fi
+
+    if [[ ! -f "${RECORDING_SCRIPT_SOURCE_DIR}/sht45_logger.py" ]]; then
+        log_error "Missing SHT45 logger worker: ${RECORDING_SCRIPT_SOURCE_DIR}/sht45_logger.py"
+        exit 1
+    fi
 }
 
 determine_upload_user() {

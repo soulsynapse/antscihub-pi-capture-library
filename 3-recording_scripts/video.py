@@ -7,6 +7,7 @@ Still uses rpicam-vid/libcamera-vid for actual capture.
 
 from __future__ import annotations
 
+import atexit
 import datetime as _dt
 import json
 import os
@@ -201,6 +202,49 @@ def safe_write_json_metadata(path: Path, metadata: dict[str, object], label: str
         write_json_metadata(path, metadata)
     except Exception as exc:
         log(f"failed to write {label}: path={path} error={type(exc).__name__}: {exc}")
+
+
+def start_sht45_logger(session_dir: Path, session_stem: str) -> Optional[subprocess.Popen[object]]:
+    worker_path = Path(__file__).with_name("sht45_logger.py")
+    output_path = session_dir / f"{session_stem}-sht45-temperature-humidity.csv"
+    try:
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            output_path.write_text(
+                f"timestamp,temperature_c,relative_humidity_percent\n{timestamp_iso_local()},,\n",
+                encoding="utf-8",
+            )
+    except OSError as exc:
+        log(f"SHT45 CSV initialization failed: output={output_path} error={type(exc).__name__}: {exc}")
+    if not worker_path.is_file():
+        log(f"SHT45 logger unavailable: missing worker={worker_path}")
+        return None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(worker_path), "--output", str(output_path), "--interval-seconds", "60"],
+            start_new_session=os.name != "nt",
+        )
+    except OSError as exc:
+        log(f"SHT45 logger launch failed: output={output_path} error={type(exc).__name__}: {exc}")
+        return None
+    log(f"SHT45 logging started: output={output_path} interval=60s pid={process.pid}")
+    return process
+
+
+def stop_sht45_logger(process: Optional[subprocess.Popen[object]]) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=5)
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired) as exc:
+        log(f"SHT45 logger did not stop cleanly: pid={process.pid} error={type(exc).__name__}: {exc}")
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def parse_positive_int(raw_value: str) -> Optional[int]:
@@ -645,6 +689,7 @@ def main() -> int:
             "stem": session_stem,
             "folder": str(session_dir),
             "output_pattern": video_output_leaf_pattern,
+            "sht45_output": f"{session_stem}-sht45-temperature-humidity.csv",
         },
         "settings": {
             "focus_lens_position": focus_value,
@@ -660,6 +705,7 @@ def main() -> int:
             "resolution": f"{width_value}x{height_value}",
             "video_width": width_value,
             "video_height": height_value,
+            "sht45_sample_interval_seconds": 60,
         },
         "file_metadata": {
             "embedded_in_video": False,
@@ -667,6 +713,8 @@ def main() -> int:
         },
     }
     safe_write_json_metadata(session_dir / "capture-metadata.json", session_metadata, "session metadata")
+    sht45_logger = start_sht45_logger(session_dir, session_stem)
+    atexit.register(stop_sht45_logger, sht45_logger)
 
     log(f"Using video command: {video_cmd}")
     if is_auto_focus_value(focus_value):
@@ -735,7 +783,10 @@ def main() -> int:
         "Starting segmented capture: "
         f"timeout={capture_timeout_ms}ms segment={segment_ms}ms output={video_output_pattern}"
     )
-    return run_capture(video_cmd, video_args, cwd=session_dir)
+    try:
+        return run_capture(video_cmd, video_args, cwd=session_dir)
+    finally:
+        stop_sht45_logger(sht45_logger)
 
 
 if __name__ == "__main__":

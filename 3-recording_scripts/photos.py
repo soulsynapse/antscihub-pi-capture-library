@@ -7,6 +7,7 @@ Still uses rpicam-still/libcamera-still for actual capture.
 
 from __future__ import annotations
 
+import atexit
 import datetime as _dt
 import json
 import os
@@ -209,6 +210,49 @@ def safe_write_json_metadata(path: Path, metadata: dict[str, object], label: str
         write_json_metadata(path, metadata)
     except Exception as exc:
         log(f"failed to write {label}: path={path} error={type(exc).__name__}: {exc}")
+
+
+def start_sht45_logger(session_dir: Path, session_stem: str) -> Optional[subprocess.Popen[object]]:
+    worker_path = Path(__file__).with_name("sht45_logger.py")
+    output_path = session_dir / f"{session_stem}-sht45-temperature-humidity.csv"
+    try:
+        if not output_path.is_file() or output_path.stat().st_size == 0:
+            output_path.write_text(
+                f"timestamp,temperature_c,relative_humidity_percent\n{timestamp_iso_local()},,\n",
+                encoding="utf-8",
+            )
+    except OSError as exc:
+        log(f"SHT45 CSV initialization failed: output={output_path} error={type(exc).__name__}: {exc}")
+    if not worker_path.is_file():
+        log(f"SHT45 logger unavailable: missing worker={worker_path}")
+        return None
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(worker_path), "--output", str(output_path), "--interval-seconds", "60"],
+            start_new_session=os.name != "nt",
+        )
+    except OSError as exc:
+        log(f"SHT45 logger launch failed: output={output_path} error={type(exc).__name__}: {exc}")
+        return None
+    log(f"SHT45 logging started: output={output_path} interval=60s pid={process.pid}")
+    return process
+
+
+def stop_sht45_logger(process: Optional[subprocess.Popen[object]]) -> None:
+    if process is None or process.poll() is not None:
+        return
+    try:
+        if os.name != "nt":
+            os.killpg(process.pid, signal.SIGTERM)
+        else:
+            process.terminate()
+        process.wait(timeout=5)
+    except (OSError, ProcessLookupError, subprocess.TimeoutExpired) as exc:
+        log(f"SHT45 logger did not stop cleanly: pid={process.pid} error={type(exc).__name__}: {exc}")
+        try:
+            process.kill()
+        except OSError:
+            pass
 
 
 def embed_jpeg_comment(path: Path, comment_text: str) -> None:
@@ -700,6 +744,7 @@ def main() -> int:
             "stem": session_stem,
             "folder": str(session_dir),
             "output_pattern": photo_output_leaf_pattern,
+            "sht45_output": f"{session_stem}-sht45-temperature-humidity.csv",
         },
         "settings": {
             "focus_lens_position": focus_value,
@@ -711,9 +756,12 @@ def main() -> int:
             "photo_every": photo_every_value,
             "photo_every_ms": photo_every_ms,
             "photo_every_enabled": photo_every_enabled,
+            "sht45_sample_interval_seconds": 60,
         },
     }
     safe_write_json_metadata(session_dir / "capture-metadata.json", session_metadata, "session metadata")
+    sht45_logger = start_sht45_logger(session_dir, session_stem)
+    atexit.register(stop_sht45_logger, sht45_logger)
 
     log(f"Using still command: {still_cmd}")
     if is_auto_focus_value(focus_value):

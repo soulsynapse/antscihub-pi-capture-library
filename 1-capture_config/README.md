@@ -163,4 +163,4 @@ Current bundled profiles:
 - `Fast preview` raises only the preview framerate; auto-exposure may then choose a shorter shutter than the recording would, so check the final look with it off
 - `Copy commands` puts one `antcam <setting> set <value>` line per setting on the clipboard. The tool never writes settings itself
 - The camera cannot be shared: stop a running recording (`antcam stop`) before opening the tuner, and close the tuner before `antcam start`
-- Needs Tk and Pillow: `sudo apt install python3-tk python3-pil python3-pil.imagetk` (`install.sh` warns when they are missing; it does not install them)
+- Needs Tk and Pillow: `sudo apt install python3-tk python3-pil python3-pil.imagetk` (`install.sh` installs them with `apt-get` when they are missing, and only warns if that fails, for example with no network)

@@ -241,6 +241,8 @@ grep -q 'clipboard_append' "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
 grep -q 'TUNER_SCRIPT_TARGET' "${REPO_ROOT}/install.sh"
 grep -q 'antcam-tuner.desktop' "${REPO_ROOT}/install.sh"
 grep -q 'install_tuner' "${REPO_ROOT}/install.sh"
+grep -q 'install_tuner_dependencies' "${REPO_ROOT}/install.sh"
+grep -q 'python3-pil.imagetk' "${REPO_ROOT}/install.sh"
 grep -q 'antcam_tuner.py' "${REPO_ROOT}/1-capture_config/README.md"
 echo "[static-checks] OK antcam tuner checks"
 

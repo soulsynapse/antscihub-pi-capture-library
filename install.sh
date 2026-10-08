@@ -281,8 +281,39 @@ EOF
     chmod 0755 "${shortcut_path}"
     chown "${tuner_user}:" "${shortcut_path}" >/dev/null 2>&1 || log_warn "Could not set owner on ${shortcut_path}"
 
-    if ! python3 -c 'import tkinter, PIL.ImageTk' >/dev/null 2>&1; then
-        log_warn "Antcam tuner needs Tk and Pillow: sudo apt install python3-tk python3-pil python3-pil.imagetk"
+    install_tuner_dependencies
+}
+
+tuner_dependencies_present() {
+    python3 -c 'import tkinter, PIL.ImageTk' >/dev/null 2>&1
+}
+
+tuner_apt_get() {
+    DEBIAN_FRONTEND=noninteractive timeout 600 apt-get -o DPkg::Lock::Timeout=60 "$@" >/dev/null 2>&1
+}
+
+# Best effort: a Pi without network still completes the install, minus the tuner preview.
+install_tuner_dependencies() {
+    local packages=(python3-tk python3-pil python3-pil.imagetk)
+
+    if tuner_dependencies_present; then
+        return 0
+    fi
+
+    if ! command -v apt-get >/dev/null 2>&1; then
+        log_warn "Antcam tuner needs Tk and Pillow, and apt-get is not available: ${packages[*]}"
+        return 0
+    fi
+
+    log_info "Installing antcam tuner dependencies: ${packages[*]}"
+    if ! tuner_apt_get install -y "${packages[@]}"; then
+        log_info "Refreshing apt package lists and retrying"
+        tuner_apt_get update || true
+        tuner_apt_get install -y "${packages[@]}" || true
+    fi
+
+    if ! tuner_dependencies_present; then
+        log_warn "Could not install antcam tuner dependencies. Run: sudo apt install ${packages[*]}"
     fi
 }
 

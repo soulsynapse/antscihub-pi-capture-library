@@ -33,6 +33,8 @@ RECORDING_RESUME_SERVICE_PATH="/etc/systemd/system/${RECORDING_RESUME_SERVICE_NA
 DEFAULT_REMOTE="gdrive_personal"
 DEFAULT_REMOTE_PATH=""
 
+INSTALLED_FILE_PAIRS=()
+
 LEGACY_UNITS=(
     "antscihub-capture.service"
     "${CAMERA_SERVICE_NAME}"
@@ -199,6 +201,80 @@ resolve_desktop_dir_for_home() {
     printf '%s\n' "${desktop%/}"
 }
 
+# Each write lands under a temporary name, is flushed to disk, then renamed over
+# the target, so a power cut mid-install leaves a file at its old content or its
+# new content and never truncated.
+install_file_atomic() {
+    local mode="$1"
+    local source_file="$2"
+    local target_file="$3"
+    local tmp_file="${target_file}.antscihub-new"
+
+    install -m "${mode}" "${source_file}" "${tmp_file}"
+    sync "${tmp_file}"
+    mv -f "${tmp_file}" "${target_file}"
+    INSTALLED_FILE_PAIRS+=("${source_file}" "${target_file}")
+}
+
+# Same as install_file_atomic, with the content read from stdin.
+write_file_atomic() {
+    local mode="$1"
+    local target_file="$2"
+    local tmp_file="${target_file}.antscihub-new"
+
+    cat > "${tmp_file}"
+    chmod "${mode}" "${tmp_file}"
+    sync "${tmp_file}"
+    mv -f "${tmp_file}" "${target_file}"
+}
+
+# Installs every top-level file of source_dir, then removes target files matching
+# the given globs that the source no longer ships. Removal comes last so the
+# target never passes through an empty state.
+install_dir_files_atomic() {
+    local source_dir="$1"
+    local target_dir="$2"
+    shift 2
+
+    mkdir -p "${target_dir}"
+    local source_file file_name mode
+    for source_file in "${source_dir}"/*; do
+        [[ -f "${source_file}" ]] || continue
+        file_name="$(basename "${source_file}")"
+        case "${file_name}" in
+            *.sh|*.py) mode="0755" ;;
+            *) mode="0644" ;;
+        esac
+        install_file_atomic "${mode}" "${source_file}" "${target_dir}/${file_name}"
+    done
+
+    local stale_glob target_file
+    for stale_glob in "$@"; do
+        for target_file in "${target_dir}"/${stale_glob}; do
+            [[ -f "${target_file}" ]] || continue
+            if [[ ! -f "${source_dir}/$(basename "${target_file}")" ]]; then
+                rm -f "${target_file}"
+            fi
+        done
+    done
+}
+
+flush_and_verify_installed_files() {
+    log_info "Flushing installed files to disk"
+    sync
+
+    local index source_file target_file
+    for ((index = 0; index < ${#INSTALLED_FILE_PAIRS[@]}; index += 2)); do
+        source_file="${INSTALLED_FILE_PAIRS[index]}"
+        target_file="${INSTALLED_FILE_PAIRS[index + 1]}"
+        if ! cmp -s "${source_file}" "${target_file}"; then
+            log_error "Installed file does not match its source: ${target_file} (source: ${source_file})"
+            exit 1
+        fi
+    done
+    log_info "Verified $(( ${#INSTALLED_FILE_PAIRS[@]} / 2 )) installed files against their sources"
+}
+
 remove_legacy_units() {
     local unit
     for unit in "${LEGACY_UNITS[@]}"; do
@@ -225,31 +301,29 @@ disable_dynamic_camera_service() {
 
 install_camera_cli() {
     log_info "Installing camera profiles to ${CAMERA_PROFILE_TARGET_DIR}"
-    mkdir -p "${CAMERA_PROFILE_TARGET_DIR}"
-    rm -f "${CAMERA_PROFILE_TARGET_DIR}"/*.conf
-    cp -a "${CAMERA_PROFILE_SOURCE_DIR}/." "${CAMERA_PROFILE_TARGET_DIR}/"
-    find "${CAMERA_PROFILE_TARGET_DIR}" -type f -name '*.conf' -exec chmod 0644 {} +
+    install_dir_files_atomic "${CAMERA_PROFILE_SOURCE_DIR}" "${CAMERA_PROFILE_TARGET_DIR}" '*.conf'
 
     log_info "Installing antcam CLI to ${CAMERA_CLI_TARGET}"
-    install -m 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
+    install_file_atomic 0755 "${CAMERA_CLI_SOURCE}" "${CAMERA_CLI_TARGET}"
 
     log_info "Installing antcam helper libraries to ${ANTCAM_HELPER_TARGET_DIR}"
     mkdir -p "${ANTCAM_HELPER_TARGET_DIR}"
-    rm -f "${ANTCAM_HELPER_TARGET_DIR}"/antcam_*_helpers.sh
-    install -m 0644 "${ANTCAM_UPLOAD_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_upload_helpers.sh"
-    install -m 0644 "${ANTCAM_DIAGNOSTIC_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_diagnostic_helpers.sh"
+    install_file_atomic 0644 "${ANTCAM_UPLOAD_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_upload_helpers.sh"
+    install_file_atomic 0644 "${ANTCAM_DIAGNOSTIC_HELPER_SOURCE}" "${ANTCAM_HELPER_TARGET_DIR}/antcam_diagnostic_helpers.sh"
+    local helper_file
+    for helper_file in "${ANTCAM_HELPER_TARGET_DIR}"/antcam_*_helpers.sh; do
+        case "$(basename "${helper_file}")" in
+            antcam_upload_helpers.sh|antcam_diagnostic_helpers.sh) ;;
+            *) rm -f "${helper_file}" ;;
+        esac
+    done
 
     log_info "Installing focus helper script to ${FOCUS_SCRIPT_TARGET}"
     mkdir -p "/etc/antscihub"
-    install -m 0755 "${FOCUS_SCRIPT_SOURCE}" "${FOCUS_SCRIPT_TARGET}"
+    install_file_atomic 0755 "${FOCUS_SCRIPT_SOURCE}" "${FOCUS_SCRIPT_TARGET}"
 
     log_info "Installing recording scripts to ${RECORDING_SCRIPT_TARGET_DIR}"
-    mkdir -p "${RECORDING_SCRIPT_TARGET_DIR}"
-    rm -f "${RECORDING_SCRIPT_TARGET_DIR}"/*.sh
-    rm -f "${RECORDING_SCRIPT_TARGET_DIR}"/*.py
-    cp -a "${RECORDING_SCRIPT_SOURCE_DIR}/." "${RECORDING_SCRIPT_TARGET_DIR}/"
-    find "${RECORDING_SCRIPT_TARGET_DIR}" -type f -name '*.sh' -exec chmod 0755 {} +
-    find "${RECORDING_SCRIPT_TARGET_DIR}" -type f -name '*.py' -exec chmod 0755 {} +
+    install_dir_files_atomic "${RECORDING_SCRIPT_SOURCE_DIR}" "${RECORDING_SCRIPT_TARGET_DIR}" '*.sh' '*.py'
 
     if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
         log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"
@@ -264,11 +338,11 @@ install_tuner() {
 
     log_info "Installing antcam tuner to ${TUNER_SCRIPT_TARGET}"
     mkdir -p "/etc/antscihub"
-    install -m 0755 "${TUNER_SCRIPT_SOURCE}" "${TUNER_SCRIPT_TARGET}"
+    install_file_atomic 0755 "${TUNER_SCRIPT_SOURCE}" "${TUNER_SCRIPT_TARGET}"
 
     log_info "Writing antcam tuner desktop shortcut: ${shortcut_path}"
     mkdir -p "${desktop_dir}"
-    cat > "${shortcut_path}" <<EOF
+    write_file_atomic 0755 "${shortcut_path}" <<EOF
 [Desktop Entry]
 Type=Application
 Name=Antcam Tuner
@@ -278,7 +352,6 @@ Icon=camera-video
 Terminal=false
 Categories=Utility;
 EOF
-    chmod 0755 "${shortcut_path}"
     chown "${tuner_user}:" "${shortcut_path}" >/dev/null 2>&1 || log_warn "Could not set owner on ${shortcut_path}"
 
     install_tuner_dependencies
@@ -326,7 +399,7 @@ write_upload_unit() {
     upload_config_dir="${upload_parent}/4-CAPTURE/config"
     mqtt_env_file="${upload_parent}/1-MQTT/.env"
 
-    cat > "${UPLOAD_SERVICE_PATH}" <<EOF
+    write_file_atomic 0644 "${UPLOAD_SERVICE_PATH}" <<EOF
 [Unit]
 Description=AntSciHub Upload Worker
 After=network-online.target
@@ -377,7 +450,7 @@ write_recording_resume_unit() {
     desktop_dir="$(resolve_desktop_dir_for_home "${upload_home}")"
     mqtt_env_file="${desktop_dir}/1-MQTT/.env"
 
-    cat > "${RECORDING_RESUME_SERVICE_PATH}" <<EOF
+    write_file_atomic 0644 "${RECORDING_RESUME_SERVICE_PATH}" <<EOF
 [Unit]
 Description=AntSciHub Recording Resume Worker
 After=network-online.target
@@ -551,6 +624,7 @@ main() {
     write_upload_unit "$upload_user" "$upload_home" "$upload_dir"
     log_info "Writing ${RECORDING_RESUME_SERVICE_NAME}"
     write_recording_resume_unit "$upload_user" "$upload_home"
+    flush_and_verify_installed_files
 
     log_info "Reloading systemd daemon"
     systemctl daemon-reload
@@ -569,6 +643,7 @@ main() {
         upload_destination="${DEFAULT_REMOTE}:${DEFAULT_REMOTE_PATH}"
     fi
 
+    sync
     log_info "Installation/update complete"
     log_info "Camera profiles dir: ${CAMERA_PROFILE_TARGET_DIR}"
     log_info "Camera CLI: ${CAMERA_CLI_TARGET}"

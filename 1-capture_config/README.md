@@ -152,6 +152,7 @@ Current bundled profiles:
 - If the autofocus helper fails, `antcam focus check` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
 - `install.sh` installs/updates the CLI, profile files, focus helper, antcam tuner, and recording scripts
+- `install.sh` writes each installed file under a temporary name, flushes it, and renames it into place, then compares the installed copies against the repo and fails if any differ; a power cut mid-install leaves each file at its old or new content, and re-running `install.sh` finishes the job
 
 ## Antcam tuner
 

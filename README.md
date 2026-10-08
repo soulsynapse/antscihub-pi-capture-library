@@ -137,6 +137,8 @@ Bundled recording scripts:
 - `video.py` (with `video.sh` retained as a compatibility launcher) -> configurable fps video (`antcam fps set <value>`, default `1`), default 1080p (`1920x1080`), configurable EV (`antcam ev set <value|auto>`), saturation (`antcam saturation set <value|default>`), AWB gains (`antcam awbgains set <red,blue|auto>`), gain (`antcam gain set <value|auto>`), shutter (`antcam shutter set <microseconds|auto>`), length/segment/intra (`antcam length set`, `antcam segment set`, `antcam intra set`), and focus from saved `lens-position` or `auto`
 - `photos.py` (with `photos.sh` retained as a compatibility launcher) -> interval-driven still-photo capture (`antcam photo-every set <duration|none|0>`) with configurable EV (`antcam ev set <value|auto>`), saturation (`antcam saturation set <value|default>`), AWB gains (`antcam awbgains set <red,blue|auto>`), gain (`antcam gain set <value|auto>`), and shutter (`antcam shutter set <microseconds|auto>`). Positive values require minimum `10s`; `none`/`0` keeps one-shot behavior. For positive intervals, captures occur at `t=0` and then every interval while `scheduled_time <= recording_length`
 
+`antcam_tuner.py` (installed to `/etc/antscihub/antcam_tuner.py`, with an `antcam-tuner.desktop` shortcut on the capture user's Desktop) opens a settings panel beside a live preview and copies the tuned values out as `antcam <setting> set <value>` commands; see `1-capture_config/README.md`.
+
 `antcam focus check` resolves the active user's Desktop path and then:
 
 - Creates `<desktop>/4-CAPTURE` if missing

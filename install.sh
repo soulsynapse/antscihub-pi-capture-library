@@ -17,6 +17,9 @@ CAMERA_PROFILE_SOURCE_DIR="${SCRIPT_DIR}/1-capture_config/profiles"
 CAMERA_PROFILE_TARGET_DIR="/etc/antscihub/camera-profiles"
 FOCUS_SCRIPT_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam_focus_autofocus.sh"
 FOCUS_SCRIPT_TARGET="/etc/antscihub/antcam_focus_autofocus.sh"
+TUNER_SCRIPT_SOURCE="${SCRIPT_DIR}/1-capture_config/antcam_tuner.py"
+TUNER_SCRIPT_TARGET="/etc/antscihub/antcam_tuner.py"
+TUNER_SHORTCUT_NAME="antcam-tuner.desktop"
 RECORDING_SCRIPT_SOURCE_DIR="${SCRIPT_DIR}/3-recording_scripts"
 RECORDING_SCRIPT_TARGET_DIR="/etc/antscihub/recording-scripts"
 
@@ -76,6 +79,11 @@ require_inputs() {
 
     if [[ ! -f "$FOCUS_SCRIPT_SOURCE" ]]; then
         log_error "Missing focus helper script: $FOCUS_SCRIPT_SOURCE"
+        exit 1
+    fi
+
+    if [[ ! -f "$TUNER_SCRIPT_SOURCE" ]]; then
+        log_error "Missing antcam tuner script: $TUNER_SCRIPT_SOURCE"
         exit 1
     fi
 
@@ -246,6 +254,35 @@ install_camera_cli() {
     if [[ -f "${LEGACY_CAMERA_CLI_TARGET}" ]]; then
         log_info "Removing legacy camera CLI at ${LEGACY_CAMERA_CLI_TARGET}"
         rm -f "${LEGACY_CAMERA_CLI_TARGET}"
+    fi
+}
+
+install_tuner() {
+    local tuner_user="$1"
+    local desktop_dir="$2"
+    local shortcut_path="${desktop_dir}/${TUNER_SHORTCUT_NAME}"
+
+    log_info "Installing antcam tuner to ${TUNER_SCRIPT_TARGET}"
+    mkdir -p "/etc/antscihub"
+    install -m 0755 "${TUNER_SCRIPT_SOURCE}" "${TUNER_SCRIPT_TARGET}"
+
+    log_info "Writing antcam tuner desktop shortcut: ${shortcut_path}"
+    mkdir -p "${desktop_dir}"
+    cat > "${shortcut_path}" <<EOF
+[Desktop Entry]
+Type=Application
+Name=Antcam Tuner
+Comment=Tune antcam capture settings against a live preview
+Exec=python3 ${TUNER_SCRIPT_TARGET}
+Icon=camera-video
+Terminal=false
+Categories=Utility;
+EOF
+    chmod 0755 "${shortcut_path}"
+    chown "${tuner_user}:" "${shortcut_path}" >/dev/null 2>&1 || log_warn "Could not set owner on ${shortcut_path}"
+
+    if ! python3 -c 'import tkinter, PIL.ImageTk' >/dev/null 2>&1; then
+        log_warn "Antcam tuner needs Tk and Pillow: sudo apt install python3-tk python3-pil python3-pil.imagetk"
     fi
 }
 
@@ -474,6 +511,7 @@ main() {
     remove_legacy_units
     disable_dynamic_camera_service
     install_camera_cli
+    install_tuner "$upload_user" "$desktop_dir"
 
     # Clear old manager-level overrides from older install flows.
     systemctl unset-environment RCLONE_REMOTE RCLONE_PATH UPLOAD_DIR >/dev/null 2>&1 || true
@@ -505,6 +543,7 @@ main() {
     log_info "Camera CLI: ${CAMERA_CLI_TARGET}"
     log_info "Antcam helper libs dir: ${ANTCAM_HELPER_TARGET_DIR}"
     log_info "Focus helper script: ${FOCUS_SCRIPT_TARGET}"
+    log_info "Antcam tuner: ${TUNER_SCRIPT_TARGET} (shortcut: ${desktop_dir}/${TUNER_SHORTCUT_NAME})"
     log_info "Recording scripts dir: ${RECORDING_SCRIPT_TARGET_DIR}"
     log_info "Dynamic camera service disabled: ${CAMERA_SERVICE_NAME}"
     log_info "Upload service user: ${upload_user}"

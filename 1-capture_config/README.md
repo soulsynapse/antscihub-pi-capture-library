@@ -151,4 +151,16 @@ Current bundled profiles:
 - `antcam focus check` copies the captured focus photo and matching `.metadata.txt` into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup
 - If the autofocus helper fails, `antcam focus check` writes a timestamped diagnostic log to `<desktop>/5-UPLOAD/diagnostics/recordings/`
 - You can add custom profiles by dropping `*.conf` files into `/etc/antscihub/camera-profiles`
-- `install.sh` installs/updates the CLI, profile files, focus helper, and recording scripts
+- `install.sh` installs/updates the CLI, profile files, focus helper, antcam tuner, and recording scripts
+
+## Antcam tuner
+
+`antcam_tuner.py` is a desktop tool for tuning the image settings against a live preview. `install.sh` installs it to `/etc/antscihub/antcam_tuner.py` and writes an `antcam-tuner.desktop` shortcut onto the capture user's Desktop; run it from the Pi desktop session (for example over a remote desktop connection), or directly with `python3 /etc/antscihub/antcam_tuner.py`.
+
+- The left side holds focus, EV, saturation, AWB gains, gain, shutter, and fps, each loaded from `antcam <setting> report`, so it opens on whatever the Pi is currently configured to record with
+- The preview runs the same `rpicam-vid`/`libcamera-vid` flags `video.py` records with (size, framerate, and the image settings), encoded as MJPEG instead of H.264; changing a setting restarts it
+- The line under the preview shows what the camera is actually doing (exposure time, analogue/digital gain, colour gains, lens position); `use live` copies the current value into a setting, which is how an auto value gets pinned
+- `Fast preview` raises only the preview framerate; auto-exposure may then choose a shorter shutter than the recording would, so check the final look with it off
+- `Copy commands` puts one `antcam <setting> set <value>` line per setting on the clipboard. The tool never writes settings itself
+- The camera cannot be shared: stop a running recording (`antcam stop`) before opening the tuner, and close the tuner before `antcam start`
+- Needs Tk and Pillow: `sudo apt install python3-tk python3-pil python3-pil.imagetk` (`install.sh` warns when they are missing; it does not install them)

@@ -15,6 +15,7 @@ SCRIPTS=(
 )
 
 PYTHON_SCRIPTS=(
+    "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
     "${REPO_ROOT}/3-recording_scripts/video.py"
     "${REPO_ROOT}/3-recording_scripts/photos.py"
     "${REPO_ROOT}/4-upload/upload_worker.py"
@@ -229,6 +230,19 @@ grep -q -- '--gain' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 grep -q -- '--shutter' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 grep -q 'rpicam-vid --lens-position' "${REPO_ROOT}/1-capture_config/antcam_focus_autofocus.sh"
 echo "[static-checks] OK focus helper checks"
+
+echo "[static-checks] Checking antcam tuner"
+for tuner_setting in focus ev saturation awbgains gain shutter fps; do
+    grep -q "key=\"${tuner_setting}\"" "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
+done
+grep -q -- '--codec' "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
+grep -q 'ANTCAM_VIDEO_WIDTH' "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
+grep -q 'clipboard_append' "${REPO_ROOT}/1-capture_config/antcam_tuner.py"
+grep -q 'TUNER_SCRIPT_TARGET' "${REPO_ROOT}/install.sh"
+grep -q 'antcam-tuner.desktop' "${REPO_ROOT}/install.sh"
+grep -q 'install_tuner' "${REPO_ROOT}/install.sh"
+grep -q 'antcam_tuner.py' "${REPO_ROOT}/1-capture_config/README.md"
+echo "[static-checks] OK antcam tuner checks"
 
 echo "[static-checks] Checking recording scripts and docs"
 test -f "${REPO_ROOT}/3-recording_scripts/video.sh"

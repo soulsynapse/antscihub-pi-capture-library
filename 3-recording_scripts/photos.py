@@ -140,6 +140,28 @@ def normalize_awbgains_value(value: str) -> str:
     return normalized
 
 
+def normalize_gain_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", normalized) is None:
+        return ""
+    if float(normalized) <= 0:
+        return ""
+    return normalized
+
+
+def normalize_shutter_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[0-9]+", normalized) is None:
+        return ""
+    if int(normalized) <= 0:
+        return ""
+    return normalized
+
+
 def is_auto_focus_value(value: str) -> bool:
     return (value or "").strip().lower() == "auto"
 
@@ -179,6 +201,8 @@ def build_photo_settings_tag(
     ev_value: str,
     saturation_value: str,
     awbgains_value: str,
+    gain_value: str,
+    shutter_value: str,
     photo_every_value: str,
     length_value: str,
 ) -> str:
@@ -186,9 +210,13 @@ def build_photo_settings_tag(
     ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
     saturation_tag = f"sat-{sanitize_capture_tag_value(saturation_value, 'default')}"
     awbgains_tag = f"awb-{sanitize_capture_tag_value(awbgains_value.replace(',', '_'), 'auto')}"
+    gain_tag = f"gain-{sanitize_capture_tag_value(gain_value, 'auto')}"
+    shutter_tag = f"shut-{sanitize_capture_tag_value(shutter_value, 'auto')}"
     photo_interval_tag = build_photo_interval_tag(photo_every_value)
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
-    return "-".join((focus_tag, ev_tag, saturation_tag, awbgains_tag, photo_interval_tag, length_tag))
+    return "-".join(
+        (focus_tag, ev_tag, saturation_tag, awbgains_tag, gain_tag, shutter_tag, photo_interval_tag, length_tag)
+    )
 
 
 def timestamp_iso_local() -> str:
@@ -378,6 +406,20 @@ def resolve_awbgains_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "recording-awbgains.txt"
+
+
+def resolve_gain_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_GAIN_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-gain.txt"
+
+
+def resolve_shutter_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_SHUTTER_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-shutter.txt"
 
 
 def resolve_length_file_path(capture_dir: Path) -> Path:
@@ -581,6 +623,8 @@ def main() -> int:
     ev_file = resolve_ev_file_path(capture_dir)
     saturation_file = resolve_saturation_file_path(capture_dir)
     awbgains_file = resolve_awbgains_file_path(capture_dir)
+    gain_file = resolve_gain_file_path(capture_dir)
+    shutter_file = resolve_shutter_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     photo_every_file = resolve_photo_every_file_path(capture_dir)
     name_file = resolve_name_file_path(capture_dir)
@@ -641,6 +685,34 @@ def main() -> int:
         )
         log("set it with: antcam awbgains set <red,blue|auto> (example: 1.0,1.0, 1.6,1.2, auto)")
         return 16
+
+    gain_raw_value = os.environ.get("ANTCAM_RECORDING_GAIN", "")
+    if not gain_raw_value:
+        gain_raw_value = read_value_with_default(gain_file, "auto")
+    gain_value = normalize_gain_value(gain_raw_value)
+    if not gain_value:
+        log_invalid_setting(
+            "recording gain value",
+            gain_raw_value,
+            setting_source("ANTCAM_RECORDING_GAIN", gain_file),
+            "positive gain or auto",
+        )
+        log("set it with: antcam gain set <value|auto> (example: 1, 2.5, 8, auto)")
+        return 17
+
+    shutter_raw_value = os.environ.get("ANTCAM_RECORDING_SHUTTER", "")
+    if not shutter_raw_value:
+        shutter_raw_value = read_value_with_default(shutter_file, "auto")
+    shutter_value = normalize_shutter_value(shutter_raw_value)
+    if not shutter_value:
+        log_invalid_setting(
+            "recording shutter value",
+            shutter_raw_value,
+            setting_source("ANTCAM_RECORDING_SHUTTER", shutter_file),
+            "positive integer microseconds or auto",
+        )
+        log("set it with: antcam shutter set <microseconds|auto> (example: 1000, 10000, auto)")
+        return 18
 
     length_value = os.environ.get("ANTCAM_RECORDING_LENGTH", "")
     if not length_value:
@@ -724,7 +796,16 @@ def main() -> int:
     upload_dir = resolve_upload_dir_path(capture_dir)
     session_timestamp = _dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     session_hostname = resolve_session_hostname()
-    settings_tag = build_photo_settings_tag(focus_value, ev_value, saturation_value, awbgains_value, photo_every_value, length_value)
+    settings_tag = build_photo_settings_tag(
+        focus_value,
+        ev_value,
+        saturation_value,
+        awbgains_value,
+        gain_value,
+        shutter_value,
+        photo_every_value,
+        length_value,
+    )
     session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
     session_dir = upload_dir / session_stem
     photo_output_leaf_pattern = f"{session_stem}-photo-%05d.jpg"
@@ -751,6 +832,8 @@ def main() -> int:
             "recording_ev": ev_value,
             "recording_saturation": saturation_value,
             "recording_awbgains": awbgains_value,
+            "recording_gain": gain_value,
+            "recording_shutter": shutter_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
             "photo_every": photo_every_value,
@@ -780,6 +863,14 @@ def main() -> int:
         log("AWB gains: auto (no --awbgains override)")
     else:
         log(f"AWB gains: {awbgains_value}")
+    if gain_value == "auto":
+        log("Gain: auto (no --gain override)")
+    else:
+        log(f"Gain: {gain_value}")
+    if shutter_value == "auto":
+        log("Shutter: auto (no --shutter override)")
+    else:
+        log(f"Shutter: {shutter_value} us")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     if photo_every_enabled:
         log(f"Photo-every interval: {photo_every_value} ({photo_every_ms} ms)")
@@ -807,6 +898,10 @@ def main() -> int:
         still_args.extend(["--saturation", saturation_value])
     if awbgains_value != "auto":
         still_args.extend(["--awbgains", awbgains_value])
+    if gain_value != "auto":
+        still_args.extend(["--gain", gain_value])
+    if shutter_value != "auto":
+        still_args.extend(["--shutter", shutter_value])
     if not is_auto_focus_value(focus_value):
         still_args.extend(["--lens-position", focus_value])
 

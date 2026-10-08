@@ -140,6 +140,10 @@ DEFAULT_SATURATION_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-saturation
 SATURATION_SETTINGS_RELATIVE_PATH="${ANTCAM_SATURATION_SETTINGS_RELATIVE_PATH:-${DEFAULT_SATURATION_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_AWBGAINS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-awbgains.txt"
 AWBGAINS_SETTINGS_RELATIVE_PATH="${ANTCAM_AWBGAINS_SETTINGS_RELATIVE_PATH:-${DEFAULT_AWBGAINS_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_GAIN_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-gain.txt"
+GAIN_SETTINGS_RELATIVE_PATH="${ANTCAM_GAIN_SETTINGS_RELATIVE_PATH:-${DEFAULT_GAIN_SETTINGS_RELATIVE_PATH}}"
+DEFAULT_SHUTTER_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-shutter.txt"
+SHUTTER_SETTINGS_RELATIVE_PATH="${ANTCAM_SHUTTER_SETTINGS_RELATIVE_PATH:-${DEFAULT_SHUTTER_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_FPS_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-fps.txt"
 FPS_SETTINGS_RELATIVE_PATH="${ANTCAM_FPS_SETTINGS_RELATIVE_PATH:-${DEFAULT_FPS_SETTINGS_RELATIVE_PATH}}"
 DEFAULT_LENGTH_SETTINGS_RELATIVE_PATH="4-CAPTURE/config/recording-length.txt"
@@ -180,6 +184,8 @@ DEFAULT_RECORDING_FPS="${ANTCAM_DEFAULT_RECORDING_FPS:-1}"
 DEFAULT_RECORDING_EV="${ANTCAM_DEFAULT_RECORDING_EV:-auto}"
 DEFAULT_RECORDING_SATURATION="${ANTCAM_DEFAULT_RECORDING_SATURATION:-default}"
 DEFAULT_RECORDING_AWBGAINS="${ANTCAM_DEFAULT_RECORDING_AWBGAINS:-auto}"
+DEFAULT_RECORDING_GAIN="${ANTCAM_DEFAULT_RECORDING_GAIN:-auto}"
+DEFAULT_RECORDING_SHUTTER="${ANTCAM_DEFAULT_RECORDING_SHUTTER:-auto}"
 DEFAULT_RECORDING_LENGTH="${ANTCAM_DEFAULT_RECORDING_LENGTH:-0s}"
 DEFAULT_RECORDING_SEGMENT="${ANTCAM_DEFAULT_RECORDING_SEGMENT:-1m}"
 DEFAULT_RECORDING_INTRA="${ANTCAM_DEFAULT_RECORDING_INTRA:-none}"
@@ -231,6 +237,10 @@ Usage:
   antcam saturation report
   antcam awbgains set <red,blue|auto>
   antcam awbgains report
+  antcam gain set <value|auto>
+  antcam gain report
+  antcam shutter set <microseconds|auto>
+  antcam shutter report
   antcam fps set <value>
   antcam fps report
   antcam length set <duration>
@@ -288,6 +298,12 @@ Examples:
   antcam awbgains set 1.0,1.0
   antcam awbgains set auto
   antcam awbgains report
+  antcam gain set 2.0
+  antcam gain set auto
+  antcam gain report
+  antcam shutter set 10000
+  antcam shutter set auto
+  antcam shutter report
   antcam fps set 2
   antcam fps report
   antcam length set 30h
@@ -553,6 +569,42 @@ resolve_awbgains_value_file_for_home() {
     printf '%s\n' "${desktop_dir%/}/${AWBGAINS_SETTINGS_RELATIVE_PATH#./}"
 }
 
+resolve_gain_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_GAIN_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_GAIN_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${GAIN_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${GAIN_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${GAIN_SETTINGS_RELATIVE_PATH#./}"
+}
+
+resolve_shutter_value_file_for_home() {
+    local user_home="$1"
+
+    if [[ -n "${ANTCAM_SHUTTER_VALUE_FILE:-}" ]]; then
+        printf '%s\n' "${ANTCAM_SHUTTER_VALUE_FILE}"
+        return 0
+    fi
+
+    if [[ "${SHUTTER_SETTINGS_RELATIVE_PATH}" == /* ]]; then
+        printf '%s\n' "${SHUTTER_SETTINGS_RELATIVE_PATH}"
+        return 0
+    fi
+
+    local desktop_dir
+    desktop_dir="$(resolve_desktop_dir_for_home "${user_home}")"
+    printf '%s\n' "${desktop_dir%/}/${SHUTTER_SETTINGS_RELATIVE_PATH#./}"
+}
+
 resolve_fps_value_file_for_home() {
     local user_home="$1"
 
@@ -780,6 +832,8 @@ write_recording_resume_state_for_home() {
     local ev_value="${16:-auto}"
     local saturation_value="${17:-default}"
     local awbgains_value="${18:-auto}"
+    local gain_value="${19:-auto}"
+    local shutter_value="${20:-auto}"
 
     [[ "${start_epoch}" =~ ^[0-9]+$ ]] || return 1
     [[ "${end_epoch}" =~ ^[0-9]+$ ]] || return 1
@@ -807,6 +861,8 @@ write_recording_resume_state_for_home() {
         echo "ev_value=${ev_value}"
         echo "saturation_value=${saturation_value}"
         echo "awbgains_value=${awbgains_value}"
+        echo "gain_value=${gain_value}"
+        echo "shutter_value=${shutter_value}"
         echo "photo_every_value=${photo_every_value}"
         echo "name_value=${name_value}"
         echo "recording_start_epoch=${start_epoch}"
@@ -1023,6 +1079,44 @@ normalize_awbgains_setting_value() {
             red_gain="${normalized_value%%,*}"
             blue_gain="${normalized_value#*,}"
             awk -v red="${red_gain}" -v blue="${blue_gain}" 'BEGIN { exit (red > 0 && blue > 0 ? 0 : 1) }' || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_gain_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+            awk -v gain="${normalized_value}" 'BEGIN { exit (gain > 0 ? 0 : 1) }' || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_shutter_setting_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="$(normalize_upload_text_value "${raw_value}")"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+$ ]] || return 1
+            [[ "${normalized_value}" =~ [1-9] ]] || return 1
             printf '%s\n' "${normalized_value}"
             return 0
             ;;
@@ -2210,6 +2304,42 @@ read_awbgains_setting_for_home() {
     printf '%s\n' "${normalized_awbgains_value}"
 }
 
+read_gain_setting_for_home() {
+    local user_home="$1"
+    local gain_file gain_value normalized_gain_value
+    gain_file="$(resolve_gain_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${gain_file}" ]]; then
+        normalized_gain_value="$(normalize_gain_setting_value "${DEFAULT_RECORDING_GAIN}" || true)"
+        [[ -n "${normalized_gain_value}" ]] || die "invalid default gain value: ${DEFAULT_RECORDING_GAIN} (expected positive gain or auto)"
+        printf '%s\n' "${normalized_gain_value}"
+        return 0
+    fi
+
+    gain_value="$(head -n 1 "${gain_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_gain_value="$(normalize_gain_setting_value "${gain_value}" || true)"
+    [[ -n "${normalized_gain_value}" ]] || die "invalid gain value in ${gain_file}: ${gain_value} (expected positive gain or auto)"
+    printf '%s\n' "${normalized_gain_value}"
+}
+
+read_shutter_setting_for_home() {
+    local user_home="$1"
+    local shutter_file shutter_value normalized_shutter_value
+    shutter_file="$(resolve_shutter_value_file_for_home "${user_home}")"
+
+    if [[ ! -f "${shutter_file}" ]]; then
+        normalized_shutter_value="$(normalize_shutter_setting_value "${DEFAULT_RECORDING_SHUTTER}" || true)"
+        [[ -n "${normalized_shutter_value}" ]] || die "invalid default shutter value: ${DEFAULT_RECORDING_SHUTTER} (expected positive integer microseconds or auto)"
+        printf '%s\n' "${normalized_shutter_value}"
+        return 0
+    fi
+
+    shutter_value="$(head -n 1 "${shutter_file}" 2>/dev/null | tr -d '[:space:]' || true)"
+    normalized_shutter_value="$(normalize_shutter_setting_value "${shutter_value}" || true)"
+    [[ -n "${normalized_shutter_value}" ]] || die "invalid shutter value in ${shutter_file}: ${shutter_value} (expected positive integer microseconds or auto)"
+    printf '%s\n' "${normalized_shutter_value}"
+}
+
 read_fps_setting_for_home() {
     local user_home="$1"
     local fps_file fps_value
@@ -2418,6 +2548,18 @@ report_awbgains_value() {
     read_awbgains_setting_for_home "${user_home}"
 }
 
+report_gain_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for gain settings"
+    read_gain_setting_for_home "${user_home}"
+}
+
+report_shutter_value() {
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for shutter settings"
+    read_shutter_setting_for_home "${user_home}"
+}
+
 report_fps_value() {
     local user_home
     user_home="$(resolve_effective_home)" || die "could not resolve user home for fps settings"
@@ -2465,6 +2607,9 @@ report_capture_settings() {
     focus_file="$(resolve_focus_value_file_for_home "${user_home}")"
     ev_file="$(resolve_ev_value_file_for_home "${user_home}")"
     saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
+    local gain_file gain_value shutter_file shutter_value
+    gain_file="$(resolve_gain_value_file_for_home "${user_home}")"
+    shutter_file="$(resolve_shutter_value_file_for_home "${user_home}")"
     awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
@@ -2504,6 +2649,22 @@ report_capture_settings() {
         awbgains_value="$(normalize_awbgains_setting_value "${DEFAULT_RECORDING_AWBGAINS}" || true)"
         [[ -n "${awbgains_value}" ]] || die "invalid default awbgains value: ${DEFAULT_RECORDING_AWBGAINS} (expected red,blue or auto)"
         awbgains_value="${awbgains_value} (default)"
+    fi
+
+    if [[ -f "${gain_file}" ]]; then
+        gain_value="$(read_gain_setting_for_home "${user_home}")"
+    else
+        gain_value="$(normalize_gain_setting_value "${DEFAULT_RECORDING_GAIN}" || true)"
+        [[ -n "${gain_value}" ]] || die "invalid default gain value: ${DEFAULT_RECORDING_GAIN} (expected positive gain or auto)"
+        gain_value="${gain_value} (default)"
+    fi
+
+    if [[ -f "${shutter_file}" ]]; then
+        shutter_value="$(read_shutter_setting_for_home "${user_home}")"
+    else
+        shutter_value="$(normalize_shutter_setting_value "${DEFAULT_RECORDING_SHUTTER}" || true)"
+        [[ -n "${shutter_value}" ]] || die "invalid default shutter value: ${DEFAULT_RECORDING_SHUTTER} (expected positive integer microseconds or auto)"
+        shutter_value="${shutter_value} (default)"
     fi
 
     if [[ -f "${fps_file}" ]]; then
@@ -2559,6 +2720,10 @@ report_capture_settings() {
     echo "recording_saturation=${saturation_value}"
     echo "awbgains_settings_file=${awbgains_file}"
     echo "recording_awbgains=${awbgains_value}"
+    echo "gain_settings_file=${gain_file}"
+    echo "recording_gain=${gain_value}"
+    echo "shutter_settings_file=${shutter_file}"
+    echo "recording_shutter=${shutter_value}"
     echo "fps_settings_file=${fps_file}"
     echo "recording_fps=${fps_value}"
     echo "length_settings_file=${length_file}"
@@ -2609,6 +2774,11 @@ start_recording() {
     saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
     awbgains_value="$(read_awbgains_setting_for_home "${user_home}")"
     awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
+    local gain_value gain_file shutter_value shutter_file
+    gain_value="$(read_gain_setting_for_home "${user_home}")"
+    gain_file="$(resolve_gain_value_file_for_home "${user_home}")"
+    shutter_value="$(read_shutter_setting_for_home "${user_home}")"
+    shutter_file="$(resolve_shutter_value_file_for_home "${user_home}")"
     fps_value="$(read_fps_setting_for_home "${user_home}")"
     fps_file="$(resolve_fps_value_file_for_home "${user_home}")"
     length_file="$(resolve_length_value_file_for_home "${user_home}")"
@@ -2711,6 +2881,10 @@ saturation_file=${saturation_file}
 saturation_value=${saturation_value}
 awbgains_file=${awbgains_file}
 awbgains_value=${awbgains_value}
+gain_file=${gain_file}
+gain_value=${gain_value}
+shutter_file=${shutter_file}
+shutter_value=${shutter_value}
 fps_file=${fps_file}
 fps_value=${fps_value}
 length_file=${length_file}
@@ -2772,6 +2946,16 @@ EOF
     else
         echo "recording awbgains: ${awbgains_value}"
     fi
+    if [[ "${gain_value}" == "auto" ]]; then
+        echo "recording gain: auto (no --gain override)"
+    else
+        echo "recording gain: ${gain_value}"
+    fi
+    if [[ "${shutter_value}" == "auto" ]]; then
+        echo "recording shutter: auto (no --shutter override)"
+    else
+        echo "recording shutter: ${shutter_value} us"
+    fi
     echo "recording fps: ${fps_value}"
     echo "recording length: ${length_value}"
     echo "recording length source: ${length_source}"
@@ -2830,6 +3014,10 @@ EOF
             ANTCAM_RECORDING_SATURATION="${saturation_value}" \
             ANTCAM_AWBGAINS_VALUE_FILE="${awbgains_file}" \
             ANTCAM_RECORDING_AWBGAINS="${awbgains_value}" \
+            ANTCAM_GAIN_VALUE_FILE="${gain_file}" \
+            ANTCAM_RECORDING_GAIN="${gain_value}" \
+            ANTCAM_SHUTTER_VALUE_FILE="${shutter_file}" \
+            ANTCAM_RECORDING_SHUTTER="${shutter_value}" \
             ANTCAM_FPS_VALUE_FILE="${fps_file}" \
             ANTCAM_RECORDING_FPS="${fps_value}" \
             ANTCAM_LENGTH_VALUE_FILE="${length_file}" \
@@ -2875,7 +3063,9 @@ EOF
             "${intra_value}" \
             "${ev_value}" \
             "${saturation_value}" \
-            "${awbgains_value}"; then
+            "${awbgains_value}" \
+            "${gain_value}" \
+            "${shutter_value}"; then
             echo "antcam: warning: failed to write recording resume state file: ${recording_resume_state_file}" >&2
         fi
     else
@@ -3055,7 +3245,7 @@ resume_recording_if_needed() {
     fi
 
     local resume_enabled requested_script_name record_script_saved
-    local focus_value_saved ev_value_saved saturation_value_saved awbgains_value_saved fps_value_saved length_value_saved segment_value_saved intra_value_saved photo_every_value_saved name_value_saved
+    local focus_value_saved ev_value_saved saturation_value_saved awbgains_value_saved gain_value_saved shutter_value_saved fps_value_saved length_value_saved segment_value_saved intra_value_saved photo_every_value_saved name_value_saved
     local start_epoch_saved end_epoch_saved now_epoch remaining_seconds resume_length_value
     local record_script_path script_basename
     local resume_start_override resume_end_override photos_schedule_start_epoch_ms
@@ -3086,6 +3276,16 @@ resume_recording_if_needed() {
     if [[ -z "${awbgains_value_saved}" ]]; then
         awbgains_value_saved="$(normalize_awbgains_setting_value "${DEFAULT_RECORDING_AWBGAINS}" || true)"
         [[ -n "${awbgains_value_saved}" ]] || awbgains_value_saved="auto"
+    fi
+    gain_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "gain_value" || true)"
+    if [[ -z "${gain_value_saved}" ]]; then
+        gain_value_saved="$(normalize_gain_setting_value "${DEFAULT_RECORDING_GAIN}" || true)"
+        [[ -n "${gain_value_saved}" ]] || gain_value_saved="auto"
+    fi
+    shutter_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "shutter_value" || true)"
+    if [[ -z "${shutter_value_saved}" ]]; then
+        shutter_value_saved="$(normalize_shutter_setting_value "${DEFAULT_RECORDING_SHUTTER}" || true)"
+        [[ -n "${shutter_value_saved}" ]] || shutter_value_saved="auto"
     fi
     fps_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "fps_value" || true)"
     length_value_saved="$(read_recording_state_field "${recording_resume_state_file}" "length_value" || true)"
@@ -3147,11 +3347,13 @@ resume_recording_if_needed() {
     local resume_tmp_dir
     resume_tmp_dir="$(mktemp -d /tmp/antcam-recording-resume.XXXXXX)"
 
-    local resume_focus_file resume_ev_file resume_saturation_file resume_awbgains_file resume_fps_file resume_length_file resume_segment_file resume_intra_file resume_photo_every_file resume_name_file
+    local resume_focus_file resume_ev_file resume_saturation_file resume_awbgains_file resume_gain_file resume_shutter_file resume_fps_file resume_length_file resume_segment_file resume_intra_file resume_photo_every_file resume_name_file
     resume_focus_file="${resume_tmp_dir}/focus-lens-position.txt"
     resume_ev_file="${resume_tmp_dir}/recording-ev.txt"
     resume_saturation_file="${resume_tmp_dir}/recording-saturation.txt"
     resume_awbgains_file="${resume_tmp_dir}/recording-awbgains.txt"
+    resume_gain_file="${resume_tmp_dir}/recording-gain.txt"
+    resume_shutter_file="${resume_tmp_dir}/recording-shutter.txt"
     resume_fps_file="${resume_tmp_dir}/recording-fps.txt"
     resume_length_file="${resume_tmp_dir}/recording-length.txt"
     resume_segment_file="${resume_tmp_dir}/recording-segment.txt"
@@ -3163,6 +3365,8 @@ resume_recording_if_needed() {
     printf '%s\n' "${ev_value_saved}" > "${resume_ev_file}"
     printf '%s\n' "${saturation_value_saved}" > "${resume_saturation_file}"
     printf '%s\n' "${awbgains_value_saved}" > "${resume_awbgains_file}"
+    printf '%s\n' "${gain_value_saved}" > "${resume_gain_file}"
+    printf '%s\n' "${shutter_value_saved}" > "${resume_shutter_file}"
     printf '%s\n' "${fps_value_saved}" > "${resume_fps_file}"
     printf '%s\n' "${resume_length_value}" > "${resume_length_file}"
     printf '%s\n' "${segment_value_saved}" > "${resume_segment_file}"
@@ -3182,6 +3386,8 @@ resume_recording_if_needed() {
     ANTCAM_EV_VALUE_FILE="${resume_ev_file}" \
     ANTCAM_SATURATION_VALUE_FILE="${resume_saturation_file}" \
     ANTCAM_AWBGAINS_VALUE_FILE="${resume_awbgains_file}" \
+    ANTCAM_GAIN_VALUE_FILE="${resume_gain_file}" \
+    ANTCAM_SHUTTER_VALUE_FILE="${resume_shutter_file}" \
     ANTCAM_FPS_VALUE_FILE="${resume_fps_file}" \
     ANTCAM_LENGTH_VALUE_FILE="${resume_length_file}" \
     ANTCAM_SEGMENT_VALUE_FILE="${resume_segment_file}" \
@@ -3442,6 +3648,11 @@ start_focus_check() {
     saturation_file="$(resolve_saturation_value_file_for_home "${user_home}")"
     awbgains_value="$(read_awbgains_setting_for_home "${user_home}")"
     awbgains_file="$(resolve_awbgains_value_file_for_home "${user_home}")"
+    local gain_value gain_file shutter_value shutter_file
+    gain_value="$(read_gain_setting_for_home "${user_home}")"
+    gain_file="$(resolve_gain_value_file_for_home "${user_home}")"
+    shutter_value="$(read_shutter_setting_for_home "${user_home}")"
+    shutter_file="$(resolve_shutter_value_file_for_home "${user_home}")"
 
     if [[ ! -d "${capture_dir}" ]]; then
         mkdir -p "${capture_dir}"
@@ -3468,6 +3679,16 @@ start_focus_check() {
     else
         echo "focus check awbgains: ${awbgains_value}"
     fi
+    if [[ "${gain_value}" == "auto" ]]; then
+        echo "focus check gain: auto (no --gain override)"
+    else
+        echo "focus check gain: ${gain_value}"
+    fi
+    if [[ "${shutter_value}" == "auto" ]]; then
+        echo "focus check shutter: auto (no --shutter override)"
+    else
+        echo "focus check shutter: ${shutter_value} us"
+    fi
 
     local focus_exit_code=0
     local focus_console_log
@@ -3487,6 +3708,10 @@ start_focus_check() {
         ANTCAM_RECORDING_SATURATION="${saturation_value}" \
         ANTCAM_AWBGAINS_VALUE_FILE="${awbgains_file}" \
         ANTCAM_RECORDING_AWBGAINS="${awbgains_value}" \
+        ANTCAM_GAIN_VALUE_FILE="${gain_file}" \
+        ANTCAM_RECORDING_GAIN="${gain_value}" \
+        ANTCAM_SHUTTER_VALUE_FILE="${shutter_file}" \
+        ANTCAM_RECORDING_SHUTTER="${shutter_value}" \
         bash "${focus_script}"
     ) 2>&1 | tee "${focus_console_log}"
     focus_exit_code="${PIPESTATUS[0]}"
@@ -3718,6 +3943,44 @@ main() {
                     ;;
                 *)
                     die "unknown awbgains action: $1"
+                    ;;
+            esac
+            ;;
+        gain)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam gain <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam gain set <value|auto>"
+                    set_gain_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam gain report"
+                    report_gain_value
+                    ;;
+                *)
+                    die "unknown gain action: $1"
+                    ;;
+            esac
+            ;;
+        shutter)
+            shift
+            [[ $# -ge 1 ]] || die "usage: antcam shutter <set|report> ..."
+            case "$1" in
+                set)
+                    shift
+                    [[ $# -eq 1 ]] || die "usage: antcam shutter set <microseconds|auto>"
+                    set_shutter_value "$1"
+                    ;;
+                report)
+                    shift
+                    [[ $# -eq 0 ]] || die "usage: antcam shutter report"
+                    report_shutter_value
+                    ;;
+                *)
+                    die "unknown shutter action: $1"
                     ;;
             esac
             ;;

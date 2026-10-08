@@ -18,6 +18,8 @@ antcam focus set <lens-position|auto>
 antcam ev set <value|auto>
 antcam saturation set <value|default>
 antcam awbgains set <red,blue|auto>
+antcam gain set <value|auto>
+antcam shutter set <microseconds|auto>
 antcam fps set <value>
 antcam length set <duration>
 antcam segment set <duration>
@@ -44,6 +46,8 @@ antcam focus report
 antcam ev report
 antcam saturation report
 antcam awbgains report
+antcam gain report
+antcam shutter report
 antcam fps report
 antcam length report
 antcam segment report
@@ -91,6 +95,9 @@ Current bundled profiles:
 - `antcam ev set <value|auto>` writes EV exposure compensation used by recording scripts; `auto` omits `--ev`, while numeric values including `0` add `--ev <value>`
 - `antcam saturation set <value|default>` writes saturation used by recording scripts and focus check; `default` omits `--saturation`, while numeric values including `0` add `--saturation <value>`
 - `antcam awbgains set <red,blue|auto>` writes fixed red/blue AWB gains used by recording scripts and focus check; `auto` omits `--awbgains`, while positive `red,blue` values add `--awbgains <red,blue>`
+- `antcam gain set <value|auto>` writes fixed analogue gain used by recording scripts and focus check; `auto` omits `--gain`, while positive values add `--gain <value>`
+- `antcam shutter set <microseconds|auto>` writes fixed shutter time in microseconds used by recording scripts and focus check; `auto` omits `--shutter`, while positive integer microsecond values add `--shutter <microseconds>`
+- Fixing only one of gain/shutter leaves auto-exposure free to adjust the other, and EV compensation still applies; fixing both pins exposure, so `antcam ev set` has no effect. For `video.py`, the sensor caps shutter time at the frame duration (`1/fps`)
 - `antcam fps set <value>` writes the fps setting file used by recording scripts
 - `antcam length set <duration>` writes recording length (examples: `30h`, `10m`, `45s`, `1h30m`)
 - `antcam segment set <duration>` writes segment length (examples: `10m`, `30s`, `1h`)
@@ -117,6 +124,8 @@ Current bundled profiles:
 - `antcam ev report` returns the saved EV exposure compensation value (or `auto` default)
 - `antcam saturation report` returns the saved saturation value (or `default`)
 - `antcam awbgains report` returns the saved AWB gains value (or `auto`)
+- `antcam gain report` returns the saved gain value (or `auto`)
+- `antcam shutter report` returns the saved shutter value (or `auto`)
 - `antcam fps report` returns the saved fps value (or default)
 - `antcam length report` returns the saved recording length (or default)
 - `antcam segment report` returns the saved segment length (or default)
@@ -135,6 +144,8 @@ Current bundled profiles:
 - `antcam focus check` uses the saved EV setting from `antcam ev set <value|auto>`; `auto` omits `--ev`, numeric values including `0` add `--ev <value>`
 - `antcam focus check` uses the saved saturation setting from `antcam saturation set <value|default>`; `default` omits `--saturation`, numeric values including `0` add `--saturation <value>`
 - `antcam focus check` uses the saved AWB-gains setting from `antcam awbgains set <red,blue|auto>`; `auto` omits `--awbgains`, positive `red,blue` values add `--awbgains <red,blue>`
+- `antcam focus check` uses the saved gain setting from `antcam gain set <value|auto>`; `auto` omits `--gain`, positive values add `--gain <value>`
+- `antcam focus check` uses the saved shutter setting from `antcam shutter set <microseconds|auto>`; `auto` omits `--shutter`, positive integer microsecond values add `--shutter <microseconds>`
 - `antcam focus check` reports the rpicam/libcamera metadata from the autofocus image, including exposure time, analogue gain, digital gain, colour gains, colour temperature, frame duration, and derived frame rate when `FrameDuration` is present
 - `antcam focus check` final output is the `lens-position` value for `rpicam-vid --lens-position <value>`
 - `antcam focus check` copies the captured focus photo and matching `.metadata.txt` into `<desktop>/5-UPLOAD/diagnostics/recordings/` for uploader pickup

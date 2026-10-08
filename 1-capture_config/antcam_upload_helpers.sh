@@ -433,6 +433,36 @@ set_awbgains_setting_for_home() {
     printf '%s\n' "${awbgains_file}"
 }
 
+set_gain_setting_for_home() {
+    local user_home="$1"
+    local gain_value="$2"
+    local normalized_gain_value
+    normalized_gain_value="$(normalize_gain_setting_value "${gain_value}" || true)"
+    [[ -n "${normalized_gain_value}" ]] || die "invalid gain value: ${gain_value} (expected positive gain or auto)"
+
+    local gain_file gain_dir
+    gain_file="$(resolve_gain_value_file_for_home "${user_home}")"
+    gain_dir="$(dirname "${gain_file}")"
+    mkdir -p "${gain_dir}"
+    printf '%s\n' "${normalized_gain_value}" > "${gain_file}"
+    printf '%s\n' "${gain_file}"
+}
+
+set_shutter_setting_for_home() {
+    local user_home="$1"
+    local shutter_value="$2"
+    local normalized_shutter_value
+    normalized_shutter_value="$(normalize_shutter_setting_value "${shutter_value}" || true)"
+    [[ -n "${normalized_shutter_value}" ]] || die "invalid shutter value: ${shutter_value} (expected positive integer microseconds or auto)"
+
+    local shutter_file shutter_dir
+    shutter_file="$(resolve_shutter_value_file_for_home "${user_home}")"
+    shutter_dir="$(dirname "${shutter_file}")"
+    mkdir -p "${shutter_dir}"
+    printf '%s\n' "${normalized_shutter_value}" > "${shutter_file}"
+    printf '%s\n' "${shutter_file}"
+}
+
 set_fps_setting_for_home() {
     local user_home="$1"
     local fps_value="$2"
@@ -642,6 +672,38 @@ set_awbgains_value() {
         echo "recording awbgains set to ${normalized_awbgains}"
     fi
     echo "awbgains settings file: ${awbgains_file}"
+}
+
+set_gain_value() {
+    local gain_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for gain settings"
+
+    local gain_file normalized_gain
+    gain_file="$(set_gain_setting_for_home "${user_home}" "${gain_value}")"
+    normalized_gain="$(read_gain_setting_for_home "${user_home}")"
+    if [[ "${normalized_gain}" == "auto" ]]; then
+        echo "recording gain set to auto (no --gain override)"
+    else
+        echo "recording gain set to ${normalized_gain}"
+    fi
+    echo "gain settings file: ${gain_file}"
+}
+
+set_shutter_value() {
+    local shutter_value="$1"
+    local user_home
+    user_home="$(resolve_effective_home)" || die "could not resolve user home for shutter settings"
+
+    local shutter_file normalized_shutter
+    shutter_file="$(set_shutter_setting_for_home "${user_home}" "${shutter_value}")"
+    normalized_shutter="$(read_shutter_setting_for_home "${user_home}")"
+    if [[ "${normalized_shutter}" == "auto" ]]; then
+        echo "recording shutter set to auto (no --shutter override)"
+    else
+        echo "recording shutter set to ${normalized_shutter} us"
+    fi
+    echo "shutter settings file: ${shutter_file}"
 }
 
 set_fps_value() {

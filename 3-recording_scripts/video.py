@@ -153,6 +153,28 @@ def normalize_awbgains_value(value: str) -> str:
     return normalized
 
 
+def normalize_gain_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", normalized) is None:
+        return ""
+    if float(normalized) <= 0:
+        return ""
+    return normalized
+
+
+def normalize_shutter_value(value: str) -> str:
+    normalized = (value or "").strip().lower()
+    if normalized in {"auto", "default", "none", "off"}:
+        return "auto"
+    if re.fullmatch(r"[0-9]+", normalized) is None:
+        return ""
+    if int(normalized) <= 0:
+        return ""
+    return normalized
+
+
 def is_valid_recording_name_value(value: str) -> bool:
     return re.fullmatch(r"[A-Za-z0-9._-]+", value or "") is not None
 
@@ -169,6 +191,8 @@ def build_video_settings_tag(
     ev_value: str,
     saturation_value: str,
     awbgains_value: str,
+    gain_value: str,
+    shutter_value: str,
     segment_value: str,
     intra_value: str,
     length_value: str,
@@ -180,11 +204,27 @@ def build_video_settings_tag(
     ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
     saturation_tag = f"sat-{sanitize_capture_tag_value(saturation_value, 'default')}"
     awbgains_tag = f"awb-{sanitize_capture_tag_value(awbgains_value.replace(',', '_'), 'auto')}"
+    gain_tag = f"gain-{sanitize_capture_tag_value(gain_value, 'auto')}"
+    shutter_tag = f"shut-{sanitize_capture_tag_value(shutter_value, 'auto')}"
     segment_tag = f"seg-{sanitize_capture_tag_value(segment_value, 'unknown')}"
     intra_tag = f"intra-{sanitize_capture_tag_value(intra_value, 'none')}"
     length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
     resolution_tag = f"{width_value}x{height_value}"
-    return "-".join((fps_tag, focus_tag, ev_tag, saturation_tag, awbgains_tag, segment_tag, intra_tag, length_tag, resolution_tag))
+    return "-".join(
+        (
+            fps_tag,
+            focus_tag,
+            ev_tag,
+            saturation_tag,
+            awbgains_tag,
+            gain_tag,
+            shutter_tag,
+            segment_tag,
+            intra_tag,
+            length_tag,
+            resolution_tag,
+        )
+    )
 
 
 def timestamp_iso_local() -> str:
@@ -306,6 +346,20 @@ def resolve_awbgains_file_path(capture_dir: Path) -> Path:
     if override:
         return Path(override)
     return capture_dir / "config" / "recording-awbgains.txt"
+
+
+def resolve_gain_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_GAIN_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-gain.txt"
+
+
+def resolve_shutter_file_path(capture_dir: Path) -> Path:
+    override = os.environ.get("ANTCAM_SHUTTER_VALUE_FILE", "")
+    if override:
+        return Path(override)
+    return capture_dir / "config" / "recording-shutter.txt"
 
 
 def resolve_fps_file_path(capture_dir: Path) -> Path:
@@ -493,6 +547,8 @@ def main() -> int:
     ev_file = resolve_ev_file_path(capture_dir)
     saturation_file = resolve_saturation_file_path(capture_dir)
     awbgains_file = resolve_awbgains_file_path(capture_dir)
+    gain_file = resolve_gain_file_path(capture_dir)
+    shutter_file = resolve_shutter_file_path(capture_dir)
     fps_file = resolve_fps_file_path(capture_dir)
     length_file = resolve_length_file_path(capture_dir)
     segment_file = resolve_segment_file_path(capture_dir)
@@ -555,6 +611,34 @@ def main() -> int:
         )
         log("set it with: antcam awbgains set <red,blue|auto> (example: 1.0,1.0, 1.6,1.2, auto)")
         return 16
+
+    gain_raw_value = os.environ.get("ANTCAM_RECORDING_GAIN", "")
+    if not gain_raw_value:
+        gain_raw_value = read_value_with_default(gain_file, "auto")
+    gain_value = normalize_gain_value(gain_raw_value)
+    if not gain_value:
+        log_invalid_setting(
+            "recording gain value",
+            gain_raw_value,
+            setting_source("ANTCAM_RECORDING_GAIN", gain_file),
+            "positive gain or auto",
+        )
+        log("set it with: antcam gain set <value|auto> (example: 1, 2.5, 8, auto)")
+        return 17
+
+    shutter_raw_value = os.environ.get("ANTCAM_RECORDING_SHUTTER", "")
+    if not shutter_raw_value:
+        shutter_raw_value = read_value_with_default(shutter_file, "auto")
+    shutter_value = normalize_shutter_value(shutter_raw_value)
+    if not shutter_value:
+        log_invalid_setting(
+            "recording shutter value",
+            shutter_raw_value,
+            setting_source("ANTCAM_RECORDING_SHUTTER", shutter_file),
+            "positive integer microseconds or auto",
+        )
+        log("set it with: antcam shutter set <microseconds|auto> (example: 1000, 10000, auto)")
+        return 18
 
     fps_value = os.environ.get("ANTCAM_RECORDING_FPS", "")
     if not fps_value:
@@ -664,6 +748,8 @@ def main() -> int:
         ev_value,
         saturation_value,
         awbgains_value,
+        gain_value,
+        shutter_value,
         segment_value,
         intra_value,
         length_value,
@@ -696,6 +782,8 @@ def main() -> int:
             "recording_ev": ev_value,
             "recording_saturation": saturation_value,
             "recording_awbgains": awbgains_value,
+            "recording_gain": gain_value,
+            "recording_shutter": shutter_value,
             "recording_fps": fps_value,
             "recording_length": length_value,
             "recording_length_ms": length_ms,
@@ -733,6 +821,14 @@ def main() -> int:
         log("AWB gains: auto (no --awbgains override)")
     else:
         log(f"AWB gains: {awbgains_value}")
+    if gain_value == "auto":
+        log("Gain: auto (no --gain override)")
+    else:
+        log(f"Gain: {gain_value}")
+    if shutter_value == "auto":
+        log("Shutter: auto (no --shutter override)")
+    else:
+        log(f"Shutter: {shutter_value} us")
     log(f"Recording length: {length_value} ({length_ms} ms)")
     log(f"Chunk length: {segment_value} ({segment_ms} ms)")
     log("Scheduling mode: contiguous segment capture (no interval scheduling)")
@@ -776,6 +872,10 @@ def main() -> int:
         video_args.extend(["--saturation", saturation_value])
     if awbgains_value != "auto":
         video_args.extend(["--awbgains", awbgains_value])
+    if gain_value != "auto":
+        video_args.extend(["--gain", gain_value])
+    if shutter_value != "auto":
+        video_args.extend(["--shutter", shutter_value])
     if not is_auto_focus_value(focus_value):
         video_args.extend(["--lens-position", focus_value])
 

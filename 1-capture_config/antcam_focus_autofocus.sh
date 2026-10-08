@@ -69,6 +69,44 @@ normalize_awbgains_value() {
     esac
 }
 
+normalize_gain_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="${raw_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+([.][0-9]+)?$ ]] || return 1
+            awk -v gain="${normalized_value}" 'BEGIN { exit (gain > 0 ? 0 : 1) }' || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
+normalize_shutter_value() {
+    local raw_value="${1:-}"
+    local normalized_value
+    normalized_value="${raw_value//[[:space:]]/}"
+    normalized_value="${normalized_value,,}"
+    case "${normalized_value}" in
+        auto|default|none|off)
+            printf '%s\n' "auto"
+            return 0
+            ;;
+        *)
+            [[ "${normalized_value}" =~ ^[0-9]+$ ]] || return 1
+            [[ "${normalized_value}" =~ [1-9] ]] || return 1
+            printf '%s\n' "${normalized_value}"
+            return 0
+            ;;
+    esac
+}
+
 mkdir -p "${capture_dir}"
 
 if [[ ! "${focus_sweep_start_lens_position}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
@@ -118,6 +156,34 @@ if [[ "${awbgains_value}" != "auto" ]]; then
     awbgains_args=(--awbgains "${awbgains_value}")
 fi
 
+gain_raw_value="${ANTCAM_RECORDING_GAIN:-}"
+if [[ -z "${gain_raw_value}" && -n "${ANTCAM_GAIN_VALUE_FILE:-}" && -f "${ANTCAM_GAIN_VALUE_FILE}" ]]; then
+    gain_raw_value="$(head -n 1 "${ANTCAM_GAIN_VALUE_FILE}" 2>/dev/null || true)"
+fi
+gain_value="$(normalize_gain_value "${gain_raw_value:-auto}" || true)"
+if [[ -z "${gain_value}" ]]; then
+    log "invalid gain value: ${gain_raw_value} (set with: antcam gain set <value|auto>)"
+    exit 7
+fi
+gain_args=()
+if [[ "${gain_value}" != "auto" ]]; then
+    gain_args=(--gain "${gain_value}")
+fi
+
+shutter_raw_value="${ANTCAM_RECORDING_SHUTTER:-}"
+if [[ -z "${shutter_raw_value}" && -n "${ANTCAM_SHUTTER_VALUE_FILE:-}" && -f "${ANTCAM_SHUTTER_VALUE_FILE}" ]]; then
+    shutter_raw_value="$(head -n 1 "${ANTCAM_SHUTTER_VALUE_FILE}" 2>/dev/null || true)"
+fi
+shutter_value="$(normalize_shutter_value "${shutter_raw_value:-auto}" || true)"
+if [[ -z "${shutter_value}" ]]; then
+    log "invalid shutter value: ${shutter_raw_value} (set with: antcam shutter set <microseconds|auto>)"
+    exit 8
+fi
+shutter_args=()
+if [[ "${shutter_value}" != "auto" ]]; then
+    shutter_args=(--shutter "${shutter_value}")
+fi
+
 camera_cmd=()
 if command -v rpicam-still >/dev/null 2>&1; then
     camera_cmd=(rpicam-still)
@@ -149,6 +215,16 @@ if [[ "${awbgains_value}" == "auto" ]]; then
 else
     log "AWB gains: ${awbgains_value}"
 fi
+if [[ "${gain_value}" == "auto" ]]; then
+    log "Gain: auto (no --gain override)"
+else
+    log "Gain: ${gain_value}"
+fi
+if [[ "${shutter_value}" == "auto" ]]; then
+    log "Shutter: auto (no --shutter override)"
+else
+    log "Shutter: ${shutter_value} us"
+fi
 
 set +e
 "${camera_cmd[@]}" \
@@ -159,6 +235,8 @@ set +e
     "${ev_args[@]}" \
     "${saturation_args[@]}" \
     "${awbgains_args[@]}" \
+    "${gain_args[@]}" \
+    "${shutter_args[@]}" \
     --output /dev/null >/dev/null 2>>"${log_file}"
 preposition_exit="$?"
 set -e
@@ -179,6 +257,8 @@ set +e
     "${ev_args[@]}" \
     "${saturation_args[@]}" \
     "${awbgains_args[@]}" \
+    "${gain_args[@]}" \
+    "${shutter_args[@]}" \
     --output "${image_file}" 2>&1 | tee -a "${log_file}" >&2
 capture_exit="${PIPESTATUS[0]}"
 set -e

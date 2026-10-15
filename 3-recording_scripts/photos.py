@@ -180,6 +180,16 @@ def sanitize_capture_tag_value(value: str, fallback: str) -> str:
     return tag or fallback
 
 
+def build_setting_tag(key: str, value: str, omit_values: tuple[str, ...]) -> str:
+    """Return ``key-value`` or an empty string when ``value`` is a default worth leaving out of the name."""
+    normalized = (value or "").strip()
+    if normalized in omit_values:
+        return ""
+    # sanitize strips leading '-', which would silently drop the sign of a negative EV.
+    sign = "neg" if normalized.startswith("-") else ""
+    return f"{key}-{sign}{sanitize_capture_tag_value(normalized.lstrip('-'), 'unknown')}"
+
+
 def build_photo_interval_tag(photo_every_value: str) -> str:
     normalized = normalize_duration_value(photo_every_value)
     if normalized in {"none", "0"}:
@@ -206,17 +216,19 @@ def build_photo_settings_tag(
     photo_every_value: str,
     length_value: str,
 ) -> str:
-    focus_tag = f"foc-{sanitize_capture_tag_value(focus_value, 'unknown')}"
-    ev_tag = f"ev-{sanitize_capture_tag_value(ev_value, 'auto')}"
-    saturation_tag = f"sat-{sanitize_capture_tag_value(saturation_value, 'default')}"
-    awbgains_tag = f"awb-{sanitize_capture_tag_value(awbgains_value.replace(',', '_'), 'auto')}"
-    gain_tag = f"gain-{sanitize_capture_tag_value(gain_value, 'auto')}"
-    shutter_tag = f"shut-{sanitize_capture_tag_value(shutter_value, 'auto')}"
-    photo_interval_tag = build_photo_interval_tag(photo_every_value)
-    length_tag = f"len-{sanitize_capture_tag_value(length_value, 'unknown')}"
-    return "-".join(
-        (focus_tag, ev_tag, saturation_tag, awbgains_tag, gain_tag, shutter_tag, photo_interval_tag, length_tag)
+    # Fields at their default (auto/default/none/0s) are omitted so names stay short;
+    # capture-metadata.json carries every value regardless.
+    parts = (
+        build_setting_tag("f", focus_value, ("auto",)),
+        build_setting_tag("e", ev_value, ("auto",)),
+        build_setting_tag("s", saturation_value, ("default",)),
+        build_setting_tag("awb", awbgains_value.replace(",", "_"), ("auto",)),
+        build_setting_tag("g", gain_value, ("auto",)),
+        build_setting_tag("sh", shutter_value, ("auto",)),
+        build_photo_interval_tag(photo_every_value),
+        build_setting_tag("len", length_value, ("0s", "0", "none")),
     )
+    return "-".join(part for part in parts if part)
 
 
 def timestamp_iso_local() -> str:

@@ -327,7 +327,7 @@ class UploadWorker:
             self.min_due_attempts_per_loop = self.max_due_attempts_per_loop
         self.attempt_log_max_rows = _as_int("ATTEMPT_LOG_MAX_ROWS", 100000)
         self.attempt_log_prune_interval_seconds = max(30, _as_int("ATTEMPT_LOG_PRUNE_INTERVAL_SECONDS", 300))
-        self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 30))
+        self.initial_upload_jitter_max_seconds = max(0, _as_int("INITIAL_UPLOAD_JITTER_MAX_SECONDS", 15))
         self.failure_detail_max_chars = max(120, _as_int("UPLOAD_FAILURE_DETAIL_MAX_CHARS", 700))
         if self.attempt_log_max_rows < 0:
             self.attempt_log_max_rows = 0

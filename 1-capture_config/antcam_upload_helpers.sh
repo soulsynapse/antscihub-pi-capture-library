@@ -1073,7 +1073,7 @@ read_upload_test_jitter_max_seconds() {
         return 0
     fi
 
-    printf '%s\n' "30"
+    printf '%s\n' "15"
 }
 
 random_upload_test_jitter_seconds() {

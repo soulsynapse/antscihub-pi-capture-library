@@ -100,7 +100,7 @@ While running:
 `RETRY_BASE_DELAY_SECONDS` default: `2`.
 `RETRY_MAX_DELAY_SECONDS` default: `600`.
 `RETRY_JITTER_MAX_SECONDS` default: `30`.
-`INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `30`.
+`INITIAL_UPLOAD_JITTER_MAX_SECONDS` default: `15`.
 `UPLOAD_FAILURE_DETAIL_MAX_CHARS` default: `700`.
 
 Due attempt burst cap per cycle is dynamic:
@@ -221,7 +221,7 @@ Per due row:
 7. Re-check `can_attempt_artifact_now()`.
 8. Re-check readiness gates (maturity/open-file/stability + exclusions).
 9. If `status='QUEUED'` and ready and `next_retry_epoch==0`, schedule one-time readiness jitter before first upload attempt:
-10. jitter is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..30`).
+10. jitter is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..15`).
 11. if jitter > 0, set `next_retry_epoch=now+jitter`, emit `queued` reason `ready_jitter_<N>s`, and skip immediate upload this cycle.
 12. if jitter == 0, continue directly to upload attempt.
 13. For due `RETRY_WAIT`, no readiness jitter is added (normal retry backoff semantics apply).

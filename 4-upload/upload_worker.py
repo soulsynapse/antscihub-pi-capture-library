@@ -2065,6 +2065,8 @@ WHERE id IN (
             mtime = int(st.st_mtime)
         except OSError:
             return
+        if self.is_known_shipped_unchanged(relative_path, st):
+            return
         now = _epoch_now()
         age = now - mtime
         required_min_age = self.required_min_age_for_file(basename)
@@ -2104,6 +2106,27 @@ WHERE id IN (
             "",
             queue_reason,
             "",
+        )
+
+    def is_known_shipped_unchanged(self, relative_path: str, st: os.stat_result) -> bool:
+        # Early exit for files whose newest row is already SHIPPED with the same
+        # inode, size, and mtime. The full path would reach the same outcome
+        # (register_artifact_if_needed finds the existing row and returns without
+        # queueing) but only after an lsof subprocess, a sampled hash read, and a
+        # DB write per file per sweep, which made pickup latency scale with every
+        # file ever captured.
+        row = self.db_query_one(
+            "SELECT status, inode, size_bytes, mtime_epoch FROM artifacts WHERE relative_path=? ORDER BY id DESC LIMIT 1;",
+            (relative_path,),
+        )
+        if row is None:
+            return False
+        if str(row["status"] or "").upper() != "SHIPPED":
+            return False
+        return (
+            int(row["inode"] or 0) == int(st.st_ino)
+            and int(row["size_bytes"] or 0) == int(st.st_size)
+            and int(row["mtime_epoch"] or 0) == int(st.st_mtime)
         )
 
     def get_due_artifacts(self, current_epoch: int, limit: int) -> List[sqlite3.Row]:

@@ -526,6 +526,19 @@ def choose_still_command() -> Optional[str]:
     return None
 
 
+def still_command_supports_metadata(command: str) -> bool:
+    """Older libcamera-still builds lack --metadata; passing it would fail every capture."""
+    try:
+        result = subprocess.run([command, "--help"], capture_output=True, text=True, errors="replace", timeout=15)
+    except (OSError, subprocess.SubprocessError) as exc:
+        log(f"could not probe {command} --help for --metadata support; capturing without camera metadata: {type(exc).__name__}: {exc}")
+        return False
+    supported = "--metadata" in (result.stdout + result.stderr)
+    if not supported:
+        log(f"{command} does not advertise --metadata; sidecars will have an empty camera block")
+    return supported
+
+
 class CaptureStopRequested(Exception):
     def __init__(self, signum: int):
         self.signum = signum
@@ -849,6 +862,7 @@ def main() -> int:
         return 7
 
     still_cmd = choose_still_command()
+    metadata_supported = still_cmd is not None and still_command_supports_metadata(still_cmd)
     if not still_cmd:
         log(f"rpicam-still or libcamera-still not found: tried=rpicam-still,libcamera-still PATH={os.environ.get('PATH', '')}")
         return 1
@@ -973,12 +987,9 @@ def main() -> int:
         output_file = session_dir / output_leaf
         log(f"Starting photo index=0 output={output_file}")
         capture_started_at = timestamp_iso_local()
-        metadata_leaf = f"{output_leaf}.camera-metadata.txt"
-        rc = run_capture(
-            still_cmd,
-            [*still_args, "--metadata", metadata_leaf, "--metadata-format", "txt", "--output", output_leaf],
-            cwd=session_dir,
-        )
+        metadata_leaf = f".{output_leaf}.camera-metadata.txt"  # dotfile: upload worker ignores it
+        metadata_args = ["--metadata", metadata_leaf, "--metadata-format", "txt"] if metadata_supported else []
+        rc = run_capture(still_cmd, [*still_args, *metadata_args, "--output", output_leaf], cwd=session_dir)
         if rc == 0 and not verify_capture_output(output_file, output_leaf, session_dir):
             return 14
         if rc == 0:
@@ -990,7 +1001,7 @@ def main() -> int:
                 None,
                 capture_started_at,
                 timestamp_iso_local(),
-                collect_camera_metadata(session_dir / metadata_leaf),
+                collect_camera_metadata(session_dir / metadata_leaf) if metadata_supported else {},
             )
             persist_photo_file_metadata(output_file, file_metadata)
         return rc
@@ -1036,12 +1047,9 @@ def main() -> int:
         output_file = session_dir / output_leaf
         log(f"Starting photo index={capture_index} output={output_file}")
         capture_started_at = timestamp_iso_local()
-        metadata_leaf = f"{output_leaf}.camera-metadata.txt"
-        rc = run_capture(
-            still_cmd,
-            [*still_args, "--metadata", metadata_leaf, "--metadata-format", "txt", "--output", output_leaf],
-            cwd=session_dir,
-        )
+        metadata_leaf = f".{output_leaf}.camera-metadata.txt"  # dotfile: upload worker ignores it
+        metadata_args = ["--metadata", metadata_leaf, "--metadata-format", "txt"] if metadata_supported else []
+        rc = run_capture(still_cmd, [*still_args, *metadata_args, "--output", output_leaf], cwd=session_dir)
         if rc != 0:
             return rc
         if not verify_capture_output(output_file, output_leaf, session_dir):
@@ -1054,7 +1062,7 @@ def main() -> int:
             target_epoch_ms,
             capture_started_at,
             timestamp_iso_local(),
-            collect_camera_metadata(session_dir / metadata_leaf),
+            collect_camera_metadata(session_dir / metadata_leaf) if metadata_supported else {},
         )
         persist_photo_file_metadata(output_file, file_metadata)
         capture_index += 1

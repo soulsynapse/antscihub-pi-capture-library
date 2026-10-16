@@ -222,7 +222,7 @@ Per due row:
 8. Re-check readiness gates (maturity/open-file/stability + exclusions).
 9. If `status='QUEUED'` and ready and `next_retry_epoch==0`, schedule one-time readiness jitter before first upload attempt:
 10. jitter is random integer seconds in `[0, INITIAL_UPLOAD_JITTER_MAX_SECONDS]` (default `0..15`).
-11. if jitter > 0, set `next_retry_epoch=now+jitter`, emit `queued` reason `ready_jitter_<N>s`, and skip immediate upload this cycle.
+11. if jitter > 0, set `next_retry_epoch=now+jitter`, log it at DEBUG (no MQTT event; the row already reported `queued`), and skip immediate upload this cycle.
 12. if jitter == 0, continue directly to upload attempt.
 13. For due `RETRY_WAIT`, no readiness jitter is added (normal retry backoff semantics apply).
 14. If ready and not delayed, call `attempt_ship_artifact(...)`; if not ready, continue scanning older->newer candidates for oldest-ready behavior.

@@ -2261,15 +2261,9 @@ LIMIT ?;
                             "UPDATE artifacts SET next_retry_epoch=?, updated_at_epoch=? WHERE id=? AND status='QUEUED';",
                             (next_attempt_epoch, current_epoch, artifact_id),
                         )
-                        self.emit_upload_event(
-                            "queued",
-                            relative_path,
-                            "",
-                            size_bytes,
-                            "",
-                            f"ready_jitter_{jitter_seconds}s",
-                            "",
-                        )
+                        # No MQTT event here: each publish spawns a subprocess,
+                        # and the row already reported "queued"; "shipped"/"failed" follows.
+                        self.log("DEBUG", f"Readiness jitter {jitter_seconds}s before first attempt: {relative_path} (id={artifact_id})")
                         made_progress = True
                         continue
 

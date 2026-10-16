@@ -756,7 +756,9 @@ def main() -> int:
         width_value,
         height_value,
     )
-    session_stem = f"{name_value}__{session_hostname}__{settings_tag}__{session_timestamp}"
+    # Settings tag is kept out of file names: rpicam-still truncates output names
+    # past 128 bytes without error. The tag lives in capture-metadata.json.
+    session_stem = f"{name_value}__{session_hostname}__{session_timestamp}"
     session_dir = upload_dir / session_stem
     video_output_leaf_pattern = f"{session_stem}-video-%05d.h264"
     video_output_pattern = session_dir / video_output_leaf_pattern

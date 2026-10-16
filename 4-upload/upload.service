@@ -15,6 +15,9 @@ Environment="RCLONE_REMOTE=gdrive_personal"
 # Empty means remote root.
 Environment="RCLONE_PATH="
 Environment="UPLOAD_DIR=/home/REPLACE_WITH_REAL_USER/Desktop/5-UPLOAD"
+# Loop cadence: ship up to 10 due files per loop at low disk pressure, wake every 5s.
+Environment="MIN_DUE_ATTEMPTS_PER_LOOP=10"
+Environment="SCAN_INTERVAL=5"
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

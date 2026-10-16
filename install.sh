@@ -419,6 +419,9 @@ Environment="UPLOAD_PROFILE=field"
 Environment="UPLOAD_RETENTION=protect"
 Environment="UPLOAD_HIGH_WATERMARK_PERCENT=80"
 Environment="UPLOAD_LOW_WATERMARK_PERCENT=70"
+# Loop cadence: ship up to 10 due files per loop at low disk pressure, wake every 5s.
+Environment="MIN_DUE_ATTEMPTS_PER_LOOP=10"
+Environment="SCAN_INTERVAL=5"
 EnvironmentFile=-${mqtt_env_file}
 # Optional overrides for orchestrator event publishing:
 # Environment="DEVICE_ID=pi-0123"

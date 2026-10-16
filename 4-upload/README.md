@@ -92,9 +92,9 @@ While running:
 16. if a rate-limited failure sets global retry pause during this cycle, stop further due attempts immediately.
 17. Sleep `SCAN_INTERVAL`.
 
-`SCAN_INTERVAL` default: `10` seconds.
+`SCAN_INTERVAL` default: `10` seconds. `install.sh` sets `5` in the service unit.
 `MAX_SCAN_FILES_PER_LOOP` default: `500`.
-`MIN_DUE_ATTEMPTS_PER_LOOP` default: `5`.
+`MIN_DUE_ATTEMPTS_PER_LOOP` default: `5`. `install.sh` sets `10` in the service unit.
 `MAX_DUE_ATTEMPTS_PER_LOOP` default: `50`.
 `MAX_RETRIES` default: `288`.
 `RETRY_BASE_DELAY_SECONDS` default: `2`.

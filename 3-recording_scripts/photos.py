@@ -318,6 +318,52 @@ def safe_embed_jpeg_metadata(path: Path, metadata: dict[str, object]) -> None:
         log(f"failed to embed JPEG metadata: path={path} error={type(exc).__name__}: {exc}")
 
 
+CAMERA_METADATA_FIELDS = (
+    "ExposureTime",
+    "AnalogueGain",
+    "DigitalGain",
+    "ColourGains",
+    "ColourTemperature",
+    "Lux",
+    "LensPosition",
+    "FrameDuration",
+    "FocusFoM",
+    "SensorTemperature",
+)
+
+
+def read_camera_metadata(path: Path) -> dict[str, str]:
+    """Parse the key=value text rpicam writes with --metadata-format txt.
+
+    Returns {} when the file is missing or unreadable; the capture itself is not
+    affected. Only the fields the sidecar cares about are kept, as raw strings
+    (ExposureTime is microseconds, ColourGains is "r,b").
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        log(f"camera metadata unavailable: path={path} error={type(exc).__name__}: {exc}")
+        return {}
+    parsed: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        key = key.strip()
+        if sep and key in CAMERA_METADATA_FIELDS:
+            parsed[key] = value.strip()
+    if "ExposureTime" not in parsed:
+        log(f"camera metadata missing ExposureTime: path={path} keys={sorted(parsed) or '(none)'}")
+    return parsed
+
+
+def collect_camera_metadata(metadata_file: Path) -> dict[str, str]:
+    parsed = read_camera_metadata(metadata_file)
+    try:
+        metadata_file.unlink()
+    except OSError:
+        pass
+    return parsed
+
+
 def build_photo_file_metadata(
     session_metadata: dict[str, object],
     session_stem: str,
@@ -326,6 +372,7 @@ def build_photo_file_metadata(
     scheduled_epoch_ms: Optional[int],
     started_at: str,
     completed_at: str,
+    camera_metadata: dict[str, str],
 ) -> dict[str, object]:
     metadata = dict(session_metadata)
     metadata["file"] = {
@@ -336,6 +383,9 @@ def build_photo_file_metadata(
         "capture_started_at": started_at,
         "capture_completed_at": completed_at,
     }
+    # Measured values from libcamera for this frame. settings.recording_shutter
+    # is the request; camera.ExposureTime is what the sensor used.
+    metadata["camera"] = dict(camera_metadata)
     return metadata
 
 
@@ -923,7 +973,12 @@ def main() -> int:
         output_file = session_dir / output_leaf
         log(f"Starting photo index=0 output={output_file}")
         capture_started_at = timestamp_iso_local()
-        rc = run_capture(still_cmd, [*still_args, "--output", output_leaf], cwd=session_dir)
+        metadata_leaf = f"{output_leaf}.camera-metadata.txt"
+        rc = run_capture(
+            still_cmd,
+            [*still_args, "--metadata", metadata_leaf, "--metadata-format", "txt", "--output", output_leaf],
+            cwd=session_dir,
+        )
         if rc == 0 and not verify_capture_output(output_file, output_leaf, session_dir):
             return 14
         if rc == 0:
@@ -935,6 +990,7 @@ def main() -> int:
                 None,
                 capture_started_at,
                 timestamp_iso_local(),
+                collect_camera_metadata(session_dir / metadata_leaf),
             )
             persist_photo_file_metadata(output_file, file_metadata)
         return rc
@@ -980,7 +1036,12 @@ def main() -> int:
         output_file = session_dir / output_leaf
         log(f"Starting photo index={capture_index} output={output_file}")
         capture_started_at = timestamp_iso_local()
-        rc = run_capture(still_cmd, [*still_args, "--output", output_leaf], cwd=session_dir)
+        metadata_leaf = f"{output_leaf}.camera-metadata.txt"
+        rc = run_capture(
+            still_cmd,
+            [*still_args, "--metadata", metadata_leaf, "--metadata-format", "txt", "--output", output_leaf],
+            cwd=session_dir,
+        )
         if rc != 0:
             return rc
         if not verify_capture_output(output_file, output_leaf, session_dir):
@@ -993,6 +1054,7 @@ def main() -> int:
             target_epoch_ms,
             capture_started_at,
             timestamp_iso_local(),
+            collect_camera_metadata(session_dir / metadata_leaf),
         )
         persist_photo_file_metadata(output_file, file_metadata)
         capture_index += 1
